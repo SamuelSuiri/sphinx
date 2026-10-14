@@ -197,6 +197,48 @@ test('native reviewer requests preserve tool calls and observations with free-on
   assert.deepEqual(result.message.reasoning_details, [{ type: 'reasoning.encrypted', data: 'opaque-provider-state' }]);
 });
 
+test('native reviewer accepts bounded multi-tool batches, including completed stop responses with no text', async () => {
+  for (const count of [3, 8]) for (const finish_reason of ['tool_calls', 'stop']) {
+    const tool_calls = Array.from({ length: count }, (_, index) => ({ ...nativeCall, id: `read-${index}` }));
+    let requests = 0, charges = 0;
+    const response = await callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools,
+      beforeCall: async () => { charges++; }, fetchImpl: async (_url, init) => {
+        requests++;
+        const body = JSON.parse(init.body);
+        assert.equal(body.tool_choice, 'required');
+        assert.equal(body.models, undefined);
+        assert.deepEqual(body.provider.max_price, { prompt: 0, completion: 0, request: 0 });
+        return Response.json({ choices: [{ finish_reason, message: { content: null, tool_calls } }] });
+      },
+    });
+    assert.equal(response.calls.length, count);
+    assert.equal(response.message.tool_calls.length, count);
+    assert.equal(requests, 1); assert.equal(charges, 1);
+  }
+});
+
+test('native batch failures distinguish zero calls from overflow without disclosing output or retrying', async () => {
+  for (const finish_reason of ['stop', 'tool_calls']) for (const count of [0, 9]) {
+    let requests = 0, charges = 0;
+    const tool_calls = Array.from({ length: count }, (_, index) => ({ ...nativeCall, id: `read-${index}` }));
+    await assert.rejects(callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools,
+      beforeCall: async () => { charges++; }, fetchImpl: async () => {
+        requests++;
+        return Response.json({ choices: [{ finish_reason, message: { content: apiKey, reasoning: apiKey, tool_calls } }], usage: { completion_tokens: 120, completion_tokens_details: { reasoning_tokens: 100 } } });
+      },
+    }), error => {
+      assert.match(error.message, new RegExp(`returned ${count} reviewer tool calls`));
+      assert.ok(error.message.includes(`finish_reason: ${finish_reason}`));
+      assert.match(error.message, /120 completion tokens, 100 reasoning tokens/);
+      assert.match(error.message, count === 0 ? /requires a workspace call or finish_review/ : /batch limit of 8.*No tools from this response were executed/);
+      assert.match(error.message, /did not retry or switch models/);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(requests, 1); assert.equal(charges, 1);
+  }
+});
+
 test('native reviewer rejects fabricated tools, malformed arguments, duplicate IDs and partial output', async () => {
   const cases = [
     { tool_calls: [{ ...nativeCall, function: { name: 'shell', arguments: '{}' } }] },

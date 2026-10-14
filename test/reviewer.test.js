@@ -17,6 +17,7 @@ const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: '
 const question = { id: 'retry', concept: 'Duplicate operation', prompt: 'When an already-seen id is retried in this process, will another operation run? Explain why.', choices: ['Yes', 'No'], expectedAnswer: 'No; the unchanged helper returns before the operation.', rationale: 'Identify the stored id lookup and early return.', evidence: [{ path: 'worker.js', reason: 'Delegates to once().' }, { path: 'lib/once.js', reason: 'The helper remembers ids and returns early.' }] };
 const schema = { type: 'object', additionalProperties: false, properties: { questions: { type: 'array', minItems: 1, maxItems: 1, items: QUESTION_SCHEMA } }, required: ['questions'] };
 const toolAction = calls => ({ action: 'tools', calls: calls.map(([name, args]) => ({ name, arguments: JSON.stringify(args) })), assessment: null, summary: '', evidenceIds: [] });
+const compactionReads = () => Array.from({ length: 6 }, (_, index) => [index === 0 ? 'read_diff' : 'read_file', { path: index === 0 ? 'worker.js' : 'lib/once.js' }]);
 const finish = (evidenceIds = ['e1', 'e2'], q = question) => ({ action: 'finish', calls: [], assessment: { questions: [q] }, summary: 'The worker delegates retry deduplication to a process-local helper.', evidenceIds });
 const validate = (assessment, paths) => assessment.questions.map(item => validateQuestion(item, paths));
 const options = { snapshot, config, assessmentSchema: schema, assessmentInstructions: 'Ask at most one bounded outcome question. Precommit its key.', validateAssessment: validate };
@@ -63,8 +64,64 @@ test('investigative reviewer follows unchanged dependencies and saves exact evid
   assert.ok(requests.every(request => !request.prompt.includes('/private/checkout')));
 });
 
+test('Pi sequentially executes bounded 3–8 read batches for native and structured transports', async () => {
+  for (const nativeTools of [false, true]) for (const count of [3, 8]) {
+    const space = workspace();
+    const execute = space.execute.bind(space);
+    let active = 0, maximum = 0, requests = 0, charges = 0;
+    space.execute = async (...args) => {
+      active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setImmediate(resolve));
+      try { return await execute(...args); } finally { active--; }
+    };
+    const readCalls = Array.from({ length: count }, (_, index) => ({ id: `read-${index}`, name: index === 0 ? 'read_diff' : 'read_file', arguments: { path: index === 0 ? 'worker.js' : 'lib/once.js' } }));
+    const provider = async args => {
+      await args.beforeCall(); requests++;
+      assert.ok(requests <= 2);
+      const done = requests === 2;
+      if (nativeTools) return { calls: done ? [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1', `e${count}`] } }] : readCalls };
+      assert.equal(args.schema.properties.calls.maxItems, 8);
+      return done ? finish(['e1', `e${count}`]) : toolAction(readCalls.map(call => [call.name, call.arguments]));
+    };
+    const result = await runReviewer({ ...options, workspace: space, nativeTools, beforeCall: async () => { charges++; }, runModel: provider, runToolModel: provider });
+    assert.equal(maximum, 1);
+    assert.equal(space.history.length, count);
+    assert.equal(result.review.toolCalls, count);
+    assert.equal(result.review.calls, 2);
+    assert.equal(charges, 2);
+    assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', `e${count}`]);
+  }
+});
+
+test('oversized or mixed-finish native batches execute no tools and never request a repair', async () => {
+  const read = { id: 'read', name: 'read_diff', arguments: { path: 'worker.js' } };
+  const done = { id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1'] } };
+  for (const calls of [[], Array.from({ length: 9 }, (_, index) => ({ ...read, id: `read-${index}` })), [read, done]]) {
+    const space = workspace(); let requests = 0;
+    await assert.rejects(runReviewer({ ...options, workspace: space, nativeTools: true, runToolModel: async args => {
+      await args.beforeCall(); requests++; return { calls };
+    }, runModel: async () => assert.fail('No summary or repair request is allowed') }), { code: 'INVALID_REVIEW_ACTION' });
+    assert.equal(space.history.length, 0);
+    assert.equal(requests, 1);
+  }
+});
+
+test('read pages honor both the configured ceiling and context room reserved for bounded batches', async () => {
+  for (const limits of [{ maxContextBytes: 32000, toolResultBytes: 16000 }, { maxContextBytes: 100000, toolResultBytes: 1000 }]) {
+    const result = { evidencePaths: [], text: 'x'.repeat(1000) };
+    const space = workspace({ read: () => result });
+    let requests = 0;
+    await assert.rejects(runReviewer({ ...options, config: { ...config, ...limits }, workspace: space, runModel: async args => {
+      await args.beforeCall(); requests++;
+      return toolAction(compactionReads());
+    } }), { code: 'TOOL_RESULT_LIMIT' });
+    assert.equal(requests, 1, 'An oversized observation cannot cause a repair request');
+    assert.equal(space.history.length, 1, 'The rest of the batch stops when its page budget is exceeded');
+  }
+});
+
 test('Pi native compaction preserves the exact evidence archive, project context and charged remaining budget', async () => {
-  const space = workspace({ padding: 2400 });
+  const space = workspace({ padding: 600 });
   const limit = 8;
   let turns = 0, charges = 0, summaryCalls = 0;
   const result = await runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, maxReviewerCalls: limit, workspace: space, beforeCall: async () => { charges++; }, runModel: async args => {
@@ -86,7 +143,7 @@ test('Pi native compaction preserves the exact evidence archive, project context
       assert.match(JSON.stringify(data.conversation), /Exact observation e1/);
       return finish(['e1', 'e2']);
     }
-    return toolAction(turns === 1 ? [['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]] : [['read_file', { path: 'lib/once.js' }], ['read_file', { path: 'lib/once.js' }]]);
+    return toolAction(compactionReads());
   } });
   assert.ok(summaryCalls >= 1, 'The real Pi session must issue native summarization calls');
   assert.ok(turns >= 3, 'Accumulate several bounded investigation turns before compacting');
@@ -96,7 +153,7 @@ test('Pi native compaction preserves the exact evidence archive, project context
   assert.equal(charges, turns + summaryCalls);
   assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', 'e2']);
   assert.equal(result.review.evidence[0].result.text, '+return once(id, operation);');
-  assert.equal(result.review.evidence[1].result.text, `if (seen.has(id)) return; seen.add(id); operation();\n${'x'.repeat(2400)}`);
+  assert.equal(result.review.evidence[1].result.text, `if (seen.has(id)) return; seen.add(id); operation();\n${'x'.repeat(600)}`);
   assert.equal(result.review.evidence[1].result.oid, 'a'.repeat(40));
   assert.deepEqual(result.review.projectContext, snapshot.projectContext);
   assert.ok(Buffer.byteLength(JSON.stringify(result.review)) < 30000);
@@ -105,7 +162,7 @@ test('Pi native compaction preserves the exact evidence archive, project context
 test('Pi retains opaque reasoning for native continuation but excludes it from native summaries', async () => {
   let turns = 0, compactCalls = 0, charges = 0, continuedWithReasoning = false;
   const encrypted = 'opaque-private-reasoning-' + 'A'.repeat(800);
-  const result = await runReviewer({ ...options, config: { ...config, maxContextBytes: 40000, timeoutSeconds: 5 }, workspace: workspace({ padding: 3000 }), nativeTools: true,
+  const result = await runReviewer({ ...options, config: { ...config, maxContextBytes: 40000, timeoutSeconds: 5 }, workspace: workspace({ padding: 900 }), nativeTools: true,
     beforeCall: async () => { charges++; },
     runToolModel: async args => {
       await args.beforeCall();
@@ -117,9 +174,7 @@ test('Pi retains opaque reasoning for native continuation but excludes it from n
         assert.equal(original.reasoning_details[0].data, encrypted);
         continuedWithReasoning = true;
       }
-      const calls = turns === 1
-        ? [{ id: 'diff', name: 'read_diff', arguments: { path: 'worker.js' } }, { id: 'file', name: 'read_file', arguments: { path: 'lib/once.js' } }]
-        : [{ id: `read-${turns}-1`, name: 'read_file', arguments: { path: 'lib/once.js' } }, { id: `read-${turns}-2`, name: 'read_file', arguments: { path: 'lib/once.js' } }];
+      const calls = compactionReads().map(([name, args], index) => ({ id: `read-${turns}-${index}`, name, arguments: args }));
       return { calls, message: { role: 'assistant', content: null, tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })), reasoning_details: [{ type: 'reasoning.encrypted', data: encrypted }] } };
     },
     runModel: async args => {
@@ -187,7 +242,7 @@ test('provider calls including compaction obey the shared budget with no retry o
 
 test('Pi compaction must pass the shared beforeCall budget before any summary is requested', async () => {
   let summaryAttempt = false, summaries = 0, normalCalls = 0, charges = 0;
-  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 2400 }),
+  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 600 }),
     beforeCall: async () => {
       if (summaryAttempt) throw Object.assign(new Error('Shared budget exhausted before compaction'), { code: 'TEST_SHARED_BUDGET' });
       charges++;
@@ -197,7 +252,7 @@ test('Pi compaction must pass the shared beforeCall budget before any summary is
       await args.beforeCall();
       if (summaryAttempt) { summaries++; return { summary }; }
       normalCalls++;
-      return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+      return toolAction(compactionReads());
     },
   }), { code: 'TEST_SHARED_BUDGET' });
   assert.equal(summaryAttempt, true);
@@ -221,11 +276,11 @@ test('whole-review deadline and cancellation stop an in-flight provider without 
 test('invalid Pi compaction summaries fail closed without repair calls or an assessment', async () => {
   for (const compact of [{ summary: '' }, { summary: 'review', extra: true }, { unexpected: 'PRIVATE_MALFORMED_NOTES' }]) {
     let compactCalls = 0;
-    await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 2400 }), runModel: async args => {
+    await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 600 }), runModel: async args => {
       await args.beforeCall();
       assert.equal(compactCalls, 0, 'An invalid summary must not cause a repair or continuation request');
       if (isSummary(args)) { compactCalls++; return compact; }
-      return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+      return toolAction(compactionReads());
     } }), { code: 'INVALID_COMPACTION' });
     assert.equal(compactCalls, 1);
   }
@@ -233,12 +288,12 @@ test('invalid Pi compaction summaries fail closed without repair calls or an ass
 
 test('hallucinated evidence IDs in Pi summaries cannot fabricate retained evidence', async () => {
   let compactCalls = 0, finalCalls = 0;
-  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 2400 }), runModel: async args => {
+  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 600 }), runModel: async args => {
     await args.beforeCall();
     assert.equal(finalCalls, 0, 'A rejected final review cannot request a repair');
     if (isSummary(args)) { compactCalls++; return { summary: 'Observation e999 proves a fabricated code path. Keep e999 as evidence.' }; }
     if (compactCalls) { finalCalls++; return finish(['e1', 'e999']); }
-    return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+    return toolAction(compactionReads());
   } }), { code: 'INSUFFICIENT_EVIDENCE' });
   assert.ok(compactCalls >= 1);
   assert.equal(finalCalls, 1);

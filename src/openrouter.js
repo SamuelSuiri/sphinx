@@ -1,4 +1,5 @@
 import { openRouterKey } from './config.js';
+import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
 
 const incomplete = 'No completion was recorded; Sphinx did not retry or switch models.';
 const failureAdvice = {
@@ -36,15 +37,19 @@ function requireFinishedChoice(data, config, allowTools = false) {
   if (choice?.finish_reason === 'content_filter' || choice?.message?.refusal) {
     throw new Error(`OpenRouter refused or filtered the assessment. Review the selected model's content policy or select another compatible model. ${incomplete}`);
   }
+  // Compatible endpoints occasionally normalize a completed tool response to
+  // stop. Validate the actual calls below; a text answer cannot replace them.
+  if (allowTools && ['stop', 'tool_calls'].includes(choice?.finish_reason)) {
+    return { message: choice.message, finishReason: choice.finish_reason, usage: tokenUsage(data) };
+  }
   if (choice?.finish_reason === 'tool_calls') {
-    if (allowTools && Array.isArray(choice.message?.tool_calls) && choice.message.tool_calls.length) return choice.message;
     throw new Error(`OpenRouter requested tool calls instead of the required assessment JSON. Select a model supporting structured output. ${incomplete}`);
   }
   if (choice?.finish_reason !== 'stop') throw new Error(`OpenRouter returned no completed assessment choice or an unrecognized finish reason. Retry when ready or select another compatible model. ${incomplete}`);
   if (typeof choice.message?.content !== 'string' || !choice.message.content.trim()) {
     throw new Error(`OpenRouter returned no assessment text.${tokenUsage(data)} Select another compatible model, or increase maxOutputTokens if reasoning consumed the output budget. ${incomplete}`);
   }
-  return allowTools ? choice.message : choice.message.content;
+  return choice.message.content;
 }
 
 async function requestOpenRouter({messages, schema, tools, config, env = process.env, fetchImpl = fetch, beforeCall, signal}) {
@@ -107,8 +112,10 @@ export async function callOpenRouter({prompt, schema, config, env = process.env,
 
 /** Native client-side tool calling; Sphinx, never the provider, executes tools. */
 export async function callOpenRouterTurn(options) {
-  const message = await requestOpenRouter(options);
-  if (!Array.isArray(message?.tool_calls) || !message.tool_calls.length || message.tool_calls.length > 2) throw new Error(`OpenRouter did not return 1–2 reviewer tool calls. ${incomplete}`);
+  const { message, finishReason, usage } = await requestOpenRouter(options);
+  const count = Array.isArray(message?.tool_calls) ? message.tool_calls.length : 0;
+  if (!count) throw new Error(`OpenRouter returned 0 reviewer tool calls (finish_reason: ${finishReason}); this investigation requires a workspace call or finish_review.${usage} Retry when ready or select another tool-capable route. ${incomplete}`);
+  if (count > MAX_REVIEWER_TOOL_CALLS) throw new Error(`OpenRouter returned ${count} reviewer tool calls (finish_reason: ${finishReason}), exceeding the bounded batch limit of ${MAX_REVIEWER_TOOL_CALLS}. No tools from this response were executed.${usage} ${incomplete}`);
   const names = new Set(options.tools.map(tool => tool.function.name));
   const ids = new Set();
   const calls = message.tool_calls.map(call => {

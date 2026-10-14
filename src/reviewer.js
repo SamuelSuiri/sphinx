@@ -1,5 +1,7 @@
+import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
+
 const MAX_ARCHIVE_BYTES = 1024 * 1024;
-const MAX_CALLS_PER_TURN = 2;
+const MAX_CALLS_PER_TURN = MAX_REVIEWER_TOOL_CALLS;
 const TOOL_NAMES = new Set(['list_files', 'read_file', 'read_diff', 'search']);
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value));
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -69,7 +71,9 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
   const reviewSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const check = () => reviewSignal.throwIfAborted();
   const runtime = () => ({ ...config, timeoutSeconds: Math.max(0.001, (deadline - Date.now()) / 1000) });
-  const toolResultBytes = Math.min(config.toolResultBytes ?? 16000, Math.max(512, Math.floor(cap / 10)));
+  // Leave room for earlier evidence and Pi's compaction request even when a
+  // provider fills a whole batch. The configured page size remains an upper bound.
+  const toolResultBytes = Math.min(config.toolResultBytes ?? 16000, Math.max(512, Math.floor(cap / (4 * MAX_CALLS_PER_TURN))));
   const workspace = injectedWorkspace ?? await (await import('./review-workspace.js')).createReviewWorkspace(snapshot, { ...config, toolResultBytes }, { env });
   check();
   if (!workspace || !Array.isArray(workspace.tools) || typeof workspace.execute !== 'function') fail('The review workspace is unavailable.', 'INVALID_WORKSPACE');
@@ -151,7 +155,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
         if (!response || !Array.isArray(response.calls)) fail('The reviewer returned invalid tool calls.', 'INVALID_REVIEW_ACTION');
         toolCalls = response.calls; nativeMessage = response.message;
       } else {
-        const request = { systemPrompt, prompt: `Continue the investigative review. Return an action matching the schema: tools requests 1–2 read-only calls with arguments encoded as JSON; finish supplies assessment, a short factual summary and evidenceIds, with calls empty. Tool actions use assessment:null, summary:"", evidenceIds:[]. ${remaining() <= 1 ? 'This is the final available request: finish only if the evidence supports the assessment.' : ''}\n${JSON.stringify({ projectContext, remainingCalls: remaining(), tools: descriptors, conversation: conversation(messages) })}`, schema: actionSchema };
+        const request = { systemPrompt, prompt: `Continue the investigative review. Return an action matching the schema: tools requests 1–${MAX_CALLS_PER_TURN} focused read-only calls with arguments encoded as JSON; finish supplies assessment, a short factual summary and evidenceIds, with calls empty. Tool actions use assessment:null, summary:"", evidenceIds:[]. Prefer a small useful batch rather than filling the limit. ${remaining() <= 1 ? 'This is the final available request: finish only if the evidence supports the assessment.' : ''}\n${JSON.stringify({ projectContext, remainingCalls: remaining(), tools: descriptors, conversation: conversation(messages) })}`, schema: actionSchema };
         inputBytes = ensureFits(request);
         const action = await abortable(runModel({ ...request, ...common }), requestSignal);
         if (!exactKeys(action, ['action', 'calls', 'assessment', 'summary', 'evidenceIds']) || !['tools', 'finish'].includes(action.action) || !Array.isArray(action.calls)) fail('The reviewer returned an invalid investigation action.', 'INVALID_REVIEW_ACTION');
@@ -168,7 +172,8 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
         }
       }
       check();
-      if (!toolCalls.length || toolCalls.length > MAX_CALLS_PER_TURN || toolCalls.some(call => ![...TOOL_NAMES, 'finish_review'].includes(call.name) || !isObject(call.arguments))) fail('The reviewer returned invalid tool calls.', 'INVALID_REVIEW_ACTION');
+      if (!toolCalls.length || toolCalls.length > MAX_CALLS_PER_TURN) fail(`The reviewer returned ${toolCalls.length} tool calls; the bounded batch limit is 1–${MAX_CALLS_PER_TURN}. No tools from this response were executed.`, 'INVALID_REVIEW_ACTION');
+      if (toolCalls.some(call => ![...TOOL_NAMES, 'finish_review'].includes(call.name) || !isObject(call.arguments))) fail('The reviewer returned invalid tool calls.', 'INVALID_REVIEW_ACTION');
       if (toolCalls.some(call => call.name === 'finish_review') && toolCalls.length !== 1) fail('Finishing cannot be mixed with investigation.', 'INVALID_REVIEW_ACTION');
       if (toolCalls[0].name === 'finish_review') {
         const action = toolCalls[0].arguments;
