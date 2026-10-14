@@ -1,0 +1,179 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { callOpenRouter } from '../src/openrouter.js';
+import { DEFAULT_CONFIG, saveOpenRouterKey } from '../src/config.js';
+
+const apiKey = 'test-only-private-openrouter-key';
+const schema = { type: 'object', properties: { questions: { type: 'array' } }, required: ['questions'], additionalProperties: false };
+const result = { questions: [] };
+const defaults = { prompt: 'Assess only the supplied snapshot.', schema, config: structuredClone(DEFAULT_CONFIG), env: { OPENROUTER_API_KEY: apiKey } };
+const success = (content = JSON.stringify(result), finish_reason = 'stop') => Response.json({ choices: [{ finish_reason, message: { content } }] });
+
+test('default OpenRouter request requires zero-priced structured output and enforces the token budget', async () => {
+  let calls = 0;
+  let captured;
+  const actual = await callOpenRouter({ ...defaults, fetchImpl: async (url, init) => { calls++; captured = { url, init }; return success(); } });
+  assert.deepEqual(actual, result);
+  assert.equal(calls, 1);
+  assert.equal(captured.url, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(captured.init.method, 'POST');
+  assert.equal(captured.init.redirect, 'error');
+  assert.equal(captured.init.headers.Authorization, `Bearer ${apiKey}`);
+  assert.ok(captured.init.signal instanceof AbortSignal);
+  const body = JSON.parse(captured.init.body);
+  assert.equal(body.model, 'openrouter/free');
+  assert.deepEqual(body.provider, { require_parameters: true, max_price: { prompt: 0, completion: 0, request: 0 } });
+  assert.equal(body.max_completion_tokens, DEFAULT_CONFIG.maxOutputTokens);
+  assert.equal(body.reasoning, undefined, 'Do not require reasoning support on otherwise compatible models');
+  assert.equal(body.stream, false);
+  assert.equal(body.response_format.type, 'json_schema');
+  assert.equal(body.response_format.json_schema.strict, true);
+  assert.deepEqual(body.response_format.json_schema.schema, schema);
+  assert.equal(body.messages[1].content, defaults.prompt);
+  assert.ok(!captured.init.body.includes(apiKey));
+  assert.equal(body.models, undefined, 'No implicit fallback model list');
+});
+
+test('free selections retain zero-price caps even when paid routes are enabled elsewhere', async () => {
+  for (const model of ['openrouter/free', 'vendor/model:free']) {
+    let body;
+    await callOpenRouter({ ...defaults, config: { ...defaults.config, allowPaid: true, model, maxOutputTokens: 768 }, fetchImpl: async (_url, init) => { body = JSON.parse(init.body); return success(); } });
+    assert.equal(body.model, model);
+    assert.equal(body.max_completion_tokens, 768);
+    assert.deepEqual(body.provider.max_price, { prompt: 0, completion: 0, request: 0 });
+  }
+});
+
+test('paid models require explicit configuration and never silently substitute another model', async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls++; return success(); };
+  await assert.rejects(callOpenRouter({ ...defaults, config: { ...defaults.config, model: 'vendor/paid-model' }, fetchImpl }), /Paid OpenRouter model.*disabled/);
+  assert.equal(calls, 0);
+  let body;
+  await callOpenRouter({ ...defaults, config: { ...defaults.config, model: 'vendor/paid-model', allowPaid: true, effort: 'low' }, fetchImpl: async (_url, init) => { body = JSON.parse(init.body); return success(); } });
+  assert.equal(body.model, 'vendor/paid-model');
+  assert.equal(body.provider.max_price, undefined);
+  assert.equal(body.reasoning, undefined, 'CLI effort must not impose reasoning support on a selected OpenRouter model');
+  assert.equal(body.reasoning_effort, undefined);
+});
+
+test('missing authentication fails before a request and an isolated saved key is reused', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sphinx-openrouter-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const env = { SPHINX_HOME: directory, SPHINX_USER_HOME: directory };
+  let calls = 0;
+  const fetchImpl = async () => { calls++; return success(); };
+  await assert.rejects(callOpenRouter({ ...defaults, env, fetchImpl }), /requires an API key/);
+  assert.equal(calls, 0);
+  await saveOpenRouterKey(apiKey, env);
+  await callOpenRouter({ ...defaults, env, fetchImpl: async (_url, init) => { assert.equal(init.headers.Authorization, `Bearer ${apiKey}`); return success(); } });
+});
+
+test('HTTP errors remain actionable without exposing authentication or the provider response body', async () => {
+  for (const [status, message] of [[401, /sphinx auth/], [429, /will not switch to a paid model/], [400, /structured-output/], [402, /insufficient credits/], [503, /unavailable/], [502, /Request failed/]]) {
+    let calls = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { calls++; return new Response(`server diagnostic ${apiKey}`, { status }); } }), error => {
+      assert.match(error.message, message);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(calls, 1, 'No automatic retry or paid fallback');
+  }
+});
+
+test('network and timeout errors do not leak request credentials', async () => {
+  for (const error of [new Error(`request failed with ${apiKey}`), new DOMException(`request ${apiKey}`, 'TimeoutError')]) {
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { throw error; } }), failure => {
+      assert.match(failure.message, /Could not reach|timed out/);
+      assert.ok(!failure.message.includes(apiKey));
+      return true;
+    });
+  }
+});
+
+test('truncated, refused, malformed, and provider-error responses never pass', async () => {
+  const cases = [
+    [() => success('{"questions":', 'length'), /output limit/],
+    [() => success(JSON.stringify(result), 'content_filter'), /refused or filtered/],
+    [() => success('This is not JSON'), /malformed assessment JSON/],
+    [() => success(null), /no assessment text/],
+    [() => Response.json({ error: { message: apiKey } }), /provider error/],
+    [() => new Response(`not valid json ${apiKey}`), /invalid.*JSON/],
+    [() => Response.json({ choices: [] }), /no completed assessment choice/],
+    [() => Response.json(null), /invalid|malformed|no assessment|did not finish/i],
+  ];
+  for (const [response, pattern] of cases) {
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => response() }), error => {
+      assert.match(error.message, pattern);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+  }
+});
+
+test('output-limit errors identify the actual budget and safe usage counts without accepting partial JSON', async () => {
+  let calls = 0;
+  await assert.rejects(callOpenRouter({ ...defaults, config: { ...defaults.config, maxOutputTokens: 2500 }, fetchImpl: async () => {
+    calls++;
+    return Response.json({
+      choices: [{ finish_reason: 'length', native_finish_reason: apiKey, message: { content: JSON.stringify(result), reasoning: apiKey } }],
+      usage: { completion_tokens: 2500, completion_tokens_details: { reasoning_tokens: 2490 } },
+    });
+  } }), error => {
+    assert.match(error.message, /finish_reason: length; request budget: 2500 tokens, including reasoning/);
+    assert.match(error.message, /2500 completion tokens, 2490 reasoning tokens/);
+    assert.match(error.message, /Increase maxOutputTokens in your global Sphinx configuration/);
+    assert.match(error.message, /did not retry or switch models/);
+    assert.ok(!error.message.includes(apiKey));
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test('non-budget failures have distinct advice and never recommend increasing tokens', async () => {
+  const cases = [
+    [{ choices: [{ finish_reason: 'content_filter', message: { content: apiKey } }] }, /refused or filtered/],
+    [{ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result), refusal: apiKey } }] }, /refused or filtered/],
+    [{ choices: [{ finish_reason: 'tool_calls', message: { content: JSON.stringify(result) } }] }, /requested tool calls/],
+    [{ choices: [{ finish_reason: 'error', error: { code: 429, message: apiKey } }] }, /provider error.*rate limit/],
+    [{ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) }, error: { code: 503, message: apiKey } }] }, /provider error.*unavailable/],
+    [{ error: { code: 401, message: apiKey } }, /provider error.*sphinx auth/],
+    [{ choices: [{ finish_reason: apiKey, native_finish_reason: apiKey }] }, /unrecognized finish reason/],
+    [{ choices: {} }, /no completed assessment choice/],
+  ];
+  for (const [data, pattern] of cases) {
+    let calls = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { calls++; return Response.json(data); } }), error => {
+      assert.match(error.message, pattern);
+      assert.match(error.message, /No completion was recorded/);
+      assert.ok(!error.message.includes('maxOutputTokens'));
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('empty completed content reports reasoning usage without exposing malformed usage metadata', async () => {
+  for (const content of [null, '', '   ']) {
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => Response.json({
+      choices: [{ finish_reason: 'stop', message: { content, reasoning: apiKey } }],
+      usage: { completion_tokens: apiKey, completion_tokens_details: { reasoning_tokens: 2500 } },
+    }) }), error => {
+      assert.match(error.message, /no assessment text/);
+      assert.match(error.message, /2500 reasoning tokens/);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+  }
+});
+
+test('oversized API bodies are rejected even if the provider ignores its output token budget', async () => {
+  await assert.rejects(callOpenRouter({
+    ...defaults,
+    fetchImpl: async () => success(JSON.stringify({ padding: 'x'.repeat(1024 * 1024 + 1) })),
+  }), /oversized/);
+});

@@ -1,0 +1,60 @@
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { readdir, rename, unlink } from 'node:fs/promises';
+import { getPaths, readJson, writeJson } from './config.js';
+import { repository } from './git.js';
+
+const TOKEN = /^[a-f0-9-]{36}$/;
+const directory = env => path.join(getPaths(env).home, 'presentations');
+const filename = (token, env) => {
+  if (!TOKEN.test(token)) throw new Error('Invalid questionnaire request.');
+  return path.join(directory(env), `${token}.json`);
+};
+
+/** Git alone creates these requests. They contain routing metadata, never code or answers. */
+export async function queuePresentation(session, { env = process.env } = {}) {
+  const request = {
+    version: 1, token: randomUUID(), id: session.id,
+    repoRoot: session.snapshot.repoRoot, createdAt: Date.now(),
+    ...(env.SPHINX_CLAUDE_SESSION ? { host: 'claude', hostSession: env.SPHINX_CLAUDE_SESSION }
+      : env.CODEX_THREAD_ID ? { host: 'codex', hostSession: env.CODEX_THREAD_ID } : {}),
+  };
+  await writeJson(filename(request.token, env), request);
+  return request;
+}
+
+export async function listPresentations({ cwd, host, hostSession, env = process.env }) {
+  const files = await readdir(directory(env)).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+  if (!files.length) return [];
+  const root = await repository(cwd).then(repo => repo.root).catch(() => null);
+  const grouped = new Map();
+  for (const file of files.filter(name => TOKEN.test(name.slice(0, -5)) && name.endsWith('.json'))) {
+    const request = await readJson(path.join(directory(env), file), null);
+    if (!request || request.version !== 1 || !/^[a-f0-9]{64}$/.test(request.id)
+      || `${request.token}.json` !== file || !Number.isFinite(request.createdAt)) continue;
+    // Agent session IDs follow shell commands across git -C and cd. Untagged
+    // terminal operations stay in their exact repository instead of crossing projects.
+    if (request.hostSession) {
+      if (request.host !== host || request.hostSession !== hostSession) continue;
+    } else if (!root || request.repoRoot !== root) continue;
+    const group = grouped.get(request.id) || [];
+    group.push(request); grouped.set(request.id, group);
+  }
+  return [...grouped.values()].map(group => {
+    group.sort((a, b) => b.createdAt - a.createdAt || b.token.localeCompare(a.token));
+    return { ...group[0], superseded: group.slice(1).map(request => request.token) };
+  }).sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** Claim each attempt once, so inspecting code after cancellation does not reopen forms. */
+export async function claimPresentation(request, { env = process.env } = {}) {
+  const file = filename(request.token, env), claimed = `${file}.claimed`;
+  try { await rename(file, claimed); }
+  catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+  await unlink(claimed);
+  // Only remove retries present in the listing. A new Git attempt must remain queued.
+  for (const token of request.superseded || []) {
+    await unlink(filename(token, env)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+  return true;
+}

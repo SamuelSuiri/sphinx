@@ -1,0 +1,49 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { agentHook } from '../src/agent.js';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+for (const agent of ['codex', 'claude']) {
+  test(`${agent} SessionStart delegates input directly to native forms, never the coding model`, async () => {
+    const result = await agentHook({ agent, input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }), env: {} });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.output.hookSpecificOutput.hookEventName, 'SessionStart');
+    const context = result.output.hookSpecificOutput.additionalContext;
+    assert.match(context, /opens the native Sphinx questionnaire automatically/);
+    assert.match(context, /Only the outcome is returned to you/);
+    assert.match(context, /Do not relay questions through chat/);
+    assert.match(context, /Never answer on the human's behalf/);
+    assert.match(context, /do not repeatedly retry/);
+    assert.match(context, /sphinx doctor/);
+    assert.equal(context.includes('sphinx check --json'), false);
+    assert.equal(context.includes('sphinx answer <session-id>'), false);
+  });
+}
+
+test('agent hooks skip evaluator sessions and ignore unrelated lifecycle events', async () => {
+  assert.deepEqual(await agentHook({ agent: 'codex', input: 'invalid', env: { SPHINX_EVALUATOR: '1' } }), { output: null, exitCode: 0 });
+  assert.deepEqual(await agentHook({ agent: 'claude', event: 'Stop', input: '{}', env: {} }), { output: null, exitCode: 0 });
+});
+
+test('agent hooks reject malformed input and unsupported agents', async () => {
+  await assert.rejects(agentHook({ agent: 'codex', input: 'not json', env: {} }), /valid JSON/);
+  await assert.rejects(agentHook({ agent: 'unknown', input: '{}', env: {} }), /Unsupported agent/);
+});
+
+test('Claude session setup tags future shell commands without reading or replacing existing environment entries', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'sphinx-agent-env-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'session.sh');
+  await writeFile(file, 'export EXISTING=value\n');
+  const env = { CLAUDE_ENV_FILE: file };
+  await agentHook({ agent: 'claude', input: { hook_event_name: 'SessionStart', session_id: 'test-session-123' }, env });
+  const saved = await readFile(file, 'utf8');
+  assert.ok(saved.startsWith('export EXISTING=value\n'));
+  assert.match(saved, /export SPHINX_CLAUDE_SESSION='test-session-123'/);
+  await agentHook({ agent: 'claude', input: { hook_event_name: 'SessionStart', session_id: "bad'; echo unsafe" }, env });
+  assert.equal(await readFile(file, 'utf8'), saved, 'Unexpected session IDs cannot inject shell syntax');
+  await agentHook({ agent: 'claude', input: { hook_event_name: 'SessionStart', session_id: 'evaluator' }, env: { ...env, SPHINX_EVALUATOR: '1' } });
+  assert.equal(await readFile(file, 'utf8'), saved);
+});

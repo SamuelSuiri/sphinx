@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "enabled": true,
+  "provider": "openrouter",
+  "model": "openrouter/free",
+  "level": "standard",
+  "mode": "block",
+  "events": [
+    "pre-push"
+  ],
+  "branches": [
+    "main",
+    "master"
+  ],
+  "remotes": [
+    "*"
+  ],
+  "exclude": [],
+  "maxContextBytes": 100000,
+  "timeoutSeconds": 180,
+  "receiptHours": 24,
+  "maxModelCalls": 10,
+  "maxOutputTokens": 4096,
+  "allowPaid": false,
+  "models": {
+    "small": {
+      "provider": "openrouter",
+      "model": "openrouter/free"
+    },
+    "medium": {
+      "provider": "openrouter",
+      "model": "openrouter/free"
+    },
+    "large": {
+      "provider": "openrouter",
+      "model": "openrouter/free"
+    }
+  },
+  "routing": {
+    "smallMaxLines": 80,
+    "smallMaxFiles": 3,
+    "largeMinLines": 400,
+    "largeMinFiles": 12,
+    "riskPatterns": [
+      "auth",
+      "permission",
+      "migration",
+      "billing",
+      "payment",
+      "crypto",
+      "security",
+      "terraform"
+    ]
+  }
+}

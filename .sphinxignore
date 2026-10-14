@@ -1,0 +1,7 @@
+# Sphinx exclusions apply before any file contents are read.
+# .env, .env.*, private keys, and common credential files are always excluded.
+# Add project-specific sensitive or generated paths below.
+# Examples (uncomment only what you want to exclude):
+# internal/customer-exports/
+# dist/
+# *.generated.ts

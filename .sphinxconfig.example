@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "enabled": true,
+  "events": ["pre-push"],
+  "branches": ["main"],
+  "remotes": ["*"],
+  "level": "standard",
+  "mode": "block",
+  "exclude": []
+}

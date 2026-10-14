@@ -1,0 +1,229 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { DEFAULT_CONFIG, saveConfig, loadConfig, policyHash } from '../src/config.js';
+import { pushSnapshots, revalidateSnapshot } from '../src/git.js';
+import { createSessionStore } from '../src/sessions.js';
+import { queuePresentation, listPresentations } from '../src/presentations.js';
+import { runNativeCheckpoint } from '../src/native-check.js';
+
+const exec = promisify(execFile);
+const q = {
+  id: 'retry', concept: 'idempotency', prompt: 'Could retrying after a timeout duplicate the order? Explain why.',
+  choices: ['Yes', 'No'], expectedAnswer: 'ANSWER_KEY_PRIVATE', rationale: 'RUBRIC_PRIVATE',
+  evidence: [{ path: 'worker.js', reason: 'The operation is repeated.' }],
+};
+const answer = response => ({ action: 'accept', content: { action: 'answer', response } });
+test('evaluator subprocesses never consume presentation requests or launch recursive questionnaires', async () => {
+  const result = await runNativeCheckpoint({ env: { SPHINX_EVALUATOR: '1' }, listRequests: async () => assert.fail('No queue access in an evaluator'), elicit: async () => assert.fail('No recursive form') });
+  assert.equal(result.status, 'not-required');
+});
+async function fixture(t, { questions = [q], grade, validate, sourceLines = 1 } = {}) {
+  const home = await mkdtemp(path.join(tmpdir(), 'sphinx-native-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const cwd = path.join(home, 'repo');
+  await mkdir(cwd);
+  const env = { SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home };
+  const config = structuredClone(DEFAULT_CONFIG);
+  await saveConfig(config, env);
+  const git = async (...args) => (await exec('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+  })).stdout.trim();
+  await git('init', '-b', 'main');
+  await git('config', 'user.name', 'Sphinx test');
+  await git('config', 'user.email', 'test@example.invalid');
+  await writeFile(path.join(cwd, 'worker.js'), 'export const order = () => insert();\n' + '// More change evidence.\n'.repeat(sourceLines - 1));
+  await git('add', '--all');
+  await git('commit', '-m', 'Initial source');
+  const head = await git('rev-parse', 'HEAD');
+  const [snapshot] = await pushSnapshots({ cwd, config, env, remote: 'origin', remoteUrl: 'https://example.invalid/repo',
+    input: `refs/heads/main ${head} refs/heads/main ${'0'.repeat(40)}\n` });
+  let generated = 0;
+  const graded = [];
+  const check = async (current, settings) => {
+    if (policyHash(await loadConfig(current.repoRoot, env)) !== policyHash(settings)
+      || !(await revalidateSnapshot(current, settings, { env }))) throw new Error('Stale snapshot');
+    await validate?.(current, settings);
+  };
+  const store = createSessionStore({ env, validate: check,
+    generate: async () => { generated++; return { questions: structuredClone(questions) }; },
+    grade: async request => { graded.push(request); return grade ? grade(request, graded.length) : { verdict: 'correct', feedback: 'FEEDBACK_PRIVATE', followUp: null }; },
+  });
+  const session = await store.ensure(snapshot, config);
+  await queuePresentation(session, { env });
+  const run = options => runNativeCheckpoint({ cwd, env, host: 'codex', supportsForm: true, store, ...options });
+  return { cwd, env, config, git, snapshot, session, store, graded, generated: () => generated, run };
+}
+
+test('native forms complete each concept while tool results contain only status and counters', async t => {
+  const second = { ...q, id: 'atomic', concept: 'atomicity', prompt: 'Could one of the two writes survive a failure?' };
+  const f = await fixture(t, { questions: [q, second], sourceLines: 81 });
+  const forms = [];
+  const result = await f.run({ elicit: async form => { forms.push(form); return answer('HUMAN_RESPONSE_PRIVATE'); } });
+  assert.equal(result.status, 'passed');
+  assert.equal(result.completed, 2);
+  assert.equal(result.calls, 3);
+  assert.equal(forms.length, 2);
+  assert.match(forms[0].message, /Could retrying/);
+  assert.ok(forms[0].message.includes(`Repository: ${f.snapshot.repoRoot}`));
+  assert.match(forms[0].message, /Options:\n- Yes\n- No/);
+  assert.match(forms[1].message, /FEEDBACK_PRIVATE/);
+  assert.deepEqual(forms[0].requestedSchema.properties.action.enum, ['answer', 'learn', 'dispute', 'pause']);
+  assert.doesNotMatch(JSON.stringify(forms), /ANSWER_KEY_PRIVATE|RUBRIC_PRIVATE/);
+  assert.doesNotMatch(JSON.stringify(result), /question|answer|feedback|HUMAN_RESPONSE_PRIVATE|FEEDBACK_PRIVATE|ANSWER_KEY_PRIVATE|RUBRIC_PRIVATE/i);
+  assert.equal(await f.store.approved(f.snapshot, f.config), true);
+  assert.equal((await f.run({ elicit: async () => assert.fail('A claimed request must not reopen') })).status, 'not-required');
+});
+
+test('wrong answers and learning/dispute requests stay in the native learning loop', async t => {
+  const f = await fixture(t, { grade: async (request, count) => count < 4
+    ? { verdict: request.dispute ? 'ambiguous' : 'incorrect', feedback: `PRIVATE_FEEDBACK_${count}`, followUp: { ...q, id: `transfer-${count}`, prompt: `Different scenario ${count}: can a retry duplicate this operation?` } }
+    : { verdict: 'correct', feedback: 'Understood.', followUp: null } });
+  const replies = [answer('No.'), { action: 'accept', content: { action: 'learn', response: 'IGNORE_THIS_FOR_LEARN' } },
+    { action: 'accept', content: { action: 'dispute', response: 'The timing is unspecified.' } }, answer('Yes, the write can repeat.')];
+  const forms = [];
+  const result = await f.run({ elicit: async form => { forms.push(form); return replies.shift(); } });
+  assert.equal(result.status, 'passed');
+  assert.equal(f.graded.length, 4);
+  assert.match(f.graded[1].answer, /I do not know/);
+  assert.doesNotMatch(f.graded[1].answer, /IGNORE_THIS/);
+  assert.equal(f.graded[2].dispute, true);
+  assert.deepEqual(f.graded.map(x => x.question.id), ['retry', 'transfer-1', 'transfer-2', 'transfer-3']);
+  assert.match(forms[2].message, /PRIVATE_FEEDBACK_2/);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_FEEDBACK/);
+});
+
+for (const response of [{ action: 'decline' }, { action: 'cancel' }, { action: 'accept', content: { action: 'pause' } }]) {
+  test(`${response.content?.action || response.action} leaves the assessment pending without grading`, async t => {
+    const f = await fixture(t);
+    const result = await f.run({ elicit: async () => response });
+    assert.equal(result.status, 'pending');
+    assert.equal(result.calls, 1);
+    assert.equal(f.graded.length, 0);
+    assert.equal(await f.store.approved(f.snapshot, f.config), false);
+    assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 0);
+  });
+}
+
+test('unsupported clients preserve requests and make no evaluator calls', async t => {
+  const f = await fixture(t);
+  const result = await f.run({ supportsForm: false, elicit: async () => assert.fail('No form support') });
+  assert.equal(result.status, 'unsupported');
+  assert.equal(f.generated(), 0);
+  assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 1);
+});
+
+test('pausing consumes the queued Git batch so later inspection commands do not reopen it', async t => {
+  const f = await fixture(t);
+  const other = { ...f.snapshot, id: 'b'.repeat(64), target: { ...f.snapshot.target, ref: 'refs/heads/release' } };
+  await queuePresentation(await f.store.ensure(other, f.config), { env: f.env });
+  let forms = 0;
+  assert.equal((await f.run({ elicit: async () => { forms++; return { action: 'cancel' }; } })).status, 'pending');
+  assert.equal(forms, 1);
+  assert.equal(f.generated(), 1);
+  assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 0);
+  assert.equal((await f.store.read(other.id)).status, 'pending');
+});
+
+test('empty queues do not start the evaluator or open a form', async () => {
+  const result = await runNativeCheckpoint({ cwd: '/unused', supportsForm: true, listRequests: async () => [],
+    elicit: async () => assert.fail('No form expected'), store: { start: async () => assert.fail('No model expected') } });
+  assert.equal(result.status, 'not-required');
+  assert.equal(result.calls, 0);
+});
+
+test('malformed forms are never submitted as answers', async t => {
+  const f = await fixture(t);
+  const replies = [answer('   '), { action: 'accept', content: { action: 'answer', response: 'Yes', expectedAnswer: 'Injected' } }, answer('Yes: both requests insert.')];
+  let calls = 0;
+  const result = await f.run({ elicit: async form => {
+    if (calls++) assert.match(form.message, /No answer was submitted/);
+    return replies.shift();
+  } });
+  assert.equal(result.status, 'passed');
+  assert.equal(f.graded.length, 1);
+});
+
+test('changed Git source while the form is open fails before grading', async t => {
+  const f = await fixture(t);
+  const result = await f.run({ elicit: async () => {
+    await writeFile(path.join(f.cwd, 'worker.js'), 'export const order = () => deduplicate();\n');
+    await f.git('add', 'worker.js');
+    await f.git('commit', '-m', 'Changed while answering');
+    return answer('Yes, it inserts again.');
+  } });
+  assert.equal(result.status, 'error');
+  assert.equal(f.graded.length, 0);
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+});
+
+test('changed policy while the form is open fails before grading', async t => {
+  const f = await fixture(t);
+  const result = await f.run({ elicit: async () => {
+    await saveConfig({ ...f.config, level: 'thorough' }, f.env);
+    return answer('Yes, it inserts again.');
+  } });
+  assert.equal(result.status, 'error');
+  assert.equal(f.graded.length, 0);
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+});
+
+test('a concurrently replaced question never receives the stale human answer', async t => {
+  const f = await fixture(t, { grade: async () => ({ verdict: 'incorrect', feedback: 'Revisit retries.',
+    followUp: { ...q, id: 'replacement', prompt: 'Can a retried background job repeat this write?' } }) });
+  const result = await f.run({ elicit: async () => {
+    await f.store.answer(f.snapshot.id, 'Another client answered this.', f.config);
+    return answer('STALE_NATIVE_RESPONSE');
+  } });
+  assert.equal(result.status, 'error');
+  assert.equal(f.graded.length, 1);
+  assert.doesNotMatch(JSON.stringify(f.graded), /STALE_NATIVE_RESPONSE/);
+});
+
+test('abort while grading does not record a receipt or disclose evaluator output', async t => {
+  const controller = new AbortController();
+  const f = await fixture(t, { grade: async () => {
+    controller.abort();
+    return { verdict: 'correct', feedback: 'PRIVATE_LAST_GRADE', followUp: null };
+  } });
+  const result = await f.run({ signal: controller.signal, elicit: async () => answer('Yes.') });
+  assert.equal(result.status, 'pending');
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+  assert.equal((await f.store.read(f.snapshot.id)).index, 0);
+  assert.equal(result.calls, 2);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_LAST_GRADE/);
+});
+
+test('source changes during final grading prevent completion', async t => {
+  let f;
+  f = await fixture(t, { grade: async () => {
+    await writeFile(path.join(f.cwd, 'worker.js'), 'export const order = () => changed();\n');
+    await f.git('add', '--all');
+    await f.git('commit', '-m', 'Changed during grading');
+    return { verdict: 'correct', feedback: 'This was correct for the old source.', followUp: null };
+  } });
+  const result = await f.run({ elicit: async () => answer('Yes.') });
+  assert.equal(result.status, 'error');
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+});
+
+test('provider errors never escape through the coding-agent result', async t => {
+  const f = await fixture(t, { grade: async () => { throw new Error('PROVIDER_ERROR_WITH_PRIVATE_FEEDBACK'); } });
+  const result = await f.run({ elicit: async () => answer('Yes.') });
+  assert.equal(result.status, 'error');
+  assert.equal(result.calls, 2);
+  assert.doesNotMatch(JSON.stringify(result), /PROVIDER_ERROR|feedback/i);
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+});
+
+test('mismatched queue metadata cannot open a different repository assessment', async t => {
+  const f = await fixture(t);
+  const result = await f.run({ listRequests: async () => [{ id: f.snapshot.id, repoRoot: '/different' }], claimRequest: async () => true,
+    elicit: async () => assert.fail('No form expected') });
+  assert.equal(result.status, 'error');
+  assert.equal(f.generated(), 0);
+});

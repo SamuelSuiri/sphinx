@@ -1,0 +1,133 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DEFAULT_CONFIG, loadConfig, REPOSITORY_CONFIG_KEYS, writeJson } from '../src/config.js';
+import { initializeRepository } from '../src/repo-config.js';
+
+async function fixture(t) {
+  const root = await mkdtemp(join(tmpdir(), 'sphinx-repo-config-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const repoRoot = join(root, 'repo');
+  await mkdir(repoRoot);
+  const env = { SPHINX_HOME: join(root, 'state'), SPHINX_USER_HOME: join(root, 'home') };
+  return { repoRoot, env, config: structuredClone(DEFAULT_CONFIG) };
+}
+
+test('initialization creates readable repository policy and ignore template without global settings', async t => {
+  const args = await fixture(t);
+  const result = await initializeRepository({ ...args, overrides: { branches: ['main'], level: 'thorough', events: ['pre-push', 'pre-commit'] } });
+  assert.deepEqual(result.created, [join(args.repoRoot, '.sphinxconfig'), join(args.repoRoot, '.sphinxignore')]);
+  assert.deepEqual(result.preserved, []);
+  assert.deepEqual(result.config.branches, ['main']);
+  assert.equal(result.config.level, 'thorough');
+  assert.deepEqual(Object.keys(result.config), [...REPOSITORY_CONFIG_KEYS]);
+  assert.equal(result.config.provider, undefined);
+  assert.equal(result.config.maxModelCalls, undefined);
+  const effective = await loadConfig(args.repoRoot, args.env);
+  assert.deepEqual(effective.branches, ['main']);
+  assert.equal(effective.level, 'thorough');
+  assert.match(await readFile(result.ignorePath, 'utf8'), /before content is read/);
+  assert.match(await readFile(result.ignorePath, 'utf8'), /\.env/);
+});
+
+test('generic defaults inherit configured branches and local policy choices', async t => {
+  const args = await fixture(t);
+  args.config.branches = ['release/*'];
+  args.config.level = 'relaxed';
+  args.config.mode = 'advisory';
+  const result = await initializeRepository(args);
+  assert.deepEqual(result.config.branches, ['release/*']);
+  assert.equal(result.config.level, 'relaxed');
+  assert.equal(result.config.mode, 'advisory');
+});
+
+test('initialization preserves existing canonical policy and ignore rules byte for byte', async t => {
+  const args = await fixture(t);
+  const configPath = join(args.repoRoot, '.sphinxconfig');
+  const ignorePath = join(args.repoRoot, '.sphinxignore');
+  const policy = '{"branches":["protected"],"level":"relaxed"}\n';
+  const ignore = '# custom comments\nprivate/\n';
+  await writeFile(configPath, policy);
+  await writeFile(ignorePath, ignore);
+  const result = await initializeRepository({ ...args, overrides: { branches: ['main'], level: 'thorough' } });
+  assert.deepEqual(result.created, []);
+  assert.deepEqual(result.preserved, [configPath, ignorePath]);
+  assert.equal(await readFile(configPath, 'utf8'), policy);
+  assert.equal(await readFile(ignorePath, 'utf8'), ignore);
+  assert.deepEqual(result.config, { branches: ['protected'], level: 'relaxed' });
+});
+
+test('legacy migration retains exactly the existing policy fields and keeps the legacy file', async t => {
+  const args = await fixture(t);
+  const legacyPath = join(args.repoRoot, '.sphinx.json');
+  const legacy = { branches: ['release/*'], exclude: ['private/**'], mode: 'advisory' };
+  await writeJson(legacyPath, legacy);
+  const oldText = await readFile(legacyPath, 'utf8');
+  const before = await loadConfig(args.repoRoot, args.env);
+  const result = await initializeRepository(args);
+  assert.deepEqual(result.config, legacy);
+  assert.deepEqual(await loadConfig(args.repoRoot, args.env), before);
+  assert.equal(await readFile(legacyPath, 'utf8'), oldText);
+  assert.ok(result.preserved.includes(legacyPath));
+  assert.ok(result.created.includes(join(args.repoRoot, '.sphinxconfig')));
+});
+
+test('explicit creation overrides apply during legacy migration without removing old exclusions', async t => {
+  const args = await fixture(t);
+  await writeJson(join(args.repoRoot, '.sphinx.json'), { branches: ['old'], exclude: ['private/**'] });
+  const result = await initializeRepository({ ...args, overrides: { branches: ['main'], exclude: ['generated/**'] } });
+  assert.deepEqual(result.config.branches, ['main']);
+  assert.deepEqual(result.config.exclude, ['private/**', 'generated/**']);
+});
+
+test('invalid overrides and existing policy values fail before creating either file', async t => {
+  const args = await fixture(t);
+  for (const overrides of [{ provider: 'claude' }, { branches: 'main' }, { mode: 'unknown' }, { enabled: 1 }, { exclude: [null] }, null]) {
+    await assert.rejects(initializeRepository({ ...args, overrides }), /cannot set|configuration|JSON object/i);
+    await assert.rejects(stat(join(args.repoRoot, '.sphinxconfig')), { code: 'ENOENT' });
+    await assert.rejects(stat(join(args.repoRoot, '.sphinxignore')), { code: 'ENOENT' });
+  }
+  await writeJson(join(args.repoRoot, '.sphinx.json'), { maxModelCalls: 100 });
+  await assert.rejects(initializeRepository(args), /cannot set maxModelCalls/);
+  await assert.rejects(stat(join(args.repoRoot, '.sphinxconfig')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(args.repoRoot, '.sphinxignore')), { code: 'ENOENT' });
+});
+
+test('symlinks and directories are refused without modifying their targets or creating another file', async t => {
+  const args = await fixture(t);
+  const target = join(args.repoRoot, '.env');
+  await writeFile(target, 'SECRET_CONTENT');
+  for (const filename of ['.sphinxconfig', '.sphinx.json', '.sphinxignore']) {
+    const file = join(args.repoRoot, filename);
+    await symlink(target, file);
+    await assert.rejects(initializeRepository(args), /symlink/);
+    assert.equal(await readFile(target, 'utf8'), 'SECRET_CONTENT');
+    if (filename !== '.sphinxconfig') await assert.rejects(stat(join(args.repoRoot, '.sphinxconfig')), { code: 'ENOENT' });
+    await rm(file);
+  }
+  await mkdir(join(args.repoRoot, '.sphinxignore'));
+  await assert.rejects(initializeRepository(args), /non-regular/);
+  await assert.rejects(stat(join(args.repoRoot, '.sphinxconfig')), { code: 'ENOENT' });
+});
+
+test('canonical policy wins during initialization without parsing shadowed legacy contents', async t => {
+  const args = await fixture(t);
+  await writeJson(join(args.repoRoot, '.sphinxconfig'), { branches: ['main'] });
+  await writeFile(join(args.repoRoot, '.sphinx.json'), 'not JSON');
+  const result = await initializeRepository(args);
+  assert.deepEqual(result.config, { branches: ['main'] });
+  assert.ok(result.preserved.includes(join(args.repoRoot, '.sphinx.json')));
+  assert.equal(await readFile(join(args.repoRoot, '.sphinx.json'), 'utf8'), 'not JSON');
+});
+
+test('repeated initialization creates no new files and keeps stable policy bytes', async t => {
+  const args = await fixture(t);
+  const first = await initializeRepository(args);
+  const content = await readFile(first.configPath, 'utf8');
+  const second = await initializeRepository(args);
+  assert.deepEqual(second.created, []);
+  assert.deepEqual(second.config, first.config);
+  assert.equal(await readFile(first.configPath, 'utf8'), content);
+});

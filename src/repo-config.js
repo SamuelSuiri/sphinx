@@ -1,0 +1,66 @@
+import { lstat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { loadConfig, readJson, repositoryConfigInfo, REPOSITORY_CONFIG_KEYS, validateConfig, validateRepositoryConfig } from './config.js';
+
+export const REPOSITORY_IGNORE_TEMPLATE = `# Files excluded from Sphinx assessments before content is read.
+# Add project-specific private or generated paths below.
+# Examples (uncomment as needed):
+# dist/
+# coverage/
+# **/*.generated.*
+# /private-notes/
+
+# Supports *, **, ?, leading /, trailing /, and local ! exceptions.
+# Built-in sensitive files, global ignores, and config exclusions cannot be restored.
+# .env/.env.*, private keys, and common credentials files are always excluded.
+`;
+
+async function regularFileOrMissing(file) {
+  try {
+    const info = await lstat(file);
+    if (!info.isFile()) throw new Error(`Cannot initialize over a symlink or non-regular file: ${file}`);
+    return true;
+  } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+async function createOnly(file, contents) {
+  try { await writeFile(file, contents, { flag: 'wx', mode: 0o644 }); return true; }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    await regularFileOrMissing(file);
+    return false;
+  }
+}
+
+/** Create repository policy files without overwriting existing policy or ignore rules. */
+export async function initializeRepository({ repoRoot, config, overrides = {}, env = process.env }) {
+  const root = path.resolve(repoRoot);
+  const defaults = config || await loadConfig(undefined, env);
+  validateConfig(defaults);
+  validateRepositoryConfig(overrides, { env, source: '.sphinxconfig overrides' });
+  const info = await repositoryConfigInfo(root);
+  const configPath = path.join(root, '.sphinxconfig');
+  const ignorePath = path.join(root, '.sphinxignore');
+  // Validate both existing policy files before making either mutation.
+  const existing = info.exists ? await readJson(info.path) : null;
+  if (info.exists) validateRepositoryConfig(existing, { env, source: path.basename(info.path) });
+  await regularFileOrMissing(ignorePath);
+  const base = existing || Object.fromEntries(REPOSITORY_CONFIG_KEYS.map(key => [key, structuredClone(defaults[key])]));
+  let local = { ...base, ...overrides };
+  if (Object.hasOwn(overrides, 'exclude')) local.exclude = [...new Set([...(base.exclude || []), ...overrides.exclude])];
+  validateRepositoryConfig(local, { env });
+
+  const created = [];
+  const preserved = [];
+  if (!info.exists || info.legacy) {
+    if (await createOnly(configPath, `${JSON.stringify(local, null, 2)}\n`)) created.push(configPath);
+    else preserved.push(configPath);
+  } else preserved.push(configPath);
+  // Re-read after exclusive creation to honor an existing file or a concurrent initializer.
+  local = await readJson(configPath);
+  validateRepositoryConfig(local, { env });
+  if (info.legacy || info.shadowed) preserved.push(info.legacy ? info.path : info.shadowed);
+  if (await createOnly(ignorePath, REPOSITORY_IGNORE_TEMPLATE)) created.push(ignorePath);
+  else preserved.push(ignorePath);
+  return { configPath, ignorePath, created, preserved, config: local };
+}

@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+coverage/
+*.tgz
+.sphinx/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,22 @@
+# Copy this file to .sphinxignore at your repository root and choose your exclusions.
+# Only committed/index metadata is inspected before these rules filter content.
+
+# Generated files and assets that should not enter a code-comprehension assessment.
+dist/
+coverage/
+**/*.generated.*
+*.min.js
+*.png
+*.jpg
+*.woff2
+
+# Use leading / for repository-root paths, or a bare name at any depth.
+/private-notes/
+
+# Negation can restore a path excluded earlier in this same file.
+# It cannot restore built-in sensitive files, global ignores, or config exclusions.
+!dist/handwritten.js
+
+# Sensitive defaults are always excluded: .env/.env.*, private keys,
+# common credentials JSON files, .netrc, .npmrc, .pypirc, and others.
+# Add machine-wide patterns to $SPHINX_HOME/ignore.

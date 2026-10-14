@@ -1,0 +1,338 @@
+import test, { after } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { commitSnapshot, manualSnapshot, matches, pushSnapshots, repository, revalidateSnapshot } from '../src/git.js';
+
+const exec = promisify(execFile);
+const home = await mkdtemp(join(tmpdir(), 'sphinx-git-home-'));
+const previousHome = process.env.SPHINX_HOME;
+process.env.SPHINX_HOME = home;
+after(async () => {
+  if (previousHome === undefined) delete process.env.SPHINX_HOME;
+  else process.env.SPHINX_HOME = previousHome;
+  await rm(home, { recursive: true, force: true });
+});
+
+const defaults = {
+  version: 1, enabled: true, provider: 'auto', model: null, level: 'standard', mode: 'block',
+  events: ['pre-push', 'pre-commit'], branches: ['main', 'master'], remotes: ['*'], exclude: [],
+  maxContextBytes: 120000, timeoutSeconds: 180, receiptHours: 24,
+};
+const zero = '0'.repeat(40);
+
+async function command(cwd, ...args) {
+  const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+  });
+  return stdout.trim();
+}
+
+async function fixture(t) {
+  const cwd = await mkdtemp(join(tmpdir(), 'sphinx-git-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await command(cwd, 'init', '-b', 'main');
+  await command(cwd, 'config', 'user.name', 'Sphinx test');
+  await command(cwd, 'config', 'user.email', 'sphinx@example.invalid');
+  return cwd;
+}
+
+async function commit(cwd, files, message = 'test change') {
+  for (const [name, body] of Object.entries(files)) {
+    const filename = join(cwd, name);
+    await mkdir(join(filename, '..'), { recursive: true });
+    await writeFile(filename, body);
+  }
+  await command(cwd, 'add', '--all');
+  await command(cwd, 'commit', '-m', message);
+  return command(cwd, 'rev-parse', 'HEAD');
+}
+
+function push(cwd, head, base = zero, config = defaults, extra = {}) {
+  return pushSnapshots({
+    cwd, remote: 'origin', remoteUrl: 'https://example.invalid/sphinx.git',
+    input: `refs/heads/main ${head} refs/heads/main ${base}\n`, config, ...extra,
+  });
+}
+
+test('initial push uses complete committed tree, never working-tree modifications', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'worker.js': 'export const operation = "committed";\n' });
+  await writeFile(join(cwd, 'worker.js'), 'UNCOMMITTED_SECRET\n');
+  const [snapshot] = await push(cwd, head);
+  assert.equal(snapshot.base, null);
+  assert.equal(snapshot.head, head);
+  assert.equal(snapshot.sourceRef, 'refs/heads/main');
+  assert.deepEqual(snapshot.files, ['worker.js']);
+  assert.deepEqual(snapshot.stats, { additions: 1, deletions: 0, files: 1 });
+  assert.match(snapshot.evidence, /committed/);
+  assert.doesNotMatch(snapshot.evidence, /UNCOMMITTED_SECRET/);
+  assert.equal(snapshot.repoRoot, (await repository(cwd)).root);
+});
+
+test('destination ref, rather than local branch, decides push coverage', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'a.txt': 'content\n' });
+  const snapshots = await push(cwd, head, zero, defaults, {
+    input: `refs/heads/feature ${head} refs/heads/main ${zero}\nrefs/heads/main ${head} refs/heads/preview ${zero}\n`,
+  });
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].target.ref, 'refs/heads/main');
+  assert.equal(snapshots[0].sourceRef, 'refs/heads/feature');
+});
+
+test('handles multiple refs while skipping deletions, unchanged refs, and tags', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'a.txt': 'content\n' });
+  const input = [
+    `refs/heads/main ${head} refs/heads/main ${zero}`,
+    `refs/heads/main ${head} refs/heads/master ${zero}`,
+    `(delete) ${zero} refs/heads/old ${head}`,
+    `refs/heads/main ${head} refs/heads/main ${head}`,
+    `refs/tags/v1 ${head} refs/tags/v1 ${zero}`,
+  ].join('\n');
+  assert.equal((await push(cwd, head, zero, defaults, { input })).length, 2);
+  assert.deepEqual(await push(cwd, head, zero, { ...defaults, remotes: ['upstream'] }), []);
+  assert.deepEqual(await push(cwd, head, zero, { ...defaults, enabled: false }), []);
+});
+
+test('force pushes compare destination tree directly, not a merge base', async t => {
+  const cwd = await fixture(t);
+  const base = await commit(cwd, { 'state.txt': 'original\n' });
+  const destination = await commit(cwd, { 'state.txt': 'destination-only\n' });
+  await command(cwd, 'checkout', '-b', 'replacement', base);
+  const head = await commit(cwd, { 'state.txt': 'replacement\n' });
+  const [snapshot] = await push(cwd, head, destination);
+  assert.match(snapshot.evidence, /-destination-only/);
+  assert.match(snapshot.evidence, /\+replacement/);
+});
+
+test('missing destination history fails with fetch instructions without fetching', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'a.txt': 'content\n' });
+  await assert.rejects(push(cwd, head, 'f'.repeat(40)), /Fetch the destination history with git fetch/);
+});
+
+test('identity binds destination, policy, and excluded changes', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'code.js': 'export const a = 1;\n', 'generated.txt': 'first\n' });
+  const config = { ...defaults, exclude: ['generated.txt'] };
+  const [first] = await push(cwd, head, zero, config);
+  const [again] = await push(cwd, head, zero, config);
+  const [policy] = await push(cwd, head, zero, { ...config, level: 'thorough' });
+  const [destination] = await push(cwd, head, zero, config, { remoteUrl: 'ssh://other/repo.git' });
+  const next = await commit(cwd, { 'generated.txt': 'second\n' });
+  const [excluded] = await push(cwd, next, zero, config);
+  assert.equal(first.id, again.id);
+  assert.notEqual(first.id, policy.id);
+  assert.notEqual(first.id, destination.id);
+  assert.notEqual(first.id, excluded.id);
+  assert.deepEqual(first.files, ['code.js']);
+  assert.deepEqual(first.omitted, ['generated.txt']);
+  assert.doesNotMatch(first.evidence, /\+first/);
+});
+
+test('staged evidence includes partial staging, excludes subsequent working edits', async t => {
+  const cwd = await fixture(t);
+  await commit(cwd, { 'code.js': 'export const a = 1;\n' });
+  await writeFile(join(cwd, 'code.js'), 'export const a = 2;\n');
+  await command(cwd, 'add', 'code.js');
+  await writeFile(join(cwd, 'code.js'), 'WORKING_TREE_SECRET\n');
+  const snapshot = await commitSnapshot({ cwd, config: defaults });
+  assert.match(snapshot.evidence, /\+export const a = 2/);
+  assert.doesNotMatch(snapshot.evidence, /WORKING_TREE_SECRET/);
+  assert.match(snapshot.tree, /^index:[a-f0-9]{64}$/);
+  assert.deepEqual(snapshot.stats, { additions: 1, deletions: 1, files: 1 });
+});
+
+test('supports unborn staged commits and returns null for an empty index diff', async t => {
+  const cwd = await fixture(t);
+  assert.equal(await commitSnapshot({ cwd, config: defaults }), null);
+  await writeFile(join(cwd, 'first.txt'), 'first\n');
+  await command(cwd, 'add', 'first.txt');
+  const snapshot = await commitSnapshot({ cwd, config: defaults });
+  assert.equal(snapshot.head, null);
+  assert.equal(snapshot.base, null);
+  assert.match(snapshot.evidence, /\+first/);
+  await command(cwd, 'commit', '-m', 'first');
+  assert.equal(await commitSnapshot({ cwd, config: defaults }), null);
+});
+
+test('manual check uses live remote and upstream destination, matching pre-push identity', async t => {
+  const cwd = await fixture(t);
+  const remote = await mkdtemp(join(tmpdir(), 'sphinx-remote-'));
+  t.after(() => rm(remote, { recursive: true, force: true }));
+  await command(remote, 'init', '--bare');
+  await command(cwd, 'remote', 'add', 'upstream', remote);
+  const base = await commit(cwd, { 'a.txt': 'base\n' });
+  await command(cwd, 'push', '--set-upstream', 'upstream', 'main');
+  const head = await commit(cwd, { 'a.txt': 'new\n' });
+  const manual = await manualSnapshot({ cwd, config: defaults });
+  const [hook] = await push(cwd, head, base, defaults, { remote: 'upstream', remoteUrl: remote });
+  assert.equal(manual.id, hook.id);
+  assert.equal(manual.target.remote, 'upstream');
+  assert.equal(manual.base, base);
+});
+
+test('never runs configured external diff or textconv', async t => {
+  const cwd = await fixture(t);
+  await commit(cwd, { '.gitattributes': '*.txt diff=dangerous\n', 'a.txt': 'before\n' });
+  const head = await commit(cwd, { 'a.txt': 'after\n' });
+  await command(cwd, 'config', 'diff.external', 'false');
+  await command(cwd, 'config', 'diff.dangerous.textconv', 'false');
+  const [snapshot] = await push(cwd, head);
+  assert.match(snapshot.evidence, /after/);
+});
+
+test('rejects oversized complete patches rather than silently truncating changes', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'large.txt': `${'large line\n'.repeat(2000)}` });
+  await assert.rejects(push(cwd, head, zero, { ...defaults, maxContextBytes: 3000 }), /exceeds maxContextBytes|size limit/);
+});
+
+test('large unchanged full-file context is explicitly omitted while complete diff remains assessable', async t => {
+  const cwd = await fixture(t);
+  const body = 'unchanged line\n'.repeat(1000);
+  const base = await commit(cwd, { 'large.txt': body });
+  const head = await commit(cwd, { 'large.txt': `changed line\n${body}` });
+  const [snapshot] = await push(cwd, head, base, { ...defaults, maxContextBytes: 4000 });
+  assert.deepEqual(snapshot.files, ['large.txt']);
+  assert.deepEqual(snapshot.omitted, []);
+  assert.deepEqual(snapshot.contextOmitted, ['large.txt']);
+  assert.match(snapshot.evidence, /Full-file source omitted/);
+  assert.ok(Buffer.byteLength(snapshot.evidence) <= 4000);
+});
+
+test('sensitive paths never enter evidence and cannot be unignored', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, {
+    'code.js': 'export const a = 1;\n', '.env': 'TOP_SECRET_TOKEN\n',
+    'nested/private.key': 'PRIVATE_KEY_MATERIAL\n', '.sphinxignore': '!.env\n!nested/private.key\n',
+  });
+  const [snapshot] = await push(cwd, head);
+  assert.deepEqual(snapshot.omitted, ['.env', 'nested/private.key']);
+  assert.doesNotMatch(snapshot.evidence, /TOP_SECRET_TOKEN|PRIVATE_KEY_MATERIAL/);
+  assert.equal(snapshot.stats.files, 2);
+});
+
+test('repository ignores filter content before retrieval and policy changes invalidate identity', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'code.js': 'okay\n', 'secret.data': 'NO_PEEK\n' });
+  await writeFile(join(cwd, '.sphinxignore'), 'secret.data\n');
+  const [first] = await push(cwd, head);
+  assert.doesNotMatch(first.evidence, /NO_PEEK/);
+  assert.doesNotMatch(first.evidence, /secret\.data/);
+  assert.doesNotMatch(first.evidence, /example\.invalid/);
+  await writeFile(join(cwd, '.sphinxignore'), 'secret.data\n# updated policy\n');
+  const [second] = await push(cwd, head);
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(first.files, ['code.js']);
+});
+
+test('pending snapshot validation rejects source, ignore-policy, and configuration changes', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'code.js': 'first\n' });
+  const [snapshot] = await push(cwd, head);
+  assert.equal(await revalidateSnapshot(snapshot, defaults), true);
+  await writeFile(join(cwd, 'code.js'), 'working edit\n');
+  assert.equal(await revalidateSnapshot(snapshot, defaults), true);
+  assert.equal(await revalidateSnapshot(snapshot, { ...defaults, level: 'thorough' }), false);
+  await writeFile(join(cwd, '.sphinxignore'), '*.tmp\n');
+  assert.equal(await revalidateSnapshot(snapshot, defaults), false);
+  await rm(join(cwd, '.sphinxignore'));
+  await commit(cwd, { 'code.js': 'second\n' });
+  assert.equal(await revalidateSnapshot(snapshot, defaults), false);
+});
+
+test('staged validation rejects index edits while allowing working-tree edits', async t => {
+  const cwd = await fixture(t);
+  await commit(cwd, { 'code.js': 'first\n' });
+  await writeFile(join(cwd, 'code.js'), 'second\n');
+  await command(cwd, 'add', 'code.js');
+  const snapshot = await commitSnapshot({ cwd, config: defaults });
+  assert.equal(await revalidateSnapshot(snapshot, defaults), true);
+  await writeFile(join(cwd, 'code.js'), 'third\n');
+  assert.equal(await revalidateSnapshot(snapshot, defaults), true);
+  await command(cwd, 'add', 'code.js');
+  assert.equal(await revalidateSnapshot(snapshot, defaults), false);
+});
+
+test('ignored-only changes need no checkpoint, including binary private keys', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { '.env': 'secret\n', 'private.key': Buffer.from([0, 1, 2, 3]) });
+  assert.deepEqual(await push(cwd, head), []);
+});
+
+test('binary source changes fail clearly while explicit exclusions allow other changes', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'image.bin': Buffer.from([0, 1, 2]), 'code.js': 'okay\n' });
+  await assert.rejects(push(cwd, head), /Cannot assess binary changes/);
+  const [snapshot] = await push(cwd, head, zero, { ...defaults, exclude: ['*.bin'] });
+  assert.deepEqual(snapshot.files, ['code.js']);
+});
+
+test('literal paths are safe even when their names resemble Git pathspec magic', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { ':(glob)*.txt': 'literal\n', 'other.txt': 'ordinary\n' });
+  const [snapshot] = await push(cwd, head, zero, { ...defaults, exclude: ['other.txt'] });
+  assert.deepEqual(snapshot.files, [':(glob)*.txt']);
+  assert.match(snapshot.evidence, /literal/);
+  assert.doesNotMatch(snapshot.evidence, /\+ordinary/);
+});
+
+test('NUL-separated path parsing preserves filenames containing tabs and newlines', async t => {
+  const cwd = await fixture(t);
+  const filename = 'strange\tname\nfile.js';
+  const head = await commit(cwd, { [filename]: 'export const okay = true;\n' });
+  const [snapshot] = await push(cwd, head);
+  assert.deepEqual(snapshot.files, [filename]);
+  assert.deepEqual(snapshot.stats, { additions: 1, deletions: 0, files: 1 });
+  assert.match(snapshot.evidence, /export const okay/);
+});
+
+test('mode-only changes remain visible and assessable', async t => {
+  const cwd = await fixture(t);
+  const base = await commit(cwd, { 'run.sh': '#!/bin/sh\nexit 0\n' });
+  await chmod(join(cwd, 'run.sh'), 0o755);
+  await command(cwd, 'add', 'run.sh');
+  await command(cwd, 'commit', '-m', 'make executable');
+  const head = await command(cwd, 'rev-parse', 'HEAD');
+  const [snapshot] = await push(cwd, head, base);
+  assert.deepEqual(snapshot.stats, { additions: 0, deletions: 0, files: 1 });
+  assert.match(snapshot.evidence, /new mode 100755/);
+});
+
+test('Git content commands receive only allowed paths, never ignored paths', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'code.js': 'okay\n', '.env': 'SECRET_TOKEN\n', 'private.data': 'SENSITIVE_DATA\n' });
+  await writeFile(join(cwd, '.sphinxignore'), 'private.data\n');
+  const realGit = (await exec('which', ['git'])).stdout.trim();
+  const shim = join(cwd, 'shim');
+  const log = join(cwd, 'git-calls.jsonl');
+  await mkdir(shim);
+  await writeFile(join(shim, 'git'), `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst child = require('node:child_process');\nconst args = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');\nconst result = child.spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\nprocess.exit(result.status ?? 1);\n`, { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${shim}:${previousPath}`;
+  try { await push(cwd, head); }
+  finally { process.env.PATH = previousPath; }
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(calls.some(args => args.includes('--name-only')));
+  assert.ok(calls.some(args => args.includes('blob')));
+  for (const args of calls) {
+    if (args.includes('diff') && !args.includes('--name-only')) {
+      assert.deepEqual(args.slice(args.indexOf('--') + 1), ['code.js']);
+    }
+    if (args.includes('blob')) assert.equal(args.at(-1), `${head}:code.js`);
+    assert.ok(!args.some(arg => arg.includes('.env') || arg.includes('private.data')));
+  }
+});
+
+test('branch and path glob semantics handle nested names', () => {
+  assert.equal(matches('release/*', 'release/team/stable'), true);
+  assert.equal(matches('*.js', 'src/main.js', { path: true }), false);
+  assert.equal(matches('**/*.js', 'main.js', { path: true }), true);
+  assert.equal(matches('**/*.js', 'src/main.js', { path: true }), true);
+});
