@@ -10,6 +10,8 @@ export const DEFAULT_CONFIG = {
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
   maxModelCalls: 10, maxOutputTokens: 4096, allowPaid: false,
+  agentMaxTurns: 8, toolResultBytes: 16000,
+  backgroundPreparation: true, preparationDebounceMs: 1500,
   models: {
     small: { provider: 'openrouter', model: 'openrouter/free' },
     medium: { provider: 'openrouter', model: 'openrouter/free' },
@@ -61,7 +63,7 @@ export function validateConfig(config) {
   const allowed = new Set(Object.keys(DEFAULT_CONFIG));
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
-  for (const key of ['enabled', 'allowPaid']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
+  for (const key of ['enabled', 'allowPaid', 'backgroundPreparation']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
   for (const [key, values] of Object.entries({ provider: ['openrouter','codex','claude','auto'], level: ['relaxed','standard','thorough'], mode: ['block','advisory'] })) {
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
@@ -70,7 +72,7 @@ export function validateConfig(config) {
     if (!Array.isArray(config[key]) || config[key].some(x => typeof x !== 'string' || !x.length)) fail(`${key} must be an array of nonempty strings`);
   }
   if (config.events.some(x => !['pre-push','pre-commit'].includes(x))) fail('events must use pre-push or pre-commit');
-  for (const [key, min, max] of [['maxContextBytes',1000,1000000],['timeoutSeconds',1,600],['receiptHours',1,720],['maxModelCalls',1,100],['maxOutputTokens',512,16384]]) {
+  for (const [key, min, max] of [['maxContextBytes',1000,1000000],['timeoutSeconds',1,600],['receiptHours',1,720],['maxModelCalls',1,100],['maxOutputTokens',512,16384],['agentMaxTurns',2,50],['toolResultBytes',1000,64000],['preparationDebounceMs',0,60000]]) {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) fail(`${key} must be an integer between ${min} and ${max}`);
   }
   if (!config.models || typeof config.models !== 'object') fail('models must define small, medium, and large routes');
@@ -95,7 +97,7 @@ function merged(base, overrides) {
   return { ...base, ...overrides, models: { ...base.models, ...overrides?.models }, routing: { ...base.routing, ...overrides?.routing } };
 }
 
-export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','mode','events','branches','remotes','exclude']);
+export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','mode','events','branches','remotes','exclude','backgroundPreparation']);
 
 export function validateRepositoryConfig(local, { env = process.env, source = '.sphinxconfig' } = {}) {
   if (!local || typeof local !== 'object' || Array.isArray(local)
@@ -146,7 +148,7 @@ export async function loadConfig(repoRoot, env = process.env) {
     const source = await repositoryConfigInfo(repoRoot);
     const local = source.exists ? await readJson(source.path) : {};
     validateRepositoryConfig(local, { env, source: path.basename(source.path) });
-    config = merged(config, {...local,exclude:[...new Set([...config.exclude,...(local.exclude||[])])]});
+    config = merged(config, {...local,exclude:[...new Set([...config.exclude,...(local.exclude||[])])],backgroundPreparation:config.backgroundPreparation && local.backgroundPreparation !== false});
   }
   return validateConfig(config);
 }

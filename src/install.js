@@ -6,6 +6,8 @@ import path from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { getPaths } from './config.js';
 import { nativeHookSpecs, installedHookSpecs, hasHook, addHook, removeHook, prepareMcp, commitMcp, rollbackMcp, removeMcp, inspectMcp } from './agent-settings.js';
+import { lifecycleHome, prepareCursorIntegration, prepareOpenCodeIntegration, removeLifecycleIntegration, lifecycleIntegrationStatus } from './lifecycle-integrations.js';
+import { preparePiIntegration, removePiIntegration, piIntegrationStatus, piIntegrationHome } from './pi-integration.js';
 
 // All documented Git hook names, including server, mail, p4, and fsmonitor hooks.
 const HOOKS = [
@@ -17,9 +19,11 @@ const HOOKS = [
   'p4-post-changelist', 'p4-pre-submit', 'post-index-change',
 ];
 const GATED = new Set(['pre-push', 'pre-commit']);
+const PREPARED = new Set(['post-commit', 'post-merge', 'post-rewrite', 'post-checkout']);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const AGENTS = ['codex', 'claude', 'pi', 'cursor', 'opencode'];
 
 function gitEnvironment(env) {
   // An explicit integration home must never write the caller's real global file.
@@ -118,6 +122,11 @@ function hookScript({ event, source, cliPath, home, id }) {
   if (GATED.has(event)) {
     return `${header}SPHINX_HOME=${quote(home)} SPHINX_INSTALL_ID=${quote(id)} exec ${quote(process.execPath)} ${quote(cliPath)} hook git ${quote(event)} "$@"\n`;
   }
+  if (PREPARED.has(event)) {
+    // The existing hook retains streaming stdin and its exit status. Scheduling
+    // has no terminal, runs asynchronously, and never gates the Git operation.
+    return `${header}${sourceShell(source)}hook="$hook_dir/${event}"\nstatus=0\nif [ -x "$hook" ]; then\n  "$hook" "$@"\n  status=$?\nfi\nif [ "\${SPHINX_EVALUATOR:-}" != "1" ]; then\n  SPHINX_HOME=${quote(home)} ${quote(process.execPath)} ${quote(cliPath)} prepare </dev/null >/dev/null 2>&1 &\nfi\nexit "$status"\n`;
+  }
   // Protocol hooks such as proc-receive must retain streaming stdin/stdout.
   // They exec the prior hook directly rather than buffering input in Node.
   return `${header}${sourceShell(source)}hook="$hook_dir/${event}"\nif [ -x "$hook" ]; then\n  exec "$hook" "$@"\nfi\nexit 0\n`;
@@ -146,13 +155,21 @@ async function executable(name, env) {
 }
 
 async function prepareAgents({ agents, paths, env, cliPath, manifest }) {
+  const integrationHome = name => name === 'pi'
+    ? piIntegrationHome(paths, env)
+    : ['cursor', 'opencode'].includes(name) ? lifecycleHome(name, paths, env) : paths[`${name}Home`];
   const selected = agents === 'auto'
-    ? (await Promise.all(['codex', 'claude'].map(async name =>
-      (await executable(name, env) || await exists(paths[`${name}Home`])) ? name : null))).filter(Boolean)
+    ? (await Promise.all(AGENTS.map(async name =>
+      (await executable(name, env) || await exists(integrationHome(name)) || manifest.agents[name]) ? name : null))).filter(Boolean)
     : agents === 'none' ? [] : Array.isArray(agents) ? agents : agents.split(',').map(x => x.trim());
-  if (selected.some(name => !['codex', 'claude'].includes(name))) throw new Error('--agents must be auto, none, codex, claude, or codex,claude.');
+  if ((!selected.length && agents !== 'auto' && agents !== 'none') || selected.some(name => !AGENTS.includes(name))) throw new Error('--agents must be auto, none, or a comma-separated list of codex, claude, pi, cursor, opencode.');
   const result = [];
   for (const name of new Set(selected)) {
+    if (['pi', 'cursor', 'opencode'].includes(name)) {
+      const prepare = name === 'pi' ? preparePiIntegration : name === 'cursor' ? prepareCursorIntegration : prepareOpenCodeIntegration;
+      result.push(await prepare(paths, { env, cliPath, previous: manifest.agents[name] }));
+      continue;
+    }
     const file = path.join(paths[`${name}Home`], name === 'codex' ? 'hooks.json' : 'settings.json');
     const document = await readJson(file, {});
     if (document.hooks !== undefined && (!document.hooks || typeof document.hooks !== 'object' || Array.isArray(document.hooks))) throw new Error(`Invalid hooks object in ${file}`);
@@ -222,11 +239,22 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     await chmod(file, 0o755);
     entry.files[event] = hash(content);
   }
+  entry.preparationVersion = 1;
   manifest.installs[id] = entry;
   await writeJson(paths.install, manifest);
   await git(['config', info.scope, '--replace-all', 'core.hooksPath', entry.hookDir], cwd, env);
   messages.push(`Git hooks installed ${repo ? `for ${info.root}` : 'for this user'}. Existing hooks are chained.`);
   for (const plan of agentPlans) {
+    if (plan.commit) {
+      await plan.commit();
+      try {
+        manifest.agents[plan.name] = plan.record;
+        await writeJson(paths.install, manifest);
+      } catch (error) { await plan.rollback(); throw error; }
+      messages.push(plan.name === 'pi' ? 'Pi extension installed with native human questionnaire dialogs.' : `${plan.name === 'cursor' ? 'Cursor lifecycle hooks' : 'OpenCode lifecycle plugin'} installed with automatic Sphinx terminal questionnaires.`);
+      warnings.push(...plan.warnings);
+      continue;
+    }
     const { name, file, document, handler, hooks, mcp, previous: prior, existed, emptyEvents } = plan;
     for (const spec of prior ? installedHookSpecs(prior) : []) removeHook(document, spec);
     for (const spec of hooks) addHook(document, spec);
@@ -287,6 +315,12 @@ export async function uninstall({ env = process.env, cwd = process.cwd(), repo =
   if (!repo) {
     for (const [name, installed] of Object.entries(manifest.agents)) {
       try {
+        if (['pi', 'cursor', 'opencode'].includes(name)) {
+          warnings.push(...await (name === 'pi' ? removePiIntegration : removeLifecycleIntegration)(paths, installed));
+          delete manifest.agents[name];
+          messages.push(`Removed managed ${name} integration; any user edits were preserved.`);
+          continue;
+        }
         const document = await readJson(installed.file, {});
         let removed = false;
         for (const spec of installedHookSpecs(installed)) {
@@ -357,17 +391,27 @@ export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
     const entry = Object.values(manifest.installs).find(item => item.hookDir === effective);
     checks.push({ name: 'Current repository', ok: !!entry, detail: entry ? `Sphinx active: ${effective}` : 'Not covered. A local, worktree, or conditional override may require sphinx install --repo.' });
     if (entry) {
-      for (const name of GATED) {
+      for (const name of [...GATED, ...PREPARED]) {
         const file = path.join(entry.hookDir, name);
         const content = await readFile(file).catch(() => null);
         let runnable = false;
         try { await access(file, constants.X_OK); runnable = true; } catch {}
-        checks.push({ name: `${name} dispatcher`, ok: runnable && content !== null && hash(content) === entry.files[name], detail: file });
+        const preparationCurrent = !PREPARED.has(name) || entry.preparationVersion === 1;
+        checks.push({ name: `${name} dispatcher`, ok: preparationCurrent && runnable && content !== null && hash(content) === entry.files[name], detail: preparationCurrent ? file : 'Background preparation hooks need updating. Run sphinx install.' });
       }
     }
   } catch { checks.push({ name: 'Current repository', ok: true, detail: 'Not inside a Git repository; global installation still applies to other repositories.' }); }
-  for (const name of ['codex', 'claude']) {
+  for (const name of AGENTS) {
     const installed = manifest.agents[name];
+    if (['pi', 'cursor', 'opencode'].includes(name)) {
+      const result = await (name === 'pi' ? piIntegrationStatus : lifecycleIntegrationStatus)(paths, { record: installed, env });
+      checks.push({ name: `${name} integration`, ok: installed ? result.healthy : true, detail: !installed
+        ? `Not selected. Optional: sphinx install --agents ${name}.`
+        : !result.healthy ? `Integration is missing or changed. Run sphinx install --agents ${name}.`
+          : name === 'pi' ? `${result.file}; native human dialogs configured. Run /reload in Pi; dialog support is required.`
+            : `${result.file}; automatic Sphinx terminal questionnaires configured for supported desktops. Human answers stay in that terminal; headless sessions use a manual fallback${name === 'cursor' ? '; local sessions only, not cloud agents' : '; OpenCode 1.x plugin'}.` });
+      continue;
+    }
     let present = false;
     if (installed) {
       try {

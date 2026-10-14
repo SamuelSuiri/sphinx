@@ -1,9 +1,10 @@
 # Sphinx
 
-Sphinx helps developers retain understanding of agent-assisted changes. Keep the core provider-neutral and the CLI dependency-free (Node.js 22+).
+Sphinx helps developers retain understanding of agent-assisted changes. Keep assessment policy provider-neutral. Use Node.js 22.19+ and the embedded Pi coding-agent SDK for the reviewer session, tool loop, and native compaction. Keep the Pi SDK and model transport dependencies pinned to the reviewed versions in package.json and package-lock.json.
 
 - Git decides when a checkpoint is required; an independent evaluator writes and grades questions.
-- Never inherit the coding conversation into an assessment. Use committed/staged evidence and a fresh evaluator process.
+- Never inherit the coding conversation into an assessment. Use committed/staged evidence and a fresh isolated reviewer session. Codex/Claude routes are isolated model transports underneath Pi, not persistent native reviewer sessions.
+- Keep Pi's discovered project resources and general-purpose tools disabled. Sphinx owns filtered immutable Git tools, exact evidence archives, project context, and per-request usage limits; do not add a parallel custom agent loop or compactor.
 - Assess consequences, failure modes, and invariants. A wrong answer leads to an explanation and a new transfer question.
 - Never treat model errors or ambiguous questions as successful completion.
 - Bind completion to exact Git content, destination, and policy. Agent and Git integrations share that state.

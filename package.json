@@ -3,14 +3,39 @@
   "version": "0.1.0",
   "description": "Outsource your thinking, not your understanding. A comprehension checkpoint for agent-assisted development.",
   "type": "module",
-  "bin": { "sphinx": "bin/sphinx.js" },
-  "engines": { "node": ">=22" },
+  "bin": {
+    "sphinx": "bin/sphinx.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "node --test",
     "check": "node --check bin/sphinx.js && node --test",
     "start": "node bin/sphinx.js"
   },
-  "files": ["bin", "src", "docs", "examples", ".sphinxconfig.example", ".sphinxignore.example", "README.md", "CONTRIBUTING.md", "LICENSE"],
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "examples",
+    ".sphinxconfig.example",
+    ".sphinxignore.example",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
   "license": "MIT",
-  "keywords": ["git", "hooks", "codex", "claude-code", "learning", "code-review"]
+  "keywords": [
+    "git",
+    "hooks",
+    "codex",
+    "claude-code",
+    "learning",
+    "code-review"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.2.0"
+  }
 }

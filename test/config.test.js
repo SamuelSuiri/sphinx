@@ -151,11 +151,22 @@ test('invalid token, timeout, spend, and routing settings fail validation', () =
     ['maxModelCalls', 0], ['maxModelCalls', 101], ['timeoutSeconds', 0], ['timeoutSeconds', 601],
     ['maxContextBytes', 999], ['maxContextBytes', 1000001], ['maxOutputTokens', 512.5],
     ['provider', 'unknown'], ['model', '   '], ['events', ['post-commit']],
+    ['backgroundPreparation','yes'], ['agentMaxTurns',1], ['agentMaxTurns',51],
+    ['toolResultBytes',999], ['toolResultBytes',64001], ['preparationDebounceMs',-1], ['preparationDebounceMs',60001],
   ];
   for (const [key, value] of invalid) assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), [key]: value }), /Invalid Sphinx configuration/);
   const badThreshold = structuredClone(DEFAULT_CONFIG);
   badThreshold.routing.largeMinLines = badThreshold.routing.smallMaxLines;
   assert.throws(() => validateConfig(badThreshold), /thresholds/);
+});
+
+test('repositories may opt out of preparation but cannot override a machine-wide opt-out', async t => {
+  const { repo, env, paths } = await fixture(t);
+  await writeJson(join(repo, '.sphinxconfig'), { backgroundPreparation: false });
+  assert.equal((await loadConfig(repo, env)).backgroundPreparation, false);
+  await writeJson(paths.config, { backgroundPreparation: false });
+  await writeJson(join(repo, '.sphinxconfig'), { backgroundPreparation: true });
+  assert.equal((await loadConfig(repo, env)).backgroundPreparation, false);
 });
 
 test('malformed config document shapes fail before merging defaults', async t => {

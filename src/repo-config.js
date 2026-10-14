@@ -1,6 +1,7 @@
 import { lstat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadConfig, readJson, repositoryConfigInfo, REPOSITORY_CONFIG_KEYS, validateConfig, validateRepositoryConfig } from './config.js';
+import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, PROJECT_CONTEXT_TEMPLATE } from './repo-context.js';
 
 export const REPOSITORY_IGNORE_TEMPLATE = `# Files excluded from Sphinx assessments before content is read.
 # Add project-specific private or generated paths below.
@@ -33,7 +34,7 @@ async function createOnly(file, contents) {
 }
 
 /** Create repository policy files without overwriting existing policy or ignore rules. */
-export async function initializeRepository({ repoRoot, config, overrides = {}, env = process.env }) {
+export async function initializeRepository({ repoRoot, config, overrides = {}, context, env = process.env }) {
   const root = path.resolve(repoRoot);
   const defaults = config || await loadConfig(undefined, env);
   validateConfig(defaults);
@@ -41,10 +42,13 @@ export async function initializeRepository({ repoRoot, config, overrides = {}, e
   const info = await repositoryConfigInfo(root);
   const configPath = path.join(root, '.sphinxconfig');
   const ignorePath = path.join(root, '.sphinxignore');
+  const contextPath = path.join(root, PROJECT_CONTEXT_FILE);
   // Validate both existing policy files before making either mutation.
   const existing = info.exists ? await readJson(info.path) : null;
   if (info.exists) validateRepositoryConfig(existing, { env, source: path.basename(info.path) });
   await regularFileOrMissing(ignorePath);
+  await regularFileOrMissing(contextPath);
+  if (context !== undefined && (typeof context !== 'string' || !context.trim() || context.includes('\0') || Buffer.byteLength(context) > PROJECT_CONTEXT_MAX_BYTES)) throw new Error(`Project context must be nonempty text of at most ${PROJECT_CONTEXT_MAX_BYTES} bytes.`);
   const base = existing || Object.fromEntries(REPOSITORY_CONFIG_KEYS.map(key => [key, structuredClone(defaults[key])]));
   let local = { ...base, ...overrides };
   if (Object.hasOwn(overrides, 'exclude')) local.exclude = [...new Set([...(base.exclude || []), ...overrides.exclude])];
@@ -62,5 +66,7 @@ export async function initializeRepository({ repoRoot, config, overrides = {}, e
   if (info.legacy || info.shadowed) preserved.push(info.legacy ? info.path : info.shadowed);
   if (await createOnly(ignorePath, REPOSITORY_IGNORE_TEMPLATE)) created.push(ignorePath);
   else preserved.push(ignorePath);
-  return { configPath, ignorePath, created, preserved, config: local };
+  if (await createOnly(contextPath, context === undefined ? PROJECT_CONTEXT_TEMPLATE : `${context.trim()}\n`)) created.push(contextPath);
+  else preserved.push(contextPath);
+  return { configPath, ignorePath, contextPath, created, preserved, config: local };
 }

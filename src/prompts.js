@@ -79,11 +79,15 @@ export async function askInstall(config, initial, prompts) {
       }
     } else if (choice !== 'keep') values.provider = choice;
   }
-  if (values.agents === undefined) values.agents = await prompts.choose({ title: 'Connect your coding agents', description: 'Lifecycle hooks open native questionnaires automatically. You answer Sphinx directly; your coding model receives only the outcome. Existing integrations are preserved.', current: 'auto', choices: [
-    { value: 'auto', label: 'Detect installed agents', description: 'Add user-level native questionnaire hooks and an MCP connection for available Codex and Claude Code installations.' },
+  if (values.agents === undefined) values.agents = await prompts.choose({ title: 'Connect your coding agents', description: 'Hooks open a native questionnaire or a dedicated Sphinx terminal automatically. You answer directly; your coding model receives only the outcome. Existing integrations are preserved.', current: 'auto', choices: [
+    { value: 'auto', label: 'Detect installed agents', description: 'Connect available Codex, Claude Code, Pi, Cursor, and OpenCode installations.' },
+    { value: 'codex,claude,pi,cursor,opencode', label: 'All supported agents', description: 'Configure all five clients, including ones you plan to install later.' },
     { value: 'codex,claude', label: 'Codex and Claude Code', description: 'Configure both agents, including ones you plan to install later.' },
     { value: 'codex', label: 'Codex only', description: 'Add Codex instructions. Review and trust the hook in /hooks after setup.' },
     { value: 'claude', label: 'Claude Code only', description: 'Add Claude Code instructions. Start a new session after setup.' },
+    { value: 'pi', label: 'Pi only', description: 'Show questions directly in Pi dialogs. Run /reload after setup.' },
+    { value: 'cursor', label: 'Cursor only', description: 'Open a dedicated Sphinx terminal from local Cursor sessions. Start a new session after setup.' },
+    { value: 'opencode', label: 'OpenCode only', description: 'Open a dedicated Sphinx terminal from OpenCode 1.x. Restart OpenCode after setup.' },
     { value: 'none', label: 'Git and terminal only', description: 'Do not add agent integrations. Use sphinx check in your terminal.' },
   ] });
   return values;

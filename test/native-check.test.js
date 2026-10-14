@@ -50,8 +50,8 @@ async function fixture(t, { questions = [q], grade, validate, sourceLines = 1 } 
     await validate?.(current, settings);
   };
   const store = createSessionStore({ env, validate: check,
-    generate: async () => { generated++; return { questions: structuredClone(questions) }; },
-    grade: async request => { graded.push(request); return grade ? grade(request, graded.length) : { verdict: 'correct', feedback: 'FEEDBACK_PRIVATE', followUp: null }; },
+    generate: async (_snapshot, _config, { beforeCall }) => { await beforeCall(); generated++; return { questions: structuredClone(questions) }; },
+    grade: async request => { await request.beforeCall(); graded.push(request); return grade ? grade(request, graded.length) : { verdict: 'correct', feedback: 'FEEDBACK_PRIVATE', followUp: null }; },
   });
   const session = await store.ensure(snapshot, config);
   await queuePresentation(session, { env });

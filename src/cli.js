@@ -4,7 +4,7 @@ import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, validateConfig, repositoryConfigInfo } from './config.js';
+import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
 import { initializeRepository } from './repo-config.js';
 import * as git from './git.js';
 import { install, uninstall, doctor, dispatchHook } from './install.js';
@@ -15,12 +15,14 @@ import { createTerminal, withProgress } from './terminal.js';
 import { HELP, printHelp } from './help.js';
 import { askInstall, askPolicy, createPrompts, questionCapsText, routeText, splitList } from './prompts.js';
 import { queuePresentation } from './presentations.js';
+import { loadProjectContext } from './repo-context.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', ...POLICY_FLAGS],
-  init: ['yes', 'json', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged'],
+  init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged'],
+  prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json'], doctor: ['json'], auth: [], uninstall: ['repo'],
   mcp: [],
@@ -56,7 +58,7 @@ async function repoConfig(cwd = process.cwd()) {
   return { repo, config: await loadConfig(repo.root) };
 }
 const store = createSessionStore({ validate: async (snapshot, config) => {
-  if (!(await git.revalidateSnapshot(snapshot, config))) throw new Error('The code or ignore policy changed since this checkpoint. Retry the Git operation or run sphinx check with an explicit target.');
+  if (policyHash(await loadConfig(snapshot.repoRoot)) !== policyHash(config) || !(await git.revalidateSnapshot(snapshot, config))) throw new Error('The code, project context, or policy changed since this checkpoint. Retry the Git operation or run sphinx check with an explicit target.');
 } });
 
 async function gate({ event, args, input, cwd }) {
@@ -90,7 +92,10 @@ export function applyInstallOptions(current, values) {
   for (const tier of ['small', 'medium', 'large']) if (values[tier] !== undefined) config.models[tier] = parseRoute(values[tier]);
   if (values['allow-paid']) config.allowPaid = true;
   validateConfig(config);
-  if (values.agents !== undefined && !['auto', 'codex', 'claude', 'codex,claude', 'claude,codex', 'none'].includes(values.agents)) throw new Error('--agents must be auto, codex, claude, codex,claude, or none.');
+  if (values.agents !== undefined && !['auto', 'none'].includes(values.agents)) {
+    const selected = values.agents.split(',');
+    if (!selected.length || new Set(selected).size !== selected.length || selected.some(name => !['codex', 'claude', 'pi', 'cursor', 'opencode'].includes(name))) throw new Error('--agents must be auto, none, or a comma-separated selection of codex, claude, pi, cursor, opencode.');
+  }
   for (const route of Object.values(config.models)) {
     if (route.provider === 'openrouter' && route.model && route.model !== 'openrouter/free' && !route.model.endsWith(':free') && !config.allowPaid) throw new Error(`Model ${route.model} may be paid. Explicitly pass --allow-paid or choose a free route.`);
   }
@@ -103,6 +108,7 @@ function policyRows(config) {
     ['Push checkpoints', enabled && config.events.includes('pre-push') ? `Destination branches: ${config.branches.join(', ') || 'none'}. Remotes: ${config.remotes.join(', ') || 'none'}.` : 'Off. Local pushes are not checked by this policy.'],
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
+    ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
     ['Behavior', !enabled ? 'Disabled for this repository' : config.mode === 'block' ? 'Pause the Git operation until the check is complete' : 'Advisory: record a check and allow the Git operation'],
   ];
 }
@@ -180,7 +186,14 @@ async function initCommand(initial) {
   const overrides = {};
   for (const key of ['level', 'mode']) if (values[key] !== undefined) overrides[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) overrides[key] = splitList(values[key]);
-  const result = await initializeRepository({ repoRoot: repo.root, config, overrides });
+  let context = values.context;
+  if (context === undefined && !initial.yes && !initial.json && process.stdin.isTTY && !(await loadProjectContext(repo.root)).text) {
+    terminal.section('Project context');
+    terminal.paragraph('Describe what this project does and its key workflows. This background is included in every review; you can expand .sphinxcontext.md later.');
+    const answer = await withReadline(ask => ask('\nProject description (Enter to create a template): '));
+    if (answer.trim()) context = answer.trim();
+  }
+  const result = await initializeRepository({ repoRoot: repo.root, config, overrides, context });
   if (initial.json) { json(result); return 0; }
   terminal.blank();
   for (const file of result.created) terminal.success(`Created ${path.basename(file)}`);
@@ -188,6 +201,7 @@ async function initCommand(initial) {
   if (info.exists && !info.legacy && Object.keys(overrides).length) terminal.warning('The existing .sphinxconfig was preserved; command-line overrides were not applied. Edit that file to change its policy.');
   terminal.section('Effective repository policy'); printConfiguration(terminal, await loadConfig(repo.root), { routes: false });
   terminal.blank(); terminal.paragraph('Add project-specific sensitive or generated paths to .sphinxignore before an assessment.');
+  terminal.paragraph('Keep .sphinxcontext.md current with the project purpose, workflows, and architecture boundaries. The reviewer receives it every time.');
   terminal.note('This command does not install Git hooks. Check coverage with sphinx status.'); return 0;
 }
 
@@ -216,7 +230,7 @@ async function checkCommand(values) {
     session = await store.ensure(snapshot, config);
   }
   if (!values.json && !process.stdin.isTTY) throw new Error('Use sphinx check --json from a coding agent, or run in an interactive terminal.');
-  let state = await withProgress(`Preparing questions with ${routeText(session.route)}`, () => store.start(session.id, config), { enabled: !values.json });
+  let state = await withProgress(session.questions.length ? 'Loading prepared questions' : `Reviewing the change with ${routeText(session.route)}`, () => store.start(session.id, config), { enabled: !values.json });
   if (values.json) { json(state); return 0; }
   const terminal = ui(); terminal.section('Understanding check'); terminal.paragraph('This is open-book. Inspect the code when useful; explain the behavior in your own words.');
   return withReadline(async ask => {
@@ -228,7 +242,7 @@ async function checkCommand(values) {
       const dispute = answer.startsWith('/dispute '), learn = answer === '/learn';
       if (answer === '/dispute') { terminal.warning('Add a reason: /dispute <what is ambiguous or unsupported>'); continue; }
       if (answer.startsWith('/') && !dispute && !learn) { terminal.warning('Use /learn, /dispute <reason>, or /quit; otherwise enter your answer.'); continue; }
-      state = await withProgress(learn ? 'Preparing an explanation and new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : dispute ? answer.slice(9) : answer, config, { dispute, learn }));
+      state = await withProgress(learn ? 'Preparing an explanation and new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: state.question.id }));
     }
     printSession(state, terminal); return 0;
   });
@@ -245,8 +259,10 @@ function printPending(terminal, pending) {
 
 async function statusCommand(command, values) {
   const { repo, config } = await repoConfig(), pending = [];
+  const { preparationStatus } = await import('./preparation.js');
+  const preparation = command === 'status' ? await preparationStatus({ cwd: repo.root }) : null;
   for (const session of await store.pending(repo.root)) if (await git.revalidateSnapshot(session.snapshot, config)) pending.push(store.public(session));
-  if (values.json) { json(command === 'status' ? { repo: repo.root, config, pending } : pending); return 0; }
+  if (values.json) { json(command === 'status' ? { repo: repo.root, config, pending, preparation } : pending); return 0; }
   const terminal = ui();
   if (command === 'pending') { terminal.section('Pending assessments'); printPending(terminal, pending); return 0; }
   const info = await repositoryConfigInfo(repo.root), report = await doctor();
@@ -257,6 +273,7 @@ async function statusCommand(command, values) {
   terminal.rows([['Repository', repo.root], ['Current local branch', branch], ['Git integration', active ? 'Active · Sphinx dispatchers are configured' : 'Not active or needs repair · run sphinx doctor'], ['Repository policy', info.exists ? `${info.path}${info.legacy ? ' (legacy)' : ''}` : 'Global defaults; use sphinx init to create .sphinxconfig']]);
   if (info.shadowed) terminal.warning(`${info.shadowed} is ignored because .sphinxconfig takes precedence.`);
   terminal.section('Configured checkpoints'); printConfiguration(terminal, config, { routes: false });
+  if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : [])]);
   if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
   terminal.section('Pending assessments'); printPending(terminal, pending);
   terminal.blank(); terminal.note('Status uses local Git state only. Agent hook trust is not verified here.'); return 0;
@@ -283,6 +300,7 @@ export async function main(argv) {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
     provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
+    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' },
   } });
   const [command, id] = positionals;
   if (values.version) { if (values.json) json({ version: '0.1.0' }); else console.log('0.1.0'); return 0; }
@@ -295,6 +313,20 @@ export async function main(argv) {
   if (['answer', 'dispute'].includes(command) && !values.text?.trim()) throw new Error(`--text is required. Usage: ${HELP[command].usage}`);
   if (command === 'install') return installCommand(values);
   if (command === 'init') return initCommand(values);
+  if (command === 'prepare') {
+    if (values.worker && values.retry) throw new Error('--retry is for an explicit preparation request, not a worker.');
+    const { schedulePreparation, runPreparation } = await import('./preparation.js');
+    const result = values.worker
+      ? await runPreparation({ cwd: process.cwd() })
+      : await schedulePreparation({ cwd: process.cwd(), cliPath: CLI_PATH, retry: !!values.retry });
+    if (values.json) json(result);
+    else if (!values.worker) {
+      const terminal = ui(); terminal.section('Background preparation');
+      terminal.paragraph(`Review ${result.status}.${result.reason ? ` ${result.reason}` : ''}`);
+      terminal.note('Use sphinx status to inspect progress. Preparation never approves a push.');
+    }
+    return 0;
+  }
   if (command === 'auth') { await auth(); return 0; }
   if (command === 'uninstall') { printInstallationResult(ui(), await uninstall({ repo: !!values.repo })); return 0; }
   if (command === 'doctor') {
@@ -317,7 +349,7 @@ export async function main(argv) {
       if (info.shadowed) terminal.warning(`Legacy ${info.shadowed} is shadowed by .sphinxconfig.`);
     }
     terminal.section('Checkpoint policy'); printConfiguration(terminal, config);
-    terminal.section('Limits and exclusions'); terminal.rows([['Evidence', `${config.maxContextBytes.toLocaleString()} bytes per assessment`], ['Model timeout', `${config.timeoutSeconds} seconds per request`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
+    terminal.section('Limits and exclusions'); terminal.rows([['Reviewer context', `${config.maxContextBytes.toLocaleString()} bytes in active context; older investigation is compacted`], ['Tool result', `${config.toolResultBytes.toLocaleString()} bytes per page`], ['Reviewer turns', `Up to ${config.agentMaxTurns}, within the shared model-call budget`], ['Reviewer timeout', `${config.timeoutSeconds} seconds per investigation`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
     terminal.blank(); terminal.note('Edit the listed files to change settings. Use sphinx config --json for every effective field.'); return 0;
   }
   if (command === 'check') return checkCommand(values);

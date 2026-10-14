@@ -10,10 +10,17 @@ const policy = [
 ];
 
 export const HELP = {
+  prepare: {
+    summary: 'Prepare questions in the background before the next push.', usage: 'sphinx prepare [--retry] [--json]',
+    paragraphs: ['Installed post-commit, post-merge, post-rewrite, and post-checkout hooks schedule a debounced reviewer automatically. This command schedules the same preparation explicitly.', 'The reviewer investigates filtered Git evidence and project context, but never answers questions or approves a push. Preparation uses local remote-tracking refs; a different actual destination or remote base safely starts a fresh check.'],
+    groups: [['Preparation', [['--retry', 'Explicitly retry a failed preparation within the remaining assessment budget. Automatic hooks do not retry failures.']]], ['Output', common]],
+    examples: ['sphinx prepare', 'sphinx status', 'sphinx prepare --retry'],
+    footer: 'Set backgroundPreparation: false in your global config or repository .sphinxconfig to disable preparation. Models and call budgets remain machine-wide. Background work shares the check’s model-call budget.',
+  },
   mcp: {
     summary: 'Run the native questionnaire connection for your coding agent.',
     usage: 'sphinx mcp',
-    paragraphs: ['The installer registers this stdio MCP server automatically. Agent lifecycle hooks call it after Git queues a checkpoint; no coding-model decision or question relay is involved.', 'Input and output are JSON-RPC. Human answers arrive through native form elicitation, never as tool arguments. Without a queued Git checkpoint, the handler makes no model requests.'],
+    paragraphs: ['The installer registers this stdio MCP server for Codex and Claude Code. Their lifecycle hooks call it after Git queues a checkpoint; no coding-model decision or question relay is involved. Pi uses its own extension dialogs.', 'Input and output are JSON-RPC. Human answers arrive through native form elicitation, never as tool arguments. Without a queued Git checkpoint, the handler makes no model requests.'],
     groups: [['Output', [common[0]]]],
     examples: ['sphinx doctor'],
     footer: 'Usually you do not run this yourself. Restart the agent after installation and review Codex hook trust in /hooks. Outside a supported agent, use sphinx check in your own terminal.',
@@ -24,10 +31,11 @@ export const HELP = {
     paragraphs: [
       'Without flags, guided setup explains each choice. Existing model routes and policy remain the defaults when you rerun setup.',
       'Global Git hooks cover existing and new repositories using that Git configuration. Existing hooks run first. Repositories with their own core.hooksPath need --repo.',
-      'Codex and Claude Code use lifecycle hooks to open native Sphinx forms automatically after Git queues a checkpoint. You answer the form directly; the coding model receives only the outcome. Restart sessions after installation. Codex requires hook review and trust in /hooks.',
+      'Codex and Claude Code open native MCP forms after Git queues a checkpoint; Pi uses native extension dialogs. You answer directly and the coding model receives only status. Restart sessions after installation, or use /reload in Pi. Codex requires hook review and trust in /hooks.',
+      'Requires Node.js 22.19 or newer. Cursor and OpenCode automatically open a dedicated Sphinx terminal window on supported desktops and wait for your answers. The coding model receives only status. Restart those clients after installation. Headless or unavailable terminals fall back to sphinx check.',
     ],
     groups: [
-      ['Setup', [['--yes', 'Use existing settings, or first-install defaults, without questions. Explicit flags still apply.'], ['--repo', 'Chain the current repository’s hook override. Does not change global settings, model routes, or agent integrations.'], ['--agents <selection>', 'auto detects Codex/Claude (default); codex, claude, codex,claude, or none selects integrations explicitly.']]],
+      ['Setup', [['--yes', 'Use existing settings, or first-install defaults, without questions. Explicit flags still apply.'], ['--repo', 'Chain the current repository’s hook override. Does not change global settings, model routes, or agent integrations.'], ['--agents <selection>', 'auto detects clients (default); select codex, claude, pi, cursor, opencode, a comma-separated subset, or none for Git-only setup.']]],
       ['Checkpoint policy', policy],
       ['Evaluators and usage', [
         ['--provider <provider>', 'openrouter, codex, or claude. Explicitly sets all three size routes. Default: openrouter.'],
@@ -39,26 +47,26 @@ export const HELP = {
       ]], ['Output', [common[0]]],
     ],
     examples: ['sphinx install', 'sphinx install --yes --provider claude', 'sphinx install --small openrouter:openrouter/free --large claude:opus', 'sphinx install --repo'],
-    footer: 'OpenRouter needs an API key, even for free models. Codex/Claude use your existing CLI sign-in. The default call budget is 10 requests per assessment, including failed requests. Git hooks only queue checkpoints; the native questionnaire invokes the evaluator.',
+    footer: 'The reviewer runs in the embedded Pi SDK. OpenRouter needs an API key, even for free models; Codex/Claude routes use fresh isolated CLI calls with your existing sign-in. The default budget is 10 requests per assessment, including Pi compaction, grading, and failures. Automatic CLI windows use macOS Terminal or a graphical Linux/WSL terminal; macOS may require Terminal automation permission.',
   },
   init: {
     summary: 'Set up a repository policy and content exclusions.',
     usage: 'sphinx init [options]',
-    paragraphs: ['Creates .sphinxconfig (JSON policy) and .sphinxignore. Existing files are preserved. Defaults inherit your effective global policy, not the current checkout branch.', 'Legacy .sphinx.json policy is copied into a new .sphinxconfig when needed; the original remains. This command does not install hooks, change global settings, or call a model.'],
-    groups: [['Setup', [['--yes', 'Accept inherited defaults without prompts.'], ...policy]], ['Output', common]],
+    paragraphs: ['Creates .sphinxconfig (JSON policy), .sphinxignore, and .sphinxcontext.md (project purpose, workflows, and architecture). The reviewer receives project context every time. Existing files are preserved. Defaults inherit your effective global policy, not the current checkout branch.', 'Legacy .sphinx.json policy is copied into a new .sphinxconfig when needed; the original remains. This command does not install hooks, change global settings, or call a model.'],
+    groups: [['Setup', [['--yes', 'Accept inherited defaults without prompts.'], ['--context <description>', 'Initial project context when .sphinxcontext.md does not exist. Otherwise the existing file is preserved.'], ...policy]], ['Output', common]],
     examples: ['sphinx init', 'sphinx init --yes --branches main', 'sphinx init --events pre-push,pre-commit --level thorough', 'sphinx init --yes --json'],
     footer: 'Destination branches are where a push lands: pushing feature:main matches main. Add sensitive project paths to .sphinxignore before your first assessment.',
   },
   check: {
     summary: 'Start or resume an understanding check.', usage: 'sphinx check [options]',
-    paragraphs: ['Resumes a pending checkpoint for this repository. If none exists, prepares a check for the next push to your upstream. A fresh evaluator receives filtered Git evidence, not your coding conversation.', 'Small changes get one question. Larger changes use depth-based ceilings, with fewer questions when sufficient. Answer with a prediction and a brief reason; inspect the code when helpful. A missed concept gets an explanation and a replacement scenario about that concept.'],
+    paragraphs: ['Resumes a pending checkpoint, reusing matching background preparation. A fresh reviewer investigates immutable Git evidence with read-only diff, file, and search tools, using .sphinxcontext.md without your coding conversation. If preparation is still running, this waits for it instead of starting a duplicate review.', 'Small changes get one question. Larger changes use depth-based ceilings, with fewer questions when sufficient. Answer with a prediction and a brief reason; inspect the code when helpful. A missed concept gets an explanation and a replacement scenario about that concept.'],
     groups: [['Choose the change', [['--id <assessment-id>', 'Resume a specific pending checkpoint. Find IDs with sphinx pending.'], ['--staged', 'Assess the index for a pre-commit checkpoint, including partial staging.'], ['--remote <name>', 'Select the push remote instead of the upstream/default origin.'], ['--branch <name>', 'Select the destination branch for a manual push check.']]], ['During an interview', [['/learn', 'Explain the current concept and ask a new transfer question.'], ['/dispute <reason>', 'Review an ambiguous or unsupported premise. A dispute cannot complete a concept.'], ['/quit', 'Save progress and leave the operation pending.']]], ['Output', common]],
     examples: ['sphinx check', 'sphinx check --staged', 'sphinx check --remote origin --branch main', 'sphinx check --json'],
-    footer: 'Generation uses one model call; each answer, learning request, or dispute uses another. Resuming reuses existing questions. After completion, retry the original Git operation.',
+    footer: 'Pi manages the reviewer session, tools, and context compaction within Sphinx’s request budget. Each answer, learning request, or dispute uses one further call against archived evidence. Resuming reuses prepared questions. After completion, retry the original Git operation.',
   },
   answer: {
     summary: 'Submit an answer explicitly from the terminal.', usage: 'sphinx answer <assessment-id> --text <answer> [--json]',
-    paragraphs: ['This is a manual terminal interface. Agent integrations use native forms instead; the coding agent must not call this command for you. A correct answer clears a concept; an incorrect answer returns an explanation and a new question.'],
+    paragraphs: ['This is a manual terminal interface for the human. Use the integrated questionnaire when available; the coding agent must not call this command for you. A correct answer clears a concept; an incorrect answer returns an explanation and a new question.'],
     groups: [['Answer', [['--text <answer>', 'The human’s prediction and brief causal explanation. Quote the entire response.']]], ['Output', common]],
     examples: ["sphinx answer <assessment-id> --text 'No, the transaction rolls back both writes.' --json"],
   },
@@ -85,7 +93,7 @@ export function printHelp(ui, command, { json = false } = {}) {
     ui.rows([['sphinx check', 'Start or resume the interview.'], ['sphinx pending', 'List unfinished checks.'], ['sphinx explain <id>', 'Get a walkthrough and a new scenario.']]);
     ui.section('Settings and troubleshooting');
     ui.rows([['sphinx config', 'Inspect effective policy, model routes, and file paths.'], ['sphinx doctor', 'Check Git and agent integrations.'], ['sphinx auth', 'Save an OpenRouter key with hidden input.'], ['sphinx uninstall', 'Restore previous hooks and remove integrations.']]);
-    ui.blank(); ui.paragraph('Use sphinx <command> --help for options and examples. Native agent forms open automatically at checkpoints. Terminal commands also include answer and dispute; use --json for structured output.');
+    ui.blank(); ui.paragraph('Use sphinx <command> --help for options and examples. Installed client adapters automatically open native dialogs or a dedicated Sphinx terminal at checkpoints. Terminal commands also include answer and dispute; use --json for structured output.');
     ui.blank(); ui.note(`Default: pushes to main/master · question caps: ${questionCapsText('standard')} · free OpenRouter route (API key required).`);
     return;
   }

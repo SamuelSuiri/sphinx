@@ -1,9 +1,13 @@
 # Architecture
 
-Sphinx has one local engine and thin Git/agent integrations. It runs no daemon and no Sphinx backend service.
+Sphinx has one local checkpoint engine and thin Git/agent integrations. It embeds `@earendil-works/pi-coding-agent` 1.2.0 for investigative reviewer sessions and requires Node.js 22.19+. Short-lived detached workers prepare reviews; there is no permanent daemon or Sphinx backend service.
 
 ```mermaid
 flowchart LR
+  PC[Commit or branch update] --> B[Debounced background reviewer]
+  B --> PI[Pi reviewer session]
+  PI --> W[Filtered Git tools and project context]
+  W --> PQR[Prepared questions and evidence]
   G[Git operation] --> P[Deterministic policy]
   P --> F[Filter paths]
   F --> S[Exact snapshot]
@@ -13,6 +17,7 @@ flowchart LR
   Q --> H[Agent lifecycle hook]
   H --> M[Local MCP server]
   M --> I[Native human form]
+  PQR --> M
   Q --> T[Manual terminal check]
   T --> E[Independent evaluator]
   I --> E[Independent evaluator]
@@ -32,6 +37,11 @@ flowchart LR
 | `git.js` | Deterministic triggers, filtered object/index evidence, snapshot identities |
 | `routing.js` | Line/file/path tiers, depth-dependent question ceilings, and user-selected model routes |
 | `evaluator.js` | Fresh CLI evaluator processes, question/rubric schemas, output validation |
+| `reviewer.js` | Pi reviewer integration, exact observation archive, assessment validation, review budgets |
+| `pi-runtime.js` | Isolated Pi SDK session, model-transport bridge, native compaction, cancellation, cleanup |
+| `review-workspace.js` | Filtered immutable file, diff, listing, and search tools |
+| `repo-context.js` | Bounded project background, ignore checks, context identity |
+| `preparation.js` | Detached scheduling, debounce, exact cache matching, failure status |
 | `openrouter.js` | Authenticated structured-output API requests and free-only price limits |
 | `sessions.js` | Durable checkpoints, locks, progress, call budgets, expiration |
 | `presentations.js` | Session-bound queues for native questionnaire presentation, without code or answers |
@@ -39,6 +49,9 @@ flowchart LR
 | `mcp.js` | Bounded stdio JSON-RPC transport, form elicitation, and lifecycle tool responses |
 | `install.js` | Reversible hook chaining, agent configuration, coverage checks |
 | `agent.js` | SessionStart guidance and Claude shell-session tagging for native questionnaires |
+| `pi-integration.js` | Pi extension installation, native dialogs, and deterministic queued-check presentation |
+| `lifecycle-integrations.js`, `cursor-hook.js` | Cursor/OpenCode installation, deterministic terminal launch, and status-only client results |
+| `terminal-launch.js`, `terminal-worker.js` | Dedicated terminal selection, exact checkpoint execution, window deduplication, and worker status |
 | `cli.js` | Onboarding, terminal interview, public JSON protocol, hook entry points |
 | `terminal.js`, `help.js`, `prompts.js` | Terminal presentation, contextual command help, and guided selections |
 
@@ -46,15 +59,15 @@ flowchart LR
 
 Machine-wide settings live in `$SPHINX_HOME/config.json`. A repository's canonical policy is JSON stored in `.sphinxconfig`. If that file is absent, the loader accepts legacy `.sphinx.json`. When both are present, canonical policy wins without merging the legacy file. Repository policy can control triggers, question depth, blocking mode, and exclusions; model routes, authentication, and usage budgets remain machine-wide. Repository exclusions add to machine-wide exclusions.
 
-`sphinx init` guides the user through event, branch, depth, mode, and remote choices. Branch defaults come from effective configuration rather than the currently checked-out branch. The initializer writes `.sphinxconfig` and `.sphinxignore` only when absent. It can copy a legacy policy into the canonical file while retaining the original. Rerunning setup preserves existing files and does not silently apply new flags over them.
+`sphinx init` guides the user through event, branch, depth, mode, remote, and project-context choices. Branch defaults come from effective configuration rather than the currently checked-out branch. The initializer writes `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md` only when absent. It can copy a legacy policy into the canonical file while retaining the original. Rerunning setup preserves existing files and does not silently apply new flags over them.
 
 Initialization does not install hooks, change global settings, resolve remote Git state, or invoke a model. Machine-wide integration is a separate, once-per-machine operation. A repository with a competing `core.hooksPath` needs the explicit `install --repo` compatibility step.
 
-Human terminal output provides a compact ASCII mark, explanatory selections, and progress/context for assessments. Color and layout adapt to terminal capabilities. Every public command supports its own help through `sphinx <command> --help` and `sphinx help <command>`. `--json` output and hook protocols bypass decorative output; they remain suitable for coding agents, pipes, and tests. `NO_COLOR` disables color; redirected output is uncolored by default. Help and read-only status/configuration commands never invoke an evaluator.
+Human terminal output provides a compact ASCII mark, explanatory selections, and progress/context for assessments. Color and layout adapt to terminal capabilities. Every public command supports its own help through `sphinx <command> --help` and `sphinx help <command>`. `--json` output and hook protocols bypass decorative output; they remain suitable for coding agents, pipes, and tests. `NO_COLOR` disables color; redirected output is uncolored by default. Help and read-only status/configuration commands never invoke an evaluator. Reviewer dependencies are loaded only when an investigation starts, keeping ordinary Git gating and CLI inspection independent of reviewer initialization.
 
 ## Native questionnaire transport
 
-The Git hook saves a pending assessment and a presentation request, then exits without inference. A coding-agent lifecycle hook calls the local `sphinx_checkpoint` MCP tool. Its only arguments are repository context and host/session identifiers: `cwd`, `host`, `hookEvent`, and `hostSession`. It accepts no questions or human answers from the development model.
+The Git hook saves a pending assessment and a presentation request, then exits without inference. Codex and Claude Code lifecycle hooks call the local `sphinx_checkpoint` MCP tool. Its only arguments are repository context and host/session identifiers: `cwd`, `host`, `hookEvent`, and `hostSession`. It accepts no questions or human answers from the development model.
 
 The controller claims queued work and uses MCP `elicitation/create` to present a flat form. The user can answer, learn, dispute, or pause. Responses return directly to Sphinx and its independent evaluator. Questions, feedback, and responses are not included in the tool result; the development model receives only allowlisted status, assessment IDs, progress, usage counts, and static retry guidance. The client controls how forms appear and may retain its own interaction logs.
 
@@ -64,13 +77,33 @@ Advertised form support does not guarantee the client will display a request: cl
 
 A paused or dismissed presentation is consumed while its assessment remains pending. Unrelated shell commands therefore do not reopen it. A new Git attempt queues presentation again and resumes existing progress. Session identifiers let the integration find requests from commands that change directories or use `git -C`; Codex supplies its thread ID, and the Claude SessionStart hook appends a Sphinx session tag through `CLAUDE_ENV_FILE`. Outside native hosts, `sphinx check` provides the terminal interview using the same assessment state.
 
-## Independent context
+Pi's development-client integration is a separate local extension from the embedded reviewer runtime. It observes built-in `bash` and `powershell` results, then calls the same questionnaire controller for queued Git requests. `ctx.ui.select` presents Answer, Learn, Dispute, and Pause; `ctx.ui.input` collects the person's response. Only a fixed status message is appended to the shell result. Questions, feedback, and human answers never enter the coding transcript. Interactive or dialog-capable RPC mode is required; noninteractive modes preserve pending work for a terminal check. Pi's built-in shell session ID associates requests across `cd` and `git -C`.
 
-The evaluator receives only the filtered snapshot evidence, allowed citation paths, and assessment instructions. A grading request also receives the precommitted rubric and human answer. Source and answers are explicitly untrusted data.
+Cursor and OpenCode adapters deterministically inspect queued presentation metadata after shell tools and open a dedicated Sphinx terminal. A private worker starts the installed CLI with `check --id <assessment-id>` in the queued repository. The human answers directly in that terminal; the CLI owns evaluator calls, progress, and completion. The client hook waits for a status-only result, then tells the development model to retry the original blocked Git operation after completion. Questions, feedback, answer keys, and human responses never pass through the client tool result. Cursor receives a context note; OpenCode receives a shell-result note and a TUI toast when available. Session environment tags support cross-directory routing.
 
-OpenRouter runs without tools. Codex/Claude run fresh, ephemeral sessions in a temporary directory, with custom instructions, project-context discovery disabled, and tool integrations disabled by supported CLI settings. The original coding transcript is never loaded. `SPHINX_EVALUATOR=1` prevents recursive Sphinx lifecycle hooks. CLI authentication is reused without copying secrets into the repository or prompts.
+The launcher uses macOS Terminal through a fixed AppleScript program, or a detected Linux terminal with a graphical display. WSL requires a working graphical terminal; SSH, CI, headless operation, launch failure, and denied macOS Terminal automation permission use the manual `sphinx check` fallback. Private status files and launch tokens track the exact assessment and worker/CLI process IDs. An active interview is reused; the same presentation token cannot repeatedly reopen a paused or failed attempt on unrelated tool events. A new Git attempt permits another presentation. Client hooks wait up to 25 minutes; an unfinished interview then yields pending status without instructing the development model to poll. Cursor user hooks apply only to local sessions. Other clients can use the generic Git gate and terminal interview without an adapter.
+
+## Independent investigation and compaction
+
+Version 2 snapshots contain change metadata and pinned Git identities, not a bundled patch. The reviewer starts with a filtered path manifest, statistics, and `.sphinxcontext.md`. It chooses `read_diff`, `read_file`, `list_files`, and `search` calls to investigate behavior. Tools filter paths before reading immutable blobs, reject unsafe paths and symlinks, and return bounded pages with explicit continuation information. Unchanged callers, tests, and dependencies are accessible at the pinned revision. Staged checkpoints retain index object identities.
+
+The [Pi SDK](https://pi.dev/docs/latest/sdk) owns an in-memory reviewer session, the agent/tool loop, and native compaction. Sphinx registers only its filtered immutable workspace tools, supplies explicit project context, and disables ambient resource discovery and general-purpose tools. The session never loads the development transcript, project agent instructions, or unrelated Pi resources. `SPHINX_EVALUATOR=1` prevents recursive Sphinx hooks.
+
+OpenRouter supplies model responses with native function calls. The Codex/Claude compatibility routes use fresh isolated CLI invocations as model transports underneath Pi. Structured model responses become Pi tool requests; Pi schedules the registered Sphinx tools and carries the conversation into the next request. These routes reuse CLI authentication without copying secrets into prompts. They do not run a persistent Codex or Claude reviewer session, or delegate isolation to those clients' native tools.
+
+Every request includes bounded project context (maximum 16,000 bytes). Context is descriptive data, not evaluator policy, and its claims must be checked against code. The current project file is hashed into checkpoint identity; an excluded context file is not opened.
+
+Pi's [native compaction](https://pi.dev/docs/latest/compaction) summarizes older conversation history and rebuilds the active context. Sphinx separately archives exact observations with IDs, paths, revisions, and ranges under a fixed byte budget. Compaction can shorten Pi's transcript without changing this archive; a model summary cannot replace code evidence. Final questions must cite inspected paths backed by archived observations. Grading receives the question's selected original evidence, rubric, project context, and verbatim human answer.
+
+Sphinx enforces `maxContextBytes` on serialized review context: prompts, tools, and schemas. Provider transport metadata is outside this count; it is not a byte limit on the complete HTTP body or the whole Git patch. Pi's estimated context threshold leaves reserve space for compaction, while tool pages and the evidence archive have separate bounds. Byte-based token estimates drive Pi's context management, particularly for CLI transports without reliable token reporting; these estimates are not billed usage totals. If the next review context cannot fit, the assessment remains incomplete. Every actual model request, including native compaction, is charged before invocation against the same checkpoint budget. Automatic retries and cache warming are disabled; an error never triggers a paid-provider fallback.
 
 These adapters depend on recent CLI features. Unsupported flags or managed settings that conflict with isolation may cause a failure; Sphinx does not retry in a less isolated mode. Provider adapters need continued compatibility testing.
+
+## Background preparation
+
+Post-commit, post-merge, post-rewrite, and post-checkout dispatchers preserve original hook behavior, then schedule a detached worker without waiting for inference. A 1.5-second default debounce and job identities coalesce repeated work. Local push/upstream tracking metadata predicts the destination and remote base; missing tracking history is a cold-review case, not a reason to fetch or speculate automatically.
+
+Workers call the same session preparation path as foreground checks. Exact source/destination/policy/ignore/context matches reuse questions and evidence. A foreground check waits for an in-progress review instead of duplicating requests. Superseded workers and changed snapshots cannot install valid prepared work. Preparation never opens a questionnaire or creates completion. Failures have safe status messages and require explicit retry. `backgroundPreparation: false` disables scheduling; repositories can opt out but cannot override a machine-wide opt-out.
 
 ## State and cost
 
@@ -84,20 +117,31 @@ The existing line, file-count, and consequential-path rules deterministically se
 
 The evaluator must return at least one question and may use fewer than the ceiling when fewer distinct behaviors are supported. It must not invent extra concerns to fill the budget. Model routes remain independent of depth. `maxOutputTokens` is preserved across all tiers; OpenRouter enforces it, while CLI evaluators receive concise-output instructions and local process limits.
 
-Snapshot IDs include repository identity, exact objects/index, destination, effective policy, and ignore-policy hash. Ignored files affect immutable object identity but their contents never enter evidence. Before evaluating and before completing an assessment, Sphinx revalidates the local source/index and policies. The eventual Git hook compares a fresh destination snapshot to the completion record, so a changed remote base also invalidates reuse.
+Snapshot IDs include repository identity, exact objects/index, destination, effective policy, ignore-policy hash, and project-context hash. Ignored files affect immutable object identity but their contents never enter evidence. Before model calls, tool use, and completion, Sphinx revalidates local source/index and policies. The eventual Git hook compares a fresh destination snapshot to the completion record, so a changed remote base also invalidates reuse.
 
 `pending → active → passed` is the main state sequence. Wrong answers teach the missed concept and replace its question with a new transfer scenario without advancing progress or adding another concept. Retries can exceed the initial question count, subject to the model-call budget. Ambiguity remains active. Calls are charged against the local request budget before invocation, including failed attempts. Per-session file locks prevent simultaneous grading and duplicate generation; expected question IDs reject stale responses. Native cancellation is checked before committing grading progress or completion. Private state files use mode `0600`; public JSON deliberately omits rubrics and full source evidence.
 
-Successful records expire after 24 hours by default. No automatic background inference, provider escalation, or generation retry occurs. A local completion record is a workflow convenience, not a cryptographic attestation.
+Successful records expire after 24 hours by default. Background investigation is enabled by default and shares the assessment's 10-request default budget. Each actual inference request, including compaction and failures, is charged before invocation. Sphinx reserves grading calls and bounds the Pi reviewer by `agentMaxTurns`, serialized review-context bytes, tool-page bytes, and a whole-investigation deadline. Provider escalation and failed-job retries are never automatic. A local completion record is a workflow convenience, not a cryptographic attestation.
 
 ## Installation
 
 A global Git `core.hooksPath` points to Sphinx dispatchers. Existing hooks are chained with their arguments and input preserved. Unrelated hook protocols are forwarded directly so interactive/streaming hooks are not buffered. Repository-level overrides need `sphinx install --repo` to wrap the repository's effective hook directory.
 
-The installation manifest tracks original settings and the exact files/handlers Sphinx created. Uninstall restores only configuration it still owns; subsequent edits are preserved. Both integrations register a local stdio MCP server and inject guidance at session start. Codex uses a native `PostToolUse` MCP tool hook for `Bash`; Claude uses `PostToolUse` and `PostToolUseFailure` for `Bash`. The Git hook remains the canonical local checkpoint; native hooks only present already queued work. Evaluator sessions tagged `SPHINX_EVALUATOR=1` skip both queueing and native presentation.
+The installation manifest tracks original settings and the exact files/handlers Sphinx created. Uninstall restores only configuration it still owns; subsequent edits are preserved. `--agents auto` detects Codex, Claude, Pi, Cursor, and OpenCode from executables, configuration directories, or an existing installation record. An explicit comma-separated subset selects integrations; `none` selects Git-only setup.
+
+Codex and Claude integrations register a local stdio MCP server and inject guidance at session start. Codex uses a native `PostToolUse` MCP tool hook for `Bash`; Claude uses `PostToolUse` and `PostToolUseFailure` for `Bash`. Pi installs `extensions/sphinx.js` under `PI_CODING_AGENT_DIR` or `~/.pi/agent`; `/reload` or a restart loads it. Cursor adds `sessionStart`, `postToolUse`, and `postToolUseFailure` handlers to `~/.cursor/hooks.json`. OpenCode installs `plugins/sphinx.js` in its configuration directory, honoring `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME`, without rewriting `opencode.json` or JSONC settings. Restart existing host sessions after installation so the adapters and session-routing tags are active.
+
+The Git hook remains the canonical local checkpoint. Client integrations consume already queued work; they do not let a model decide whether a check is required. Evaluator sessions tagged `SPHINX_EVALUATOR=1` skip queueing and client presentation. Tests redirect integration homes and never install into a developer's real configuration.
 
 ## References
 
+- [Pi SDK](https://pi.dev/docs/latest/sdk)
+- [Pi compaction](https://pi.dev/docs/latest/compaction)
+- [Pi SDK full-control example](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/examples/sdk/12-full-control.ts)
+- [Pi extensions](https://pi.dev/docs/latest/extensions)
+- [Cursor hooks](https://cursor.com/docs/hooks)
+- [Cursor MCP support](https://cursor.com/docs/mcp)
+- [OpenCode plugins](https://opencode.ai/docs/plugins/)
 - [Git hook protocols](https://git-scm.com/docs/githooks)
 - [Git central hooks path](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
 - [Codex hooks and trust](https://learn.chatgpt.com/docs/hooks)
@@ -108,4 +152,5 @@ The installation manifest tracks original settings and the exact files/handlers 
 - [MCP initialization and protocol negotiation](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
 - [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 - [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
+- [OpenRouter tool calling](https://openrouter.ai/docs/guides/features/tool-calling)
 - [OpenRouter provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection)

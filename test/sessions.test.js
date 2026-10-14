@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, writeJson } from '../src/config.js';
@@ -13,7 +13,13 @@ async function fixture(t, extra={}) {
   t.after(()=>rm(home,{recursive:true,force:true}));
   const env={SPHINX_HOME:home};
   const config=structuredClone(DEFAULT_CONFIG);
-  const store=createSessionStore({env,generate:async()=>({questions:[structuredClone(q)]}),grade:async()=>({verdict:'correct',feedback:'Correct: the repeated insert can duplicate it.',followUp:null}),...extra});
+  const rawGenerate=extra.generate || (async()=>({questions:[structuredClone(q)]}));
+  const rawGrade=extra.grade || (async()=>({verdict:'correct',feedback:'Correct: the repeated insert can duplicate it.',followUp:null}));
+  const firstCharged = beforeCall => { let first=true; return async()=>{if(first){first=false;return;}await beforeCall();}; };
+  const store=createSessionStore({env,...extra,
+    generate:async(s,c,options)=>{await options.beforeCall();return rawGenerate(s,c,{...options,beforeCall:firstCharged(options.beforeCall)});},
+    grade:async request=>{await request.beforeCall();return rawGrade({...request,beforeCall:firstCharged(request.beforeCall)});},
+  });
   return {store,env,config};
 }
 
@@ -65,7 +71,7 @@ test('learning and dispute requests cannot award a pass',async t=>{
 test('failed generation consumes a call and a budget limit prevents further calls',async t=>{
   let calls=0;
   const {store,config}=await fixture(t,{generate:async()=>{calls++;throw new Error('Unavailable');}});
-  config.maxModelCalls=1;
+  config.maxModelCalls=2;
   await store.ensure(snapshot,config);
   await assert.rejects(store.start(snapshot.id,config),/Unavailable/);
   await assert.rejects(store.start(snapshot.id,config),/call limit/);
@@ -83,8 +89,8 @@ test('policy changes and expired receipts require a new assessment',async t=>{
 });
 
 test('stale snapshots fail before generation and again before recording completion',async t=>{
-  let checks=0;
-  const {store,config}=await fixture(t,{validate:async()=>{checks++;if(checks===3)throw new Error('Changed');}});
+  let changed=false;
+  const {store,config}=await fixture(t,{validate:async()=>{if(changed)throw new Error('Changed');},grade:async()=>{changed=true;return{verdict:'correct',feedback:'Correct.',followUp:null};}});
   await store.ensure(snapshot,config);await store.start(snapshot.id,config);
   await assert.rejects(store.answer(snapshot.id,'Yes.',config),/Changed/);
   assert.equal(await store.approved(snapshot,config),false);
@@ -97,8 +103,77 @@ test('parallel operations share an exclusive session lock',async t=>{
   const {store,config}=await fixture(t,{generate:async()=>{entered();await held;return{questions:[q]};}});
   await store.ensure(snapshot,config);
   const first=store.start(snapshot.id,config);await ready;
-  await assert.rejects(store.start(snapshot.id,config),/already running/);
+  await assert.rejects(store.prepare(snapshot.id,config),/already running/);
   unblock();await first;
+});
+
+test('a recent partial lock stays exclusive and an old orphaned lock can recover',async t=>{
+  const {store,env,config}=await fixture(t);
+  await store.ensure(snapshot,config);
+  const lock=`${sessionFile(snapshot.id,env)}.lock`;
+  await writeFile(lock,'',{mode:0o600});
+  await assert.rejects(store.prepare(snapshot.id,config),/already running/);
+  const old=new Date(Date.now()-60000);
+  await utimes(lock,old,old);
+  assert.equal((await store.prepare(snapshot.id,config)).status,'active');
+});
+
+test('an old lock still protects a live reviewer without spending another model call',async t=>{
+  const {store,env,config}=await fixture(t);
+  await store.ensure(snapshot,config);
+  const lock=`${sessionFile(snapshot.id,env)}.lock`;
+  await writeFile(lock,JSON.stringify({pid:process.pid}),{mode:0o600});
+  const old=new Date(Date.now()-60000);
+  await utimes(lock,old,old);
+  await assert.rejects(store.prepare(snapshot.id,config),/already running/);
+  assert.equal((await store.read(snapshot.id)).calls,0);
+});
+
+test('preparation charges each actual request, reuses questions, and cannot approve a checkpoint',async t=>{
+  let generations=0,grades=0;
+  const review={version:1,summary:'Reviewed retry handling.',evidence:'insert()',evidencePaths:['src/order.js'],toolCalls:2,compactions:1};
+  const {store,config}=await fixture(t,{
+    generate:async(_snapshot,_config,{beforeCall,maxReviewerCalls})=>{
+      generations++; assert.ok(maxReviewerCalls>=3);
+      await beforeCall(); await beforeCall(); await beforeCall();
+      return{questions:[q],review};
+    },
+    grade:async request=>{grades++;assert.deepEqual(request.review,review);await request.beforeCall();return{verdict:'correct',feedback:'Correct.',followUp:null};},
+  });
+  await store.ensure(snapshot,config);
+  const prepared=await store.prepare(snapshot.id,config);
+  assert.equal(prepared.status,'active');assert.equal(prepared.preparation.status,'ready');
+  assert.equal(prepared.usage.calls,3);assert.equal(await store.approved(snapshot,config),false);
+  await store.start(snapshot.id,config);await store.prepare(snapshot.id,config);
+  assert.equal(generations,1);assert.equal((await store.read(snapshot.id)).calls,3);
+  const result=await store.answer(snapshot.id,'Yes, the insertion repeats.',config);
+  assert.equal(result.status,'passed');assert.equal(result.usage.calls,4);assert.equal(grades,1);
+});
+
+test('foreground waits for preparation and the Git gate can inspect its session without starting another review',async t=>{
+  let release,entered,calls=0;
+  const ready=new Promise(resolve=>{entered=resolve;});
+  const hold=new Promise(resolve=>{release=resolve;});
+  const {store,config}=await fixture(t,{generate:async(_s,_c,{beforeCall})=>{calls++;await beforeCall();entered();await hold;return{questions:[q]};}});
+  await store.ensure(snapshot,config);
+  const background=store.prepare(snapshot.id,config);await ready;
+  assert.equal((await store.ensure(snapshot,config)).preparation.status,'running');
+  const foreground=store.start(snapshot.id,config);
+  release();await background;
+  assert.equal((await foreground).question.id,q.id);assert.equal(calls,1);
+});
+
+test('reviewer cannot consume the calls reserved for human grading',async t=>{
+  let invoked=0;
+  const {store,config}=await fixture(t,{generate:async(_s,_c,{beforeCall})=>{
+    for(let i=0;i<5;i++){await beforeCall();invoked++;}
+    return{questions:[q]};
+  }});
+  config.maxModelCalls=3;
+  await store.ensure(snapshot,config);
+  await assert.rejects(store.prepare(snapshot.id,config),/Reviewer call limit/);
+  assert.equal(invoked,2);assert.equal((await store.read(snapshot.id)).calls,2);
+  assert.equal(await store.approved(snapshot,config),false);
 });
 
 test('session IDs cannot escape the state directory',()=>{

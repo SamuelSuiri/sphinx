@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callOpenRouter } from '../src/openrouter.js';
+import { callOpenRouter, callOpenRouterTurn } from '../src/openrouter.js';
 import { DEFAULT_CONFIG, saveOpenRouterKey } from '../src/config.js';
 
 const apiKey = 'test-only-private-openrouter-key';
@@ -176,4 +176,53 @@ test('oversized API bodies are rejected even if the provider ignores its output 
     ...defaults,
     fetchImpl: async () => success(JSON.stringify({ padding: 'x'.repeat(1024 * 1024 + 1) })),
   }), /oversized/);
+});
+
+const nativeTools = [{ type: 'function', function: { name: 'read_diff', description: 'Read an immutable diff.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } } }];
+const nativeCall = { id: 'diff-1', type: 'function', function: { name: 'read_diff', arguments: '{"path":"worker.js"}' } };
+
+test('native reviewer requests preserve tool calls and observations with free-only routing', async () => {
+  const messages = [{ role: 'system', content: 'Use read-only tools.' }, { role: 'user', content: 'Review the change.' }, { role: 'assistant', content: null, tool_calls: [nativeCall] }, { role: 'tool', tool_call_id: 'diff-1', content: '{"text":"+return dedupe(id)"}' }];
+  let body, charged = false;
+  const result = await callOpenRouterTurn({ ...defaults, schema: undefined, messages, tools: nativeTools, beforeCall: async () => { charged = true; }, fetchImpl: async (_url, init) => {
+    assert.equal(charged, true); body = JSON.parse(init.body);
+    return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [nativeCall], reasoning_details: [{ type: 'reasoning.encrypted', data: 'opaque-provider-state' }] } }] });
+  } });
+  assert.deepEqual(body.messages, messages);
+  assert.deepEqual(body.tools, nativeTools);
+  assert.equal(body.response_format, undefined);
+  assert.equal(body.tool_choice, 'required');
+  assert.deepEqual(body.provider.max_price, { prompt: 0, completion: 0, request: 0 });
+  assert.deepEqual(result.calls, [{ id: 'diff-1', name: 'read_diff', arguments: { path: 'worker.js' } }]);
+  assert.deepEqual(result.message.reasoning_details, [{ type: 'reasoning.encrypted', data: 'opaque-provider-state' }]);
+});
+
+test('native reviewer rejects fabricated tools, malformed arguments, duplicate IDs and partial output', async () => {
+  const cases = [
+    { tool_calls: [{ ...nativeCall, function: { name: 'shell', arguments: '{}' } }] },
+    { tool_calls: [{ ...nativeCall, function: { name: 'read_diff', arguments: '{' } }] },
+    { tool_calls: [{ ...nativeCall, function: { name: 'read_diff', arguments: '[]' } }] },
+    { tool_calls: [nativeCall, nativeCall] },
+    { tool_calls: [] },
+  ];
+  for (const message of cases) await assert.rejects(callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools, fetchImpl: async () => Response.json({ choices: [{ finish_reason: 'tool_calls', message }] }) }));
+  await assert.rejects(callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools, fetchImpl: async () => Response.json({ choices: [{ finish_reason: 'length', message: { tool_calls: [nativeCall] } }] }) }), /output limit/);
+});
+
+test('native reviewer preserves raw reasoning continuation when structured details are absent', async () => {
+  for (const field of ['reasoning', 'reasoning_content']) {
+    const response = await callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools, fetchImpl: async () => Response.json({ choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [nativeCall], [field]: 'opaque continuation text' } }] }) });
+    assert.equal(response.message.reasoning, 'opaque continuation text');
+  }
+});
+
+test('all request types await the budget callback and cancellation prevents network access', async () => {
+  let requests = 0;
+  const fetchImpl = async () => { requests++; return success(); };
+  for (const call of [callOpenRouter, callOpenRouterTurn]) {
+    await assert.rejects(call({ ...defaults, messages: [], tools: nativeTools, fetchImpl, beforeCall: async () => { throw new Error('budget exhausted'); } }), /budget exhausted/);
+    const controller = new AbortController(); controller.abort(new Error('human cancelled'));
+    await assert.rejects(call({ ...defaults, messages: [], tools: nativeTools, fetchImpl, signal: controller.signal }), /human cancelled/);
+  }
+  assert.equal(requests, 0);
 });

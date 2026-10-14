@@ -22,6 +22,10 @@
   "maxModelCalls": 10,
   "maxOutputTokens": 4096,
   "allowPaid": false,
+  "agentMaxTurns": 8,
+  "toolResultBytes": 16000,
+  "backgroundPreparation": true,
+  "preparationDebounceMs": 1500,
   "models": {
     "small": {
       "provider": "openrouter",

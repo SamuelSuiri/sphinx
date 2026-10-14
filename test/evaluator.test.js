@@ -8,6 +8,12 @@ import { DEFAULT_CONFIG } from '../src/config.js';
 import { evaluatorConfig, selectRoute } from '../src/routing.js';
 
 const config = { provider: 'codex', level: 'standard', timeoutSeconds: 3, maxContextBytes: 120000 };
+const parentContext = {
+  CODEX_THREAD_ID: 'parent-thread', CODEX_PARENT_THREAD_ID: 'parent',
+  CLAUDE_SESSION_ID: 'parent-session', CLAUDECODE: '1', SPHINX_CLAUDE_SESSION: 'claude-parent',
+  PI_SESSION_ID: 'pi-parent', PI_SESSION_FILE: '/private/parent-conversation.jsonl', PI_PROVIDER: 'parent-provider', PI_MODEL: 'parent-model',
+  SPHINX_OPENCODE_SESSION: 'opencode-parent', SPHINX_CURSOR_SESSION: 'cursor-parent',
+};
 const snapshot = {
   id: 'snapshot-123', repoRoot: '/private/checkout', target: { url: 'https://private.example/repo.git' },
   files: ['src/orders.js', '.env'], evidencePaths: ['src/orders.js'], omitted: ['.env'],
@@ -27,13 +33,38 @@ const transfer = {
   rationale: 'The answer must identify distinct map keys for different ids.',
 };
 
+const toolAction = { action: 'tools', calls: [{ name: 'read_diff', arguments: '{"path":"src/orders.js"}' }], assessment: null, summary: '', evidenceIds: [] };
+const finishAction = assessment => ({ action: 'finish', calls: [], assessment, summary: 'Request ids are checked before producing a result.', evidenceIds: ['e1'] });
+function fakeWorkspace(data = snapshot) {
+  const allowed = new Set((data.evidencePaths ?? data.files).filter(path => !(data.omitted ?? []).includes(path)));
+  const evidencePaths = new Set();
+  return {
+    tools: ['list_files', 'read_file', 'read_diff', 'search'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: { path: { type: 'string' } } } })), evidencePaths,
+    async execute(name, args) {
+      if (!allowed.has(args.path) || !data.evidence) return { evidencePaths: [], error: 'No evidence' };
+      evidencePaths.add(args.path);
+      return { path: args.path, revision: 'head', text: data.evidence, evidencePaths: [args.path] };
+    },
+  };
+}
+const nativeResponse = (assessment, capture = () => {}) => async invocation => {
+  await invocation.beforeCall?.(); capture(invocation);
+  const final = invocation.messages.some(message => message.role === 'tool');
+  const calls = final ? [{ id: 'finish', name: 'finish_review', arguments: { assessment, summary: 'Request ids are checked before producing a result.', evidenceIds: ['e1'] } }] : [{ id: 'read', name: 'read_diff', arguments: { path: 'src/orders.js' } }];
+  return { calls, message: { role: 'assistant', content: null, tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) } };
+};
+
 async function fixture(t, response, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'sphinx-evaluator-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const calls = [];
   const runner = async invocation => {
     calls.push(invocation);
-    const value = typeof response === 'function' ? await response(invocation) : response;
+    let value = typeof response === 'function' ? await response(invocation) : response;
+    if (invocation.input.startsWith('Continue the investigative review.')) {
+      if (!invocation.input.includes('Workspace observation')) value = toolAction;
+      else if (value?.questions) value = finishAction(value);
+    }
     if (value?.exitCode !== undefined) return value;
     if (invocation.command === 'codex') {
       await writeFile(invocation.args[invocation.args.indexOf('--output-last-message') + 1], typeof value === 'string' ? value : JSON.stringify(value));
@@ -43,13 +74,16 @@ async function fixture(t, response, options = {}) {
   };
   return {
     directory, calls,
-    evaluator: createEvaluator({ runner, tempRoot: directory, env: { PATH: '/test/bin', HOME: '/test/home', CODEX_HOME: '/test/codex', CODEX_THREAD_ID: 'parent-thread', CODEX_PARENT_THREAD_ID: 'parent', CLAUDE_SESSION_ID: 'parent-session', CLAUDECODE: '1' }, ...options }),
+    evaluator: createEvaluator({ runner, tempRoot: directory, workspaceFactory: fakeWorkspace, env: { PATH: '/test/bin', HOME: '/test/home', CODEX_HOME: '/test/codex', ...parentContext }, ...options }),
   };
 }
 
 test('Codex starts fresh, disables hooks and tools, preserves auth location, and cleans temp files', async t => {
   const { evaluator, calls, directory } = await fixture(t, { questions: [question] });
-  assert.deepEqual(await evaluator.generateAssessment(snapshot, { ...config, model: 'chosen-model' }), { questions: [question] });
+  const assessment = await evaluator.generateAssessment(snapshot, { ...config, model: 'chosen-model' });
+  assert.deepEqual(assessment.questions, [question]);
+  assert.equal(calls.length, 2);
+  assert.equal(assessment.review.evidence[0].result.text, snapshot.evidence);
   const call = calls[0];
   assert.equal(call.command, 'codex');
   for (const flag of ['--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check']) assert.ok(call.args.includes(flag));
@@ -62,6 +96,7 @@ test('Codex starts fresh, disables hooks and tools, preserves auth location, and
   assert.equal(call.env.CODEX_PARENT_THREAD_ID, undefined);
   assert.equal(call.env.CLAUDE_SESSION_ID, undefined);
   assert.equal(call.env.CLAUDECODE, undefined);
+  for (const invocation of calls) for (const key of Object.keys(parentContext)) assert.equal(invocation.env[key], undefined, `${key} must not reach the independent evaluator`);
   assert.notEqual(call.cwd, snapshot.repoRoot);
   assert.match(call.input, /precommit|commit each question/i);
   assert.ok(!call.input.includes(snapshot.repoRoot));
@@ -73,19 +108,21 @@ test('Codex starts fresh, disables hooks and tools, preserves auth location, and
 
 test('Claude uses safe mode with no tools or MCP and parses the structured output envelope', async t => {
   const { evaluator, calls } = await fixture(t, { questions: [question] });
-  assert.deepEqual(await evaluator.generateAssessment(snapshot, { ...config, provider: 'claude', effort: 'low' }), { questions: [question] });
+  assert.deepEqual((await evaluator.generateAssessment(snapshot, { ...config, provider: 'claude', effort: 'low' })).questions, [question]);
+  assert.equal(calls.length, 2);
   const call = calls[0];
   assert.equal(call.command, 'claude');
   for (const flag of ['--print', '--safe-mode', '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands']) assert.ok(call.args.includes(flag));
   assert.equal(call.args[call.args.indexOf('--tools') + 1], '');
   assert.equal(call.args[call.args.indexOf('--setting-sources') + 1], '');
   assert.equal(call.env.CLAUDE_CODE_SAFE_MODE, '1');
+  for (const invocation of calls) for (const key of Object.keys(parentContext)) assert.equal(invocation.env[key], undefined, `${key} must not reach the independent evaluator`);
   assert.ok(!call.args.includes('--bare'));
 });
 
 test('Claude supports JSON in result and rejects error envelopes', async t => {
-  const { evaluator } = await fixture(t, { exitCode: 0, stdout: JSON.stringify({ type: 'result', subtype: 'success', result: JSON.stringify({ questions: [question] }) }) });
-  assert.deepEqual(await evaluator.generateAssessment(snapshot, { ...config, provider: 'claude' }), { questions: [question] });
+  const { evaluator } = await fixture(t, { exitCode: 0, stdout: JSON.stringify({ type: 'result', subtype: 'success', result: JSON.stringify(finishAction({ questions: [question] })) }) });
+  assert.deepEqual((await evaluator.generateAssessment(snapshot, { ...config, provider: 'claude' })).questions, [question]);
   const failed = await fixture(t, { exitCode: 0, stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, structured_output: { questions: [question] } }) });
   await assert.rejects(failed.evaluator.generateAssessment(snapshot, { ...config, provider: 'claude' }), { code: 'PROVIDER_FAILED' });
 });
@@ -93,14 +130,14 @@ test('Claude supports JSON in result and rejects error envelopes', async t => {
 test('OpenRouter receives only evidence plus instructions and shares strict output validation', async t => {
   let invocation;
   const { evaluator, calls } = await fixture(t, null, {
-    openRouter: async args => { invocation = args; return { questions: [question] }; },
+    openRouterTurn: nativeResponse({ questions: [question] }, args => { invocation = args; }),
   });
-  assert.deepEqual(await evaluator.generateAssessment(snapshot, { ...config, provider: 'openrouter', model: 'openrouter/free' }), { questions: [question] });
+  assert.deepEqual((await evaluator.generateAssessment(snapshot, { ...config, provider: 'openrouter', model: 'openrouter/free' })).questions, [question]);
   assert.equal(calls.length, 0);
   assert.equal(invocation.config.model, 'openrouter/free');
   assert.equal(invocation.env.HOME, '/test/home');
-  assert.match(invocation.prompt, /untrusted data/i);
-  assert.ok(!invocation.prompt.includes('.env'));
+  assert.match(JSON.stringify(invocation.messages), /untrusted DATA/i);
+  assert.ok(!JSON.stringify(invocation.messages).includes('.env'));
 });
 
 test('question budgets and unique questions are enforced', async t => {
@@ -120,14 +157,14 @@ test('a small change requests one bounded question and rejects an oversized ques
     let request;
     const settings = { ...DEFAULT_CONFIG, level };
     const runtime = evaluatorConfig(settings, selectRoute(change, settings));
-    const { evaluator } = await fixture(t, null, { openRouter: async args => { request = args; return { questions: [question] }; } });
+    const { evaluator } = await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { request = args; }) });
     assert.equal((await evaluator.generateAssessment(change, runtime)).questions.length, 1);
-    assert.equal(request.schema.properties.questions.maxItems, 1);
-    assert.match(request.prompt, /Ask at most 1 question,/);
-    assert.match(request.prompt, /one bounded outcome/);
-    assert.match(request.prompt, /visual or styling change/);
-    assert.doesNotMatch(request.prompt, /Use exactly/);
-    const oversized = await fixture(t, null, { openRouter: async () => ({ questions: [question, transfer] }) });
+    assert.equal(request.tools.find(tool => tool.function.name === 'finish_review').function.parameters.properties.assessment.properties.questions.maxItems, 1);
+    assert.match(JSON.stringify(request.messages), /Ask at most 1 question,/);
+    assert.match(JSON.stringify(request.messages), /one bounded outcome/);
+    assert.match(JSON.stringify(request.messages), /visual or styling change/);
+    assert.doesNotMatch(JSON.stringify(request.messages), /Use exactly/);
+    const oversized = await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question, transfer] }) });
     await assert.rejects(oversized.evaluator.generateAssessment(change, runtime), /1–1 questions/);
   }
 });
@@ -146,11 +183,10 @@ test('unsupported evidence, omitted files, and malformed questions fail closed',
   await assert.rejects(authoritative.evaluator.generateAssessment({ ...snapshot, files: [...snapshot.files, 'unread.js'] }, config), /outside the supplied evidence/);
 });
 
-test('oversized and missing snapshot evidence fail before making a model call', async t => {
+test('too-small active context and absent changed paths fail before making a model call', async t => {
   const { evaluator, calls } = await fixture(t, { questions: [question] });
   await assert.rejects(evaluator.generateAssessment(snapshot, { ...config, maxContextBytes: 10 }), { code: 'CONTEXT_LIMIT' });
-  await assert.rejects(evaluator.generateAssessment({ ...snapshot, evidence: '' }, config), { code: 'INVALID_SNAPSHOT' });
-  await assert.rejects(evaluator.generateAssessment({ ...snapshot, evidencePaths: [] }, config), { code: 'INVALID_SNAPSHOT' });
+  await assert.rejects(evaluator.generateAssessment({ ...snapshot, files: [] }, config), { code: 'INVALID_SNAPSHOT' });
   assert.equal(calls.length, 0);
 });
 

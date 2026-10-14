@@ -18,7 +18,7 @@ async function fixture(t) {
 test('initialization creates readable repository policy and ignore template without global settings', async t => {
   const args = await fixture(t);
   const result = await initializeRepository({ ...args, overrides: { branches: ['main'], level: 'thorough', events: ['pre-push', 'pre-commit'] } });
-  assert.deepEqual(result.created, [join(args.repoRoot, '.sphinxconfig'), join(args.repoRoot, '.sphinxignore')]);
+  assert.deepEqual(result.created, [join(args.repoRoot, '.sphinxconfig'), join(args.repoRoot, '.sphinxignore'), join(args.repoRoot, '.sphinxcontext.md')]);
   assert.deepEqual(result.preserved, []);
   assert.deepEqual(result.config.branches, ['main']);
   assert.equal(result.config.level, 'thorough');
@@ -47,15 +47,18 @@ test('initialization preserves existing canonical policy and ignore rules byte f
   const args = await fixture(t);
   const configPath = join(args.repoRoot, '.sphinxconfig');
   const ignorePath = join(args.repoRoot, '.sphinxignore');
+  const contextPath = join(args.repoRoot, '.sphinxcontext.md');
   const policy = '{"branches":["protected"],"level":"relaxed"}\n';
   const ignore = '# custom comments\nprivate/\n';
   await writeFile(configPath, policy);
   await writeFile(ignorePath, ignore);
+  await writeFile(contextPath, 'Existing project background.');
   const result = await initializeRepository({ ...args, overrides: { branches: ['main'], level: 'thorough' } });
   assert.deepEqual(result.created, []);
-  assert.deepEqual(result.preserved, [configPath, ignorePath]);
+  assert.deepEqual(result.preserved, [configPath, ignorePath, contextPath]);
   assert.equal(await readFile(configPath, 'utf8'), policy);
   assert.equal(await readFile(ignorePath, 'utf8'), ignore);
+  assert.equal(await readFile(contextPath, 'utf8'), 'Existing project background.');
   assert.deepEqual(result.config, { branches: ['protected'], level: 'relaxed' });
 });
 
@@ -99,7 +102,7 @@ test('symlinks and directories are refused without modifying their targets or cr
   const args = await fixture(t);
   const target = join(args.repoRoot, '.env');
   await writeFile(target, 'SECRET_CONTENT');
-  for (const filename of ['.sphinxconfig', '.sphinx.json', '.sphinxignore']) {
+  for (const filename of ['.sphinxconfig', '.sphinx.json', '.sphinxignore', '.sphinxcontext.md']) {
     const file = join(args.repoRoot, filename);
     await symlink(target, file);
     await assert.rejects(initializeRepository(args), /symlink/);
@@ -110,6 +113,15 @@ test('symlinks and directories are refused without modifying their targets or cr
   await mkdir(join(args.repoRoot, '.sphinxignore'));
   await assert.rejects(initializeRepository(args), /non-regular/);
   await assert.rejects(stat(join(args.repoRoot, '.sphinxconfig')), { code: 'ENOENT' });
+});
+
+test('setup accepts project context separately from policy and preserves existing prose', async t => {
+  const args = await fixture(t);
+  const first = await initializeRepository({ ...args, context: 'A warehouse application. Stock reservations must be atomic.' });
+  assert.equal(await readFile(first.contextPath, 'utf8'), 'A warehouse application. Stock reservations must be atomic.\n');
+  const second = await initializeRepository({ ...args, context: 'New text must not overwrite existing context.' });
+  assert.equal(await readFile(second.contextPath, 'utf8'), await readFile(first.contextPath, 'utf8'));
+  assert.equal(first.config.context, undefined);
 });
 
 test('canonical policy wins during initialization without parsing shadowed legacy contents', async t => {

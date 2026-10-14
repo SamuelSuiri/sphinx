@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 
@@ -22,7 +24,12 @@ process.stdin.on('end', () => {
   const question = {id:'duplicate',concept:'deduplication lifetime',prompt:'In the same running process, enqueue receives the same ID twice. Does the second request enqueue again? Explain why.',choices:['Yes','No'],expectedAnswer:'No, the set already contains the ID.',rationale:'Membership is checked before insertion. The second call returns false.',evidence};
   const followUp = {...question,id:'restart',prompt:'After the process restarts, the same ID arrives again. Can this implementation enqueue it? Explain why.',expectedAnswer:'Yes. The in-memory set is recreated on restart.',rationale:'The deduplication state is only an in-memory set.'};
   let result;
-  if (!data.question) result = {questions:[question]};
+  if (!data.question) {
+    const observations = (data.conversation || []).filter(item => item.content.startsWith('Workspace observation')).map(item => JSON.parse(item.content.slice(item.content.indexOf('\\n')+1)));
+    result = observations.length
+      ? {action:'finish',calls:[],assessment:{questions:[question]},summary:'The changed enqueue path uses process-local ID membership.',evidenceIds:observations.map(item=>item.id)}
+      : {action:'tools',calls:[{name:'read_diff',arguments:JSON.stringify({path:'app.js'})}],assessment:null,summary:'',evidenceIds:[]};
+  }
   else if (data.humanAnswer === 'WRONG' || data.humanAnswer.startsWith('I do not know')) result = {verdict:'incorrect',feedback:'The set belongs to this process. It rejects duplicate IDs until the process restarts; the state is not persisted.',evidence,followUp};
   else if (data.dispute) result = {verdict:'ambiguous',feedback:'The assumptions need clarification.',evidence,followUp};
   else result = {verdict:'correct',feedback:'You connected the observable result to the lifetime of the stored IDs.',evidence,followUp:null};
@@ -30,7 +37,7 @@ process.stdin.on('end', () => {
 });
 `;
 
-async function fixture(t) {
+async function fixture(t, { background = false } = {}) {
   const base = await mkdtemp(path.join(tmpdir(), 'sphinx-cli-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const home = path.join(base, 'home');
@@ -52,7 +59,18 @@ async function fixture(t) {
     return result.stdout.trim();
   };
   const git = (...args) => ok('git', args);
-  const cli = (...args) => ok(process.execPath, [CLI, ...args]);
+  const cli = (...args) => {
+    const output = ok(process.execPath, [CLI, ...args]);
+    // These gate tests control evaluation explicitly. The background E2E below
+    // opts in separately, so detached workers never race unrelated assertions.
+    if (args[0] === 'install' && !args.includes('--repo') && !args.includes('--help') && !args.includes('-h') && !background) {
+      const file = path.join(env.SPHINX_HOME, 'config.json');
+      const config = JSON.parse(readFileSync(file, 'utf8'));
+      config.backgroundPreparation = false;
+      writeFileSync(file, JSON.stringify(config));
+    }
+    return output;
+  };
   const cliJson = (...args) => JSON.parse(cli(...args, '--json'));
   git('init', '-q', '-b', 'main');
   git('config', '--local', 'user.name', 'Sphinx Test');
@@ -86,10 +104,10 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   assert.equal(first.question.id, 'duplicate');
   assert.equal(Object.hasOwn(first.question, 'expectedAnswer'), false);
   assert.equal(Object.hasOwn(first.question, 'rationale'), false);
-  assert.equal((await f.calls()).length, 1);
+  assert.equal((await f.calls()).length, 2);
   // Resuming an existing interview does not spend another generation call.
   assert.equal(f.cliJson('check').question.id, 'duplicate');
-  assert.equal((await f.calls()).length, 1);
+  assert.equal((await f.calls()).length, 2);
   const wrong = f.cliJson('answer', first.id, '--text', 'WRONG');
   assert.equal(wrong.verdict, 'incorrect');
   assert.equal(wrong.status, 'active');
@@ -98,7 +116,7 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   assert.notEqual(wrong.question.prompt, first.question.prompt);
   assert.match(wrong.feedback, /not persisted/);
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
-  assert.equal((await f.calls()).length, 2);
+  assert.equal((await f.calls()).length, 3);
   const passed = f.cliJson('answer', first.id, '--text', 'Yes. Restart recreates the set, so it cannot remember the previous process\'s IDs.');
   assert.equal(passed.status, 'passed');
   assert.equal(passed.progress.completed, 1);
@@ -108,7 +126,7 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   f.git('push', 'origin', 'main');
   assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
   f.git('push', 'origin', 'main');
-  assert.equal((await f.calls()).length, 3);
+  assert.equal((await f.calls()).length, 4);
   assert.deepEqual(f.cliJson('pending'), []);
   await writeFile(path.join(f.repo, 'app.js'), `${f.app}\nexport const maxQueueSize = 100;\n`);
   f.git('add', 'app.js'); f.git('commit', '-qm', 'Expose queue limit');
@@ -300,12 +318,12 @@ test('Git triggers a native questionnaire, direct human replies complete it, and
   const hookOutput = JSON.parse(completed.result.content[0].text);
   assert.equal(hookOutput.hookSpecificOutput.hookEventName, 'PostToolUseFailure');
   assert.match(hookOutput.hookSpecificOutput.additionalContext, /retry/i);
-  assert.equal((await f.calls()).length, 3);
+  assert.equal((await f.calls()).length, 4);
   assert.deepEqual(f.cliJson('pending'), []);
   f.git('push', 'origin', 'main');
   client.hook(3);
   assert.equal((await client.next(message => message.id === 3)).result.structuredContent.status, 'not-required');
-  assert.equal((await f.calls()).length, 3);
+  assert.equal((await f.calls()).length, 4);
   client.child.stdin.end();
 });
 
@@ -320,12 +338,12 @@ test('cancelled native forms do not reopen on unrelated tools; retrying Git resu
   assert.equal((await client.next(message => message.id === 2)).result.structuredContent.status, 'pending');
   client.hook(3);
   assert.equal((await client.next(message => message.id === 3)).result.structuredContent.status, 'not-required');
-  assert.equal((await f.calls()).length, 1);
+  assert.equal((await f.calls()).length, 2);
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   client.hook(4);
   const resumed = await client.next(message => message.method === 'elicitation/create');
   assert.equal(resumed.params.message, first.params.message);
-  assert.equal((await f.calls()).length, 1);
+  assert.equal((await f.calls()).length, 2);
   client.send({ id: resumed.id, result: { action: 'accept', content: { action: 'answer', response: 'No, the set already contains the ID.' } } });
   assert.equal((await client.next(message => message.id === 4)).result.structuredContent.status, 'passed');
   f.git('push', 'origin', 'main');
@@ -348,6 +366,8 @@ test('native resume trims a legacy small-change questionnaire without regenerati
     evidence: [{ path: 'app.js', reason: 'The existing ID returns before insertion.' }],
   };
   legacy.status = 'active';
+  legacy.snapshot.version = 1;
+  legacy.snapshot.evidence = `Committed legacy evidence for app.js:\n${f.app}`;
   legacy.calls = 1; // The previous version already paid for these stored questions.
   legacy.questions = [current,
     { ...current, id: 'legacy-restart', prompt: 'Can an ID enqueue again after the process restarts?' },
@@ -382,6 +402,52 @@ test('native resume trims a legacy small-change questionnaire without regenerati
   assert.match(gradingInput.humanAnswer, /set retains the ID/);
   assert.equal(JSON.parse(await readFile(sessionPath, 'utf8')).calls, 2);
   assert.deepEqual(f.cliJson('pending'), []);
+  f.git('push', 'origin', 'main');
+  assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
+  client.child.stdin.end();
+});
+
+test('post-commit preparation investigates before push and the native gate reuses the exact prepared questions', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { background: true });
+  // Establish local tracking metadata before installing hooks; no inference.
+  f.git('push', '-u', 'origin', 'main');
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  const configFile = path.join(f.env.SPHINX_HOME, 'config.json');
+  const config = JSON.parse(await readFile(configFile, 'utf8'));
+  config.preparationDebounceMs = 40;
+  await writeFile(configFile, JSON.stringify(config));
+  const projectContext = 'This repository implements a work queue. Duplicate IDs are suppressed within one process.';
+  await writeFile(path.join(f.repo, '.sphinxcontext.md'), projectContext);
+  await writeFile(path.join(f.repo, 'app.js'), `${f.app}\nexport const retryDelay = 50;\n`);
+  f.git('add', 'app.js', '.sphinxcontext.md');
+  f.git('commit', '-qm', 'Expose retry delay');
+
+  let status;
+  const deadline = Date.now() + 15000;
+  do {
+    status = f.cliJson('status');
+    if (status.preparation?.status === 'failed') assert.fail(status.preparation.error);
+    if (status.preparation?.status === 'ready') break;
+    await delay(100);
+  } while (Date.now() < deadline);
+  assert.equal(status.preparation?.status, 'ready');
+  assert.equal(status.pending.length, 1);
+  assert.equal(status.pending[0].status, 'active');
+  const generated = await f.calls();
+  assert.equal(generated.length, 2, 'Reviewer requested a diff, read its observation, then finished before any push');
+  assert.ok(generated.every(call => call.input.includes(projectContext)));
+  assert.ok(generated[1].input.includes('Workspace observation'));
+  assert.equal(generated.some(call => call.input.includes('do-not-transmit-92bfa')), false);
+
+  assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0, 'Prepared questions never approve a push');
+  const client = await nativeClient(f, t); client.hook(2);
+  const form = await client.next(message => message.method === 'elicitation/create');
+  assert.match(form.params.message, /same ID twice/);
+  assert.equal((await f.calls()).length, 2, 'The native questionnaire reuses preparation without more review calls');
+  client.send({ id: form.id, result: { action: 'accept', content: { action: 'answer', response: 'No, the set retains that ID in this process.' } } });
+  assert.equal((await client.next(message => message.id === 2)).result.structuredContent.status, 'passed');
+  const calls = await f.calls();
+  assert.equal(calls.length, 3); assert.ok(calls[2].input.includes(projectContext));
   f.git('push', 'origin', 'main');
   assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
   client.child.stdin.end();

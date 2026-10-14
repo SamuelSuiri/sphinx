@@ -58,7 +58,7 @@ function push(cwd, head, base = zero, config = defaults, extra = {}) {
   });
 }
 
-test('initial push uses complete committed tree, never working-tree modifications', async t => {
+test('initial push captures committed metadata without eagerly loading source content', async t => {
   const cwd = await fixture(t);
   const head = await commit(cwd, { 'worker.js': 'export const operation = "committed";\n' });
   await writeFile(join(cwd, 'worker.js'), 'UNCOMMITTED_SECRET\n');
@@ -68,7 +68,9 @@ test('initial push uses complete committed tree, never working-tree modification
   assert.equal(snapshot.sourceRef, 'refs/heads/main');
   assert.deepEqual(snapshot.files, ['worker.js']);
   assert.deepEqual(snapshot.stats, { additions: 1, deletions: 0, files: 1 });
-  assert.match(snapshot.evidence, /committed/);
+  assert.equal(snapshot.version, 2);
+  assert.deepEqual(JSON.parse(snapshot.evidence).changedPaths, ['worker.js']);
+  assert.doesNotMatch(snapshot.evidence, /export const operation/);
   assert.doesNotMatch(snapshot.evidence, /UNCOMMITTED_SECRET/);
   assert.equal(snapshot.repoRoot, (await repository(cwd)).root);
 });
@@ -106,8 +108,9 @@ test('force pushes compare destination tree directly, not a merge base', async t
   await command(cwd, 'checkout', '-b', 'replacement', base);
   const head = await commit(cwd, { 'state.txt': 'replacement\n' });
   const [snapshot] = await push(cwd, head, destination);
-  assert.match(snapshot.evidence, /-destination-only/);
-  assert.match(snapshot.evidence, /\+replacement/);
+  assert.equal(snapshot.base, destination);
+  assert.equal(snapshot.head, head);
+  assert.deepEqual(snapshot.stats, { additions: 1, deletions: 1, files: 1 });
 });
 
 test('missing destination history fails with fetch instructions without fetching', async t => {
@@ -142,7 +145,8 @@ test('staged evidence includes partial staging, excludes subsequent working edit
   await command(cwd, 'add', 'code.js');
   await writeFile(join(cwd, 'code.js'), 'WORKING_TREE_SECRET\n');
   const snapshot = await commitSnapshot({ cwd, config: defaults });
-  assert.match(snapshot.evidence, /\+export const a = 2/);
+  assert.equal(snapshot.indexEntries[0].oid, await command(cwd, 'rev-parse', ':code.js'));
+  assert.deepEqual(snapshot.indexEntries.map(entry => entry.path), ['code.js']);
   assert.doesNotMatch(snapshot.evidence, /WORKING_TREE_SECRET/);
   assert.match(snapshot.tree, /^index:[a-f0-9]{64}$/);
   assert.deepEqual(snapshot.stats, { additions: 1, deletions: 1, files: 1 });
@@ -156,7 +160,8 @@ test('supports unborn staged commits and returns null for an empty index diff', 
   const snapshot = await commitSnapshot({ cwd, config: defaults });
   assert.equal(snapshot.head, null);
   assert.equal(snapshot.base, null);
-  assert.match(snapshot.evidence, /\+first/);
+  assert.deepEqual(snapshot.files, ['first.txt']);
+  assert.equal(snapshot.indexEntries[0].oid, await command(cwd, 'rev-parse', ':first.txt'));
   await command(cwd, 'commit', '-m', 'first');
   assert.equal(await commitSnapshot({ cwd, config: defaults }), null);
 });
@@ -184,16 +189,20 @@ test('never runs configured external diff or textconv', async t => {
   await command(cwd, 'config', 'diff.external', 'false');
   await command(cwd, 'config', 'diff.dangerous.textconv', 'false');
   const [snapshot] = await push(cwd, head);
-  assert.match(snapshot.evidence, /after/);
+  assert.deepEqual(snapshot.files, ['.gitattributes', 'a.txt']);
+  assert.deepEqual(snapshot.stats, { additions: 2, deletions: 0, files: 2 });
 });
 
-test('rejects oversized complete patches rather than silently truncating changes', async t => {
+test('a 417 KiB initial patch needs only bounded metadata during checkpoint capture', async t => {
   const cwd = await fixture(t);
-  const head = await commit(cwd, { 'large.txt': `${'large line\n'.repeat(2000)}` });
-  await assert.rejects(push(cwd, head, zero, { ...defaults, maxContextBytes: 3000 }), /exceeds maxContextBytes|size limit/);
+  const head = await commit(cwd, { 'large.txt': 'large line\n'.repeat(42701) });
+  const [snapshot] = await push(cwd, head, zero, { ...defaults, maxContextBytes: 1000 });
+  assert.deepEqual(snapshot.stats, { additions: 42701, deletions: 0, files: 1 });
+  assert.ok(Buffer.byteLength(snapshot.evidence) <= 1000);
+  assert.doesNotMatch(snapshot.evidence, /large line/);
 });
 
-test('large unchanged full-file context is explicitly omitted while complete diff remains assessable', async t => {
+test('full-file context and patches are deferred regardless of file size', async t => {
   const cwd = await fixture(t);
   const body = 'unchanged line\n'.repeat(1000);
   const base = await commit(cwd, { 'large.txt': body });
@@ -201,8 +210,8 @@ test('large unchanged full-file context is explicitly omitted while complete dif
   const [snapshot] = await push(cwd, head, base, { ...defaults, maxContextBytes: 4000 });
   assert.deepEqual(snapshot.files, ['large.txt']);
   assert.deepEqual(snapshot.omitted, []);
-  assert.deepEqual(snapshot.contextOmitted, ['large.txt']);
-  assert.match(snapshot.evidence, /Full-file source omitted/);
+  assert.deepEqual(snapshot.contextOmitted, []);
+  assert.doesNotMatch(snapshot.evidence, /changed line|unchanged line/);
   assert.ok(Buffer.byteLength(snapshot.evidence) <= 4000);
 });
 
@@ -266,10 +275,12 @@ test('ignored-only changes need no checkpoint, including binary private keys', a
   assert.deepEqual(await push(cwd, head), []);
 });
 
-test('binary source changes fail clearly while explicit exclusions allow other changes', async t => {
+test('binary metadata remains available without loading binary content', async t => {
   const cwd = await fixture(t);
   const head = await commit(cwd, { 'image.bin': Buffer.from([0, 1, 2]), 'code.js': 'okay\n' });
-  await assert.rejects(push(cwd, head), /Cannot assess binary changes/);
+  const [binary] = await push(cwd, head);
+  assert.deepEqual(binary.binaryFiles, ['image.bin']);
+  assert.deepEqual(binary.stats, { additions: 1, deletions: 0, files: 2 });
   const [snapshot] = await push(cwd, head, zero, { ...defaults, exclude: ['*.bin'] });
   assert.deepEqual(snapshot.files, ['code.js']);
 });
@@ -279,7 +290,7 @@ test('literal paths are safe even when their names resemble Git pathspec magic',
   const head = await commit(cwd, { ':(glob)*.txt': 'literal\n', 'other.txt': 'ordinary\n' });
   const [snapshot] = await push(cwd, head, zero, { ...defaults, exclude: ['other.txt'] });
   assert.deepEqual(snapshot.files, [':(glob)*.txt']);
-  assert.match(snapshot.evidence, /literal/);
+  assert.deepEqual(JSON.parse(snapshot.evidence).changedPaths, [':(glob)*.txt']);
   assert.doesNotMatch(snapshot.evidence, /\+ordinary/);
 });
 
@@ -290,7 +301,7 @@ test('NUL-separated path parsing preserves filenames containing tabs and newline
   const [snapshot] = await push(cwd, head);
   assert.deepEqual(snapshot.files, [filename]);
   assert.deepEqual(snapshot.stats, { additions: 1, deletions: 0, files: 1 });
-  assert.match(snapshot.evidence, /export const okay/);
+  assert.deepEqual(JSON.parse(snapshot.evidence).changedPaths, [filename]);
 });
 
 test('mode-only changes remain visible and assessable', async t => {
@@ -302,7 +313,7 @@ test('mode-only changes remain visible and assessable', async t => {
   const head = await command(cwd, 'rev-parse', 'HEAD');
   const [snapshot] = await push(cwd, head, base);
   assert.deepEqual(snapshot.stats, { additions: 0, deletions: 0, files: 1 });
-  assert.match(snapshot.evidence, /new mode 100755/);
+  assert.deepEqual(snapshot.files, ['run.sh']);
 });
 
 test('Git content commands receive only allowed paths, never ignored paths', async t => {
@@ -320,14 +331,33 @@ test('Git content commands receive only allowed paths, never ignored paths', asy
   finally { process.env.PATH = previousPath; }
   const calls = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.ok(calls.some(args => args.includes('--name-only')));
-  assert.ok(calls.some(args => args.includes('blob')));
+  assert.ok(!calls.some(args => args.includes('blob')));
   for (const args of calls) {
     if (args.includes('diff') && !args.includes('--name-only')) {
+      assert.ok(args.includes('--numstat'), 'snapshot capture may request counts but never patches');
       assert.deepEqual(args.slice(args.indexOf('--') + 1), ['code.js']);
     }
-    if (args.includes('blob')) assert.equal(args.at(-1), `${head}:code.js`);
     assert.ok(!args.some(arg => arg.includes('.env') || arg.includes('private.data')));
   }
+});
+
+test('project context is attached explicitly and invalidates the exact checkpoint when edited', async t => {
+  const cwd = await fixture(t);
+  const head = await commit(cwd, { 'code.js': 'okay\n' });
+  await writeFile(join(cwd, '.sphinxcontext.md'), 'Project intention and system boundaries.\n');
+  const [first] = await push(cwd, head);
+  assert.equal(first.projectContext.text, 'Project intention and system boundaries.\n');
+  assert.equal(first.contextHash, first.projectContext.hash);
+  assert.equal(await revalidateSnapshot(first, defaults), true);
+  await writeFile(join(cwd, '.sphinxcontext.md'), 'A changed intended invariant.\n');
+  assert.equal(await revalidateSnapshot(first, defaults), false);
+  const [second] = await push(cwd, head);
+  assert.notEqual(first.id, second.id);
+  await writeFile(join(cwd, '.sphinxignore'), '.sphinxcontext.md\n');
+  const [ignored] = await push(cwd, head);
+  assert.equal(ignored.projectContext.text, '');
+  await writeFile(join(cwd, '.sphinxcontext.md'), 'Ignored edits do not invalidate context.\n');
+  assert.equal(await revalidateSnapshot(ignored, defaults), true);
 });
 
 test('branch and path glob semantics handle nested names', () => {

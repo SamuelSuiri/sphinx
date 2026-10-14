@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { install, uninstall, doctor, dispatchHook } from '../src/install.js';
 import { getPaths } from '../src/config.js';
+import { lifecycleHome } from '../src/lifecycle-integrations.js';
 
 async function fixture(t) {
   const base = await mkdtemp(path.join(tmpdir(), "sphinx install ' "));
@@ -28,6 +29,95 @@ async function fixture(t) {
 
 async function executable(file, content) { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, content, { mode: 0o755 }); await chmod(file, 0o755); }
 const json = async file => JSON.parse(await readFile(file, 'utf8'));
+
+test('Cursor, OpenCode and Pi install together, preserve user settings, and uninstall idempotently', async t => {
+  const f = await fixture(t);
+  const cursorHome = lifecycleHome('cursor', f.paths, f.env), openCodeHome = lifecycleHome('opencode', f.paths, f.env);
+  await mkdir(cursorHome, { recursive: true }); await mkdir(openCodeHome, { recursive: true });
+  const cursorFile = path.join(cursorHome, 'hooks.json'), openCodeConfig = path.join(openCodeHome, 'opencode.jsonc');
+  const existing = { version: 1, hooks: { sessionStart: [{ command: 'my-existing-hook' }], postToolUse: [] }, custom: true };
+  await writeFile(cursorFile, JSON.stringify(existing));
+  const jsonc = '// Keep comments\n{"model":"my/model", "plugin":["my-plugin"]}\n';
+  await writeFile(openCodeConfig, jsonc);
+  const result = await install({ ...f.options, agents: 'cursor,opencode,pi' });
+  assert.match(result.warnings.join('\n'), /automatically opens a separate Sphinx terminal/);
+  assert.match(result.messages.join('\n'), /Pi extension installed with native/);
+  await install({ ...f.options, agents: 'cursor,opencode,pi' });
+  const cursor = await json(cursorFile);
+  assert.equal(cursor.hooks.sessionStart.length, 2);
+  assert.equal(cursor.hooks.postToolUse.length, 1);
+  assert.equal(cursor.hooks.postToolUseFailure[0].matcher, '^Shell$');
+  assert.equal(await readFile(openCodeConfig, 'utf8'), jsonc);
+  assert.equal((await doctor(f.options)).checks.every(check => check.ok), true);
+  const manifest = await json(f.paths.install);
+  assert.match(await readFile(manifest.agents.opencode.file, 'utf8'), /registerOpenCodeIntegration/);
+  assert.match(await readFile(manifest.agents.pi.file, 'utf8'), /registerPiIntegration/);
+  await uninstall(f.options); await uninstall(f.options);
+  assert.deepEqual(await json(cursorFile), existing);
+  assert.equal(await readFile(openCodeConfig, 'utf8'), jsonc);
+  await assert.rejects(readFile(manifest.agents.opencode.file), { code: 'ENOENT' });
+  await assert.rejects(readFile(manifest.agents.pi.file), { code: 'ENOENT' });
+});
+
+test('new Cursor settings disappear on uninstall and auto detection finds all supported agent homes', async t => {
+  const f = await fixture(t);
+  for (const directory of [f.paths.codexHome, f.paths.claudeHome, lifecycleHome('cursor', f.paths, f.env), lifecycleHome('opencode', f.paths, f.env), path.join(f.home, '.pi', 'agent')]) await mkdir(directory, { recursive: true });
+  await install({ ...f.options, agents: 'auto' });
+  const manifest = await json(f.paths.install);
+  assert.deepEqual(Object.keys(manifest.agents).sort(), ['claude', 'codex', 'cursor', 'opencode', 'pi']);
+  await uninstall(f.options);
+  await assert.rejects(readFile(path.join(f.home, '.cursor', 'hooks.json')), { code: 'ENOENT' });
+});
+
+test('edited Cursor hooks and OpenCode plugins are preserved and diagnosed', async t => {
+  const f = await fixture(t);
+  await install({ ...f.options, agents: 'cursor,opencode' });
+  const manifest = await json(f.paths.install), cursorFile = manifest.agents.cursor.file, pluginFile = manifest.agents.opencode.file;
+  const document = await json(cursorFile);
+  document.hooks.postToolUse[0].timeout = 99;
+  document.unrelated = 'keep';
+  await writeFile(cursorFile, JSON.stringify(document));
+  await writeFile(pluginFile, '// User replacement\n');
+  await assert.rejects(install({ ...f.options, agents: 'cursor' }), /edited cursor/);
+  await assert.rejects(install({ ...f.options, agents: 'opencode' }), /edited OpenCode/);
+  const checks = (await doctor(f.options)).checks;
+  assert.equal(checks.find(check => check.name === 'cursor integration').ok, false);
+  assert.equal(checks.find(check => check.name === 'opencode integration').ok, false);
+  const result = await uninstall(f.options);
+  assert.ok(result.warnings.some(warning => warning.includes('Cursor')));
+  assert.ok(result.warnings.some(warning => warning.includes('OpenCode')));
+  assert.equal((await json(cursorFile)).hooks.postToolUse[0].timeout, 99);
+  assert.equal((await json(cursorFile)).unrelated, 'keep');
+  assert.equal(await readFile(pluginFile, 'utf8'), '// User replacement\n');
+});
+
+test('invalid Cursor settings or conflicting OpenCode plugin fail before any Git or agent changes', async t => {
+  const f = await fixture(t);
+  const cursorHome = lifecycleHome('cursor', f.paths, f.env), pluginDirectory = path.join(lifecycleHome('opencode', f.paths, f.env), 'plugins');
+  await mkdir(cursorHome, { recursive: true }); await mkdir(pluginDirectory, { recursive: true });
+  const cursorFile = path.join(cursorHome, 'hooks.json');
+  await writeFile(cursorFile, 'secret-sentinel-invalid-json');
+  await assert.rejects(install({ ...f.options, agents: 'pi,cursor' }), error => /invalid JSON/.test(error.message) && !error.message.includes('secret-sentinel'));
+  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+  await assert.rejects(readFile(path.join(f.home, '.pi', 'agent', 'extensions', 'sphinx.js')), { code: 'ENOENT' });
+  await rm(cursorFile); await writeFile(path.join(pluginDirectory, 'sphinx.js'), '// unrelated plugin');
+  await assert.rejects(install({ ...f.options, agents: 'cursor,opencode' }), /existing or edited OpenCode/);
+  await assert.rejects(readFile(cursorFile), { code: 'ENOENT' });
+  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+});
+
+test('Cursor and OpenCode refuse symlinked integration paths and isolated homes ignore ambient paths', async t => {
+  const f = await fixture(t);
+  const outside = path.join(f.base, 'outside'); await mkdir(outside);
+  const cursorHome = lifecycleHome('cursor', f.paths, f.env);
+  await symlink(outside, cursorHome);
+  await assert.rejects(install({ ...f.options, agents: 'cursor' }), /symlinked/);
+  await rm(cursorHome);
+  const openCodeHome = lifecycleHome('opencode', f.paths, f.env);
+  await mkdir(openCodeHome, { recursive: true }); await symlink(outside, path.join(openCodeHome, 'plugins'));
+  await assert.rejects(install({ ...f.options, agents: 'opencode' }), /symlinked/);
+  assert.equal(lifecycleHome('opencode', f.paths, { ...f.env, XDG_CONFIG_HOME: outside, OPENCODE_CONFIG_DIR: outside }), openCodeHome);
+});
 
 test('global installation chains custom hooks, preserves agent settings, and reverses idempotently', async t => {
   const f = await fixture(t);
@@ -344,4 +434,36 @@ test('malformed Claude MCP JSON errors never disclose settings contents', async 
     return true;
   });
   assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
+});
+
+test('preparation hooks preserve streaming input and original status while scheduling without a terminal', { timeout: 10000 }, async t => {
+  const f = await fixture(t);
+  const scheduled = path.join(f.base, 'scheduled');
+  await writeFile(f.cliPath, `import {writeFile} from 'node:fs/promises';\nlet input='';for await(const chunk of process.stdin)input+=chunk;\nawait writeFile(process.env.SPHINX_TEST_SCHEDULED,JSON.stringify({args:process.argv.slice(2),input}));\nsetTimeout(()=>{},1500);\n`);
+  await executable(path.join(f.repo, '.git/hooks/post-rewrite'), '#!/bin/sh\nread first\nprintf "ack:%s\\n" "$first"\nread second\nprintf "done:%s:%s\\n" "$1" "$second"\nexit 13\n');
+  await install(f.options);
+  const hookDir = f.git('config', '--global', '--get', 'core.hooksPath');
+  const child = spawn(path.join(hookDir, 'post-rewrite'), ['amend'], { cwd: f.repo, env: { ...f.env, SPHINX_TEST_SCHEDULED: scheduled }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill());
+  let output = '';
+  const acknowledged = new Promise(resolve => child.stdout.on('data', chunk => { output += chunk; if (output.includes('ack:first\n')) resolve(); }));
+  const closed = new Promise(resolve => child.on('close', resolve));
+  child.stdin.write('first\n'); await acknowledged;
+  child.stdin.end('second\n');
+  assert.equal(await closed, 13);
+  assert.equal(output, 'ack:first\ndone:amend:second\n');
+  for (let i = 0; i < 100; i++) {
+    if (await readFile(scheduled, 'utf8').catch(() => '')) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.deepEqual(await json(scheduled), { args: ['prepare'], input: '' });
+  // A scheduler that stays alive must not hold the post-hook's streams open.
+  assert.equal(child.exitCode, 13);
+  await rm(scheduled);
+  execFileSync(path.join(hookDir, 'post-commit'), [], { cwd: f.repo, env: { ...f.env, SPHINX_EVALUATOR: '1', SPHINX_TEST_SCHEDULED: scheduled }, timeout: 1000 });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await assert.rejects(readFile(scheduled), error => error.code === 'ENOENT');
+  for (const hook of ['post-commit', 'post-merge', 'post-rewrite', 'post-checkout']) assert.match(await readFile(path.join(hookDir, hook), 'utf8'), / prepare <\/dev\/null >\/dev\/null 2>&1 &/);
+  await uninstall(f.options);
+  assert.equal(await readFile(path.join(f.repo, '.git/hooks/post-rewrite'), 'utf8'), '#!/bin/sh\nread first\nprintf "ack:%s\\n" "$first"\nread second\nprintf "done:%s:%s\\n" "$1" "$second"\nexit 13\n');
 });
