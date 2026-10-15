@@ -11,12 +11,18 @@ const ACTIONS = new Map([
   ['Dispute this question', 'dispute'], ['Pause', 'pause'],
 ]);
 const checkpoint = async options => (await import('./native-check.js')).runNativeCheckpoint(options);
+export const PI_GUIDANCE = [
+  'Sphinx Git hooks open a separate human terminal for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback or advisory checks; they do not resume an exited process.',
+  'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
+  'Never answer for the human, relay the questionnaire through chat, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful or advisory operations.',
+];
 
 function outcomeText(status) {
-  if (status === 'passed') return 'Sphinx checkpoint passed. Retry the original Git operation; Git will verify the exact change and destination again.';
-  if (status === 'unsupported') return 'Sphinx checkpoint pending. This Pi session has no interactive dialogs. Run sphinx check in a terminal, then retry the original Git operation.';
-  if (status === 'pending') return 'Sphinx checkpoint paused. Do not retry Git until the person asks to continue.';
-  return 'Sphinx checkpoint remains pending. Run sphinx check in a terminal to inspect or resume it. Do not retry Git until the person asks to continue.';
+  if (status === 'busy') return 'A Sphinx questionnaire is already open. Wait for the human to finish it; do not open another interview or duplicate a waiting Git operation.';
+  if (status === 'passed') return 'Sphinx fallback checkpoint passed. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.';
+  if (status === 'unsupported') return 'Sphinx fallback checkpoint pending. This Pi session has no interactive dialogs. The human can run sphinx check in their own terminal. Never duplicate a waiting Git operation; retry only after the check passes and the original operation has exited with a Sphinx blocking failure. Do not repeat successful or advisory operations.';
+  if (status === 'pending') return 'Sphinx fallback checkpoint paused. Do not retry Git until the person asks to continue and the previous Git process has exited. Never duplicate a waiting operation.';
+  return 'Sphinx fallback checkpoint remains pending. The human can run sphinx check in their own terminal to inspect or resume it. Do not retry Git until the person asks to continue and the previous Git process has exited.';
 }
 
 /** Native Pi dialogs are human input, never a model-callable answering tool. */
@@ -35,12 +41,17 @@ export async function elicitPiForm(ctx, form, signal) {
   return response === undefined ? { action: 'cancel' } : { action: 'accept', content: { action, response } };
 }
 
-/** Pi 1.2+ extension factory. Only a queued Git attempt can start an assessment. */
+/** Pi 1.2+ fallback dialogs. Waiting Git hooks own their terminal presentation. */
 export function registerPiIntegration(pi, { home, env = process.env, runCheckpoint = checkpoint } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return;
   const environment = { ...env, ...(home ? { SPHINX_HOME: home } : {}) };
   let lifecycle = new AbortController();
   let tail = Promise.resolve();
+  pi.on('before_agent_start', event => {
+    // Use Pi's documented mutable guidelines, preserving other prompt sections.
+    const guidelines = event.systemPromptOptions?.promptGuidelines;
+    if (Array.isArray(guidelines)) for (const line of PI_GUIDANCE) if (!guidelines.includes(line)) guidelines.push(line);
+  });
   pi.on('session_start', () => {
     lifecycle.abort();
     lifecycle = new AbortController();
@@ -85,7 +96,7 @@ export function piIntegrationHome(paths, env = process.env) {
 const integrationFile = (paths, env) => path.join(piIntegrationHome(paths, env), 'extensions', 'sphinx.js');
 
 export function piExtensionSource({ home, modulePath = MODULE_PATH }) {
-  return `// Managed by Sphinx. Human answers stay in Pi's native dialogs.\nimport { registerPiIntegration } from ${JSON.stringify(modulePath)};\nexport default function sphinx(pi) { registerPiIntegration(pi, { home: ${JSON.stringify(home)} }); }\n`;
+  return `// Managed by Sphinx. Fallback human answers stay in Pi's native dialogs.\nimport { registerPiIntegration } from ${JSON.stringify(modulePath)};\nexport default function sphinx(pi) { registerPiIntegration(pi, { home: ${JSON.stringify(home)} }); }\n`;
 }
 
 async function inspectFile(file) {
@@ -127,7 +138,6 @@ export async function preparePiIntegration(paths, { env = process.env, cliPath, 
   let committed = false;
   return {
     name: 'pi', record,
-    warnings: ['Run /reload in Pi, or restart it, to load the Sphinx extension. Native dialogs require interactive or dialog-capable RPC mode.'],
     async commit() {
       await checkDirectory(path.dirname(file));
       const current = await inspectFile(file);
@@ -165,5 +175,5 @@ export async function piIntegrationStatus(paths, { record, cliPath, env = proces
   catch { return { installed: Boolean(record), healthy: false, file, detail: 'Pi extension was replaced or is unreadable.' }; }
   const healthy = Boolean(record && current && hash(current.text) === record.sha256
     && record.modulePath === MODULE_PATH && (!cliPath || record.cliPath === cliPath));
-  return { installed: Boolean(record), healthy, file, detail: healthy ? 'Sphinx native dialogs are installed; Pi must load the extension.' : 'Sphinx Pi extension is missing, edited, or points to an older installation.' };
+  return { installed: Boolean(record), healthy, file, detail: healthy ? 'Sphinx fallback native dialogs are installed; Pi must load the extension. Blocking Git hooks open their own terminal and wait.' : 'Sphinx Pi extension is missing, edited, or points to an older installation.' };
 }

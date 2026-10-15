@@ -1,0 +1,109 @@
+import path from 'node:path';
+import { loadConfig, policyHash } from './config.js';
+import { repository, pushSnapshots, commitSnapshot, revalidateSnapshot } from './git.js';
+import { createSessionStore } from './sessions.js';
+import { queuePresentation, claimPresentation, listPresentations } from './presentations.js';
+import { runGitCheckpointTerminal } from './git-interview.js';
+
+async function snapshotsFor({ event, args, input, cwd, config, env }) {
+  if (event === 'pre-push') return pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config, env });
+  if (event === 'pre-commit') return [await commitSnapshot({ cwd, config, env })].filter(Boolean);
+  return [];
+}
+
+/** Preserve Git's operation context when a separate human terminal is opened. */
+export function interviewEnvironment(cwd, env) {
+  const scoped = { ...env };
+  for (const key of ['GIT_INDEX_FILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']) {
+    if (typeof env[key] === 'string' && env[key]) scoped[key] = path.resolve(cwd, env[key]);
+    else delete scoped[key];
+  }
+  return scoped;
+}
+
+/** Wait inside Git's original hook. Never reconstruct or replay a Git command. */
+export async function runGitGate({ event, args = [], input = '', cwd = process.cwd(), env = process.env, signal,
+  store: providedStore, readConfig = loadConfig, snapshotsFor: collectSnapshots = snapshotsFor,
+  revalidate = revalidateSnapshot, present = runGitCheckpointTerminal,
+  queue = queuePresentation, claim = claimPresentation, listRequests = listPresentations,
+  output = line => process.stderr.write(`${line}\n`),
+} = {}) {
+  if (env.SPHINX_EVALUATOR === '1') return 0;
+  signal?.throwIfAborted();
+  const repo = await repository(cwd);
+  const config = await readConfig(repo.root, env);
+  const snapshots = await collectSnapshots({ event, args, input, cwd, config, env });
+  if (!snapshots.length) return 0;
+  const validate = async (snapshot, expected) => {
+    signal?.throwIfAborted();
+    const current = await readConfig(snapshot.repoRoot, env);
+    if (policyHash(current) !== policyHash(expected) || !(await revalidate(snapshot, current, { env }))) {
+      throw new Error('The code, project context, or policy changed while Git was waiting. This operation was stopped; start a new Git operation for the updated change.');
+    }
+    signal?.throwIfAborted();
+  };
+  const store = providedStore ?? createSessionStore({ env, validate });
+  const pending = [];
+  for (const snapshot of snapshots) {
+    signal?.throwIfAborted();
+    if (await store.approved(snapshot, config)) continue;
+    const session = await store.ensure(snapshot, config);
+    pending.push({ snapshot, session });
+    output(`Sphinx: understanding check needed for ${snapshot.target.ref} (${session.route.tier} change).`);
+  }
+  if (config.mode === 'advisory') {
+    for (const { session } of pending) await queue(session, { env });
+    if (pending.length) output('Sphinx: advisory mode; allowing this operation with an incomplete assessment.');
+    return 0;
+  }
+
+  const requests = [];
+  try {
+    // These requests belong to the waiting hook, not a post-tool callback.
+    // Mark the whole batch before launching so sibling tools cannot open forms.
+    for (const { session, snapshot } of pending) {
+      signal?.throwIfAborted();
+      const request = await queue(session, { env, delivery: 'hook' });
+      requests.push({ ...request, event: snapshot.event });
+      const old = await listRequests({ cwd: request.repoRoot, host: request.host, hostSession: request.hostSession, env });
+      for (const previous of old.filter(item => item.id === request.id)) await claim(previous, { env });
+    }
+    if (requests.length) output('Sphinx: Git is waiting for your answers in the Sphinx terminal. It will continue automatically after you pass. Do not start another copy of this Git operation.');
+    const interviewEnv = interviewEnvironment(cwd, env);
+    for (let index = 0; index < requests.length; index++) {
+      signal?.throwIfAborted();
+      const result = await present({ request: requests[index], env: interviewEnv, signal });
+      signal?.throwIfAborted();
+      if (result?.status === 'unavailable') {
+        // Native callbacks only run after Git exits. Keep that explicit fallback
+        // for environments where a separate human terminal cannot be opened.
+        for (const { session } of pending.slice(index)) {
+          await queue(session, { env });
+          output(`Outside a supported agent, run sphinx check --id ${session.id} in your terminal.`);
+        }
+        output('Sphinx: no separate human terminal is available. This Git operation was stopped. Complete the queued check, then start the Git operation again.');
+        return 1;
+      }
+      if (result?.status !== 'passed') {
+        output('Sphinx: the understanding check is incomplete, cancelled, or timed out. This Git operation was stopped; progress is saved.');
+        return 1;
+      }
+    }
+
+    // Terminal exit status is only a wake-up signal. Every original destination
+    // needs a current receipt, including snapshots approved before the wait.
+    for (const snapshot of snapshots) {
+      await validate(snapshot, config);
+      if (!(await store.approved(snapshot, config))) {
+        output('Sphinx: no valid completion exists for this exact change and destination. This Git operation was stopped.');
+        return 1;
+      }
+    }
+    signal?.throwIfAborted();
+    if (requests.length) output('Sphinx: understanding check complete. Continuing this Git operation.');
+    return 0;
+  } finally {
+    // A paused or cancelled batch must not reopen from an after-tool callback.
+    for (const request of requests) await claim(request, { env });
+  }
+}

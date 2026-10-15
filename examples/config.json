@@ -19,7 +19,7 @@
   "maxContextBytes": 100000,
   "timeoutSeconds": 180,
   "receiptHours": 24,
-  "maxModelCalls": 10,
+  "maxModelCalls": 20,
   "maxOutputTokens": 4096,
   "allowPaid": false,
   "agentMaxTurns": 8,

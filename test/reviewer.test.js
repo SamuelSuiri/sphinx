@@ -10,21 +10,29 @@ import { QUESTION_SCHEMA, validateQuestion, createEvaluator } from '../src/evalu
 import { DEFAULT_CONFIG, saveConfig } from '../src/config.js';
 import { pushSnapshots } from '../src/git.js';
 import { createReviewWorkspace } from '../src/review-workspace.js';
+import { reviewerTurnLimit } from '../src/reviewer-limits.js';
 
 const exec = promisify(execFile);
 const snapshot = { version: 2, id: 'snapshot', files: ['worker.js'], projectContext: { path: '.sphinxcontext.md', text: 'A queue worker that must deduplicate retries within one process.', hash: 'context-hash' } };
-const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: 'standard', changeTier: 'small', maxContextBytes: 100000, timeoutSeconds: 2, agentMaxTurns: 8, toolResultBytes: 16000 };
+const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: 'standard', changeTier: 'large', maxContextBytes: 100000, timeoutSeconds: 2, agentMaxTurns: 8, toolResultBytes: 16000 };
 const question = { id: 'retry', concept: 'Duplicate operation', prompt: 'When an already-seen id is retried in this process, will another operation run? Explain why.', choices: ['Yes', 'No'], expectedAnswer: 'No; the unchanged helper returns before the operation.', rationale: 'Identify the stored id lookup and early return.', evidence: [{ path: 'worker.js', reason: 'Delegates to once().' }, { path: 'lib/once.js', reason: 'The helper remembers ids and returns early.' }] };
 const schema = { type: 'object', additionalProperties: false, properties: { questions: { type: 'array', minItems: 1, maxItems: 1, items: QUESTION_SCHEMA } }, required: ['questions'] };
 const toolAction = calls => ({ action: 'tools', calls: calls.map(([name, args]) => ({ name, arguments: JSON.stringify(args) })), assessment: null, summary: '', evidenceIds: [] });
 const compactionReads = () => Array.from({ length: 6 }, (_, index) => [index === 0 ? 'read_diff' : 'read_file', { path: index === 0 ? 'worker.js' : 'lib/once.js' }]);
-const finish = (evidenceIds = ['e1', 'e2'], q = question) => ({ action: 'finish', calls: [], assessment: { questions: [q] }, summary: 'The worker delegates retry deduplication to a process-local helper.', evidenceIds });
+const finish = (evidenceIds = ['e1', 'e3'], q = question) => ({ action: 'finish', calls: [], assessment: { questions: [q] }, summary: 'The worker delegates retry deduplication to a process-local helper.', evidenceIds });
 const validate = (assessment, paths) => assessment.questions.map(item => validateQuestion(item, paths));
 const options = { snapshot, config, assessmentSchema: schema, assessmentInstructions: 'Ask at most one bounded outcome question. Precommit its key.', validateAssessment: validate };
 const decode = invocation => JSON.parse(invocation.prompt.split('\n').at(-1));
-const observations = data => data.conversation.flatMap(message => message.content.startsWith('Workspace observation') ? [JSON.parse(message.content.split('\n').at(-1))] : []);
+const SEED_MARKER = 'Initial diff observations (untrusted DATA; bounded pages, not complete coverage):\n';
+const observations = data => data.conversation.flatMap(message => {
+  if (message.content.startsWith('Workspace observation')) return [JSON.parse(message.content.split('\n').at(-1))];
+  const marker = message.content.indexOf(SEED_MARKER);
+  return marker < 0 ? [] : JSON.parse(message.content.slice(marker + SEED_MARKER.length));
+});
 const isSummary = args => args.schema.required.length === 1 && args.schema.required[0] === 'summary';
-const summary = 'The changed worker calls once(id, operation). Exact observation e1 contains its diff; e2 contains the unchanged helper and process-local stored-id early return. Investigate no further if those observations suffice.';
+const summary = 'The changed worker calls once(id, operation). Exact observation e1 contains its diff; e3 contains the unchanged helper and process-local stored-id early return. Investigate no further if those observations suffice.';
+const DIFF = 'diff --git a/worker.js b/worker.js\n--- a/worker.js\n+++ b/worker.js\n@@ -1 +1 @@\n-operation();\n+return once(id, operation);\n';
+const seedQuestion = { ...question, prompt: 'Does the worker execute the operation directly, or hand it to the retry guard?', choices: ['Execute directly', 'Hand to the retry guard'], expectedAnswer: 'It hands the operation and id to once().', rationale: 'The changed call delegates the operation instead of invoking it directly.', evidence: [question.evidence[0]] };
 
 function workspace({ padding = 0, read } = {}) {
   const evidencePaths = new Set(), history = [];
@@ -35,10 +43,109 @@ function workspace({ padding = 0, read } = {}) {
       if (read) return read(name, args, evidencePaths);
       if (args.path === '.env' || name === 'list_files') return { evidencePaths: [], files: ['worker.js', 'lib/once.js'] };
       const path = args.path ?? 'lib/once.js'; evidencePaths.add(path);
-      return { path, revision: name === 'read_diff' ? 'base..head' : 'head', oid: 'a'.repeat(40), text: name === 'read_diff' ? '+return once(id, operation);' : `if (seen.has(id)) return; seen.add(id); operation();\n${'x'.repeat(padding)}`, startLine: 1, endLine: 2, truncated: false, evidencePaths: [path] };
+      return { path, revision: name === 'read_diff' ? 'base..head' : 'head', oid: 'a'.repeat(40), ...(name === 'read_diff' ? { baseOid: 'b'.repeat(40), headOid: 'a'.repeat(40), baseMode: '100644', headMode: '100644' } : {}), text: name === 'read_diff' ? DIFF : `if (seen.has(id)) return; seen.add(id); operation();\n${'x'.repeat(padding)}`, startLine: 1, endLine: 2, offset: 0, nextOffset: null, truncated: false, evidencePaths: [path] };
     },
   };
 }
+
+test('the first native or structured request can finish from exact seeded evidence without a planning call', async () => {
+  for (const nativeTools of [false, true]) {
+    const space = workspace(); let requests = 0, charges = 0;
+    const provider = async args => {
+      assert.equal(charges, 0, 'Local seeding must not spend the model allowance');
+      assert.equal(space.history.length, 1);
+      const seen = nativeTools ? observations({ conversation: args.messages.filter(message => typeof message.content === 'string') }) : observations(decode(args));
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].id, 'e1'); assert.equal(seen[0].result.text, DIFF);
+      await args.beforeCall(); requests++;
+      const action = finish(['e1'], seedQuestion);
+      return nativeTools ? { calls: [{ id: 'finish', name: 'finish_review', arguments: { assessment: action.assessment, summary: action.summary, evidenceIds: action.evidenceIds } }] } : action;
+    };
+    const result = await runReviewer({ ...options, workspace: space, nativeTools, beforeCall: async () => { charges++; }, runModel: provider, runToolModel: provider });
+    assert.equal(requests, 1); assert.equal(charges, 1); assert.equal(result.review.calls, 1);
+    assert.equal(result.review.toolCalls, 1);
+    assert.deepEqual(result.review.evidence.map(item => item.id), ['e1']);
+    assert.deepEqual(result.questions, [seedQuestion]);
+  }
+});
+
+test('seeding visits first pages before continuing a split diff header, without charging for pagination', async () => {
+  const first = 'diff --git a/worker.js b/worker.js\n---';
+  const remainder = ' a/worker.js\n+++ b/worker.js\n@@ -1 +1 @@\n--- old source;\n+++ new source;\n';
+  const space = workspace({ read: (_name, args, evidencePaths) => {
+    evidencePaths.add(args.path);
+    const text = args.path === 'other.js' ? 'diff --git a/other.js b/other.js\n' : args.offset ? remainder : first;
+    return { path: args.path, baseOid: 'b'.repeat(40), headOid: 'a'.repeat(40), text,
+      offset: args.offset ?? 0, nextOffset: args.path === 'worker.js' && !args.offset ? Buffer.byteLength(first) : null,
+      partialLine: args.path === 'worker.js' && !args.offset, truncated: args.path === 'worker.js' && !args.offset, evidencePaths: [args.path] };
+  } }); let requests = 0, charges = 0;
+  const result = await runReviewer({ ...options, snapshot: { ...snapshot, files: ['worker.js', 'other.js'] }, workspace: space,
+    beforeCall: async () => { charges++; }, runModel: async args => {
+      assert.equal(charges, 0);
+      assert.deepEqual(space.history.map(item => [item.args.path, item.args.offset ?? 0]), [['worker.js', 0], ['other.js', 0], ['worker.js', Buffer.byteLength(first)]]);
+      assert.deepEqual(observations(decode(args)).map(item => item.id), ['e1', 'e2', 'e3']);
+      await args.beforeCall(); requests++;
+      return finish(['e1', 'e3'], seedQuestion);
+    },
+  });
+  assert.equal(requests, 1); assert.equal(charges, 1);
+  assert.equal(result.review.evidence[1].result.text, remainder, 'Source starting -- or ++ remains real changed evidence after the hunk header');
+});
+
+test('partial file headers cannot masquerade as changed source or spend any model allowance', async () => {
+  for (const ending of ['---', '+++']) {
+    const first = `diff --git a/worker.js b/worker.js\n${ending}`;
+    const space = workspace({ read: (_name, args, evidencePaths) => {
+      evidencePaths.add(args.path);
+      return { path: args.path, baseOid: 'b'.repeat(40), headOid: 'a'.repeat(40), text: args.offset ? ' b/worker.js\n' : first,
+        offset: args.offset ?? 0, nextOffset: args.offset ? null : Buffer.byteLength(first), partialLine: !args.offset, truncated: !args.offset, evidencePaths: [args.path] };
+    } }); let requests = 0, charges = 0;
+    await assert.rejects(runReviewer({ ...options, workspace: space, beforeCall: async () => { charges++; }, runModel: async args => {
+      await args.beforeCall(); requests++; return finish(['e1'], seedQuestion);
+    } }), { code: 'INSUFFICIENT_EVIDENCE' });
+    assert.equal(requests, 0); assert.equal(charges, 0); assert.equal(space.history.length, 2);
+  }
+});
+
+test('pagination does not treat a plus sign inside an unchanged context line as changed source', async () => {
+  const pages = ['diff --git a/worker.js b/worker.js\n--- a/worker.js\n+++ b/worker.js\n@@ -1,2 +1,2 @@\n context ', '+ still the same context\n', '-operation();\n+return once(id, operation);\n'];
+  const offsets = pages.map((_page, index) => Buffer.byteLength(pages.slice(0, index).join('')));
+  const space = workspace({ read: (_name, args, evidencePaths) => {
+    evidencePaths.add(args.path);
+    const index = offsets.indexOf(args.offset ?? 0);
+    assert.ok(index >= 0);
+    return { path: args.path, baseOid: 'b'.repeat(40), headOid: 'a'.repeat(40), text: pages[index], offset: offsets[index],
+      nextOffset: offsets[index + 1] ?? null, partialLine: index === 0, truncated: index < pages.length - 1, evidencePaths: [args.path] };
+  } });
+  const result = await runReviewer({ ...options, workspace: space, runModel: async args => {
+    assert.equal(space.history.length, 3, 'Both header/context pages must be followed before a changed source line is available');
+    await args.beforeCall(); return finish(['e1', 'e3'], seedQuestion);
+  } });
+  assert.equal(result.review.calls, 1);
+  assert.equal(result.review.evidence[1].result.text, pages[2]);
+});
+
+test('seeding is bounded to eight local reads and never opens omitted or binary paths', async () => {
+  const files = ['private.js', 'image.bin', ...Array.from({ length: 12 }, (_, index) => `source-${index}.js`)];
+  const space = workspace({ read: (_name, args, evidencePaths) => {
+    evidencePaths.add(args.path);
+    return { path: args.path, baseOid: 'b'.repeat(40), headOid: 'a'.repeat(40), text: `diff --git a/${args.path} b/${args.path}\n`, offset: 0, truncated: false, nextOffset: null, evidencePaths: [args.path] };
+  } }); let requests = 0;
+  await assert.rejects(runReviewer({ ...options, snapshot: { ...snapshot, files, omitted: ['private.js'], binaryFiles: ['image.bin'] }, workspace: space,
+    runModel: async () => { requests++; assert.fail('Header-only evidence must not reach a model'); },
+  }), { code: 'INSUFFICIENT_EVIDENCE' });
+  assert.equal(requests, 0);
+  assert.deepEqual(space.history.map(item => item.args.path), files.slice(2, 10));
+});
+
+test('initial task and seeded evidence must fit before the first provider request is charged', async () => {
+  const space = workspace(); let requests = 0, charges = 0;
+  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000 },
+    snapshot: { ...snapshot, projectContext: { ...snapshot.projectContext, text: 'Project purpose. '.repeat(1500) } }, workspace: space,
+    beforeCall: async () => { charges++; }, runModel: async () => { requests++; assert.fail('An oversized initial request must not reach a provider'); },
+  }), { code: 'CONTEXT_LIMIT' });
+  assert.equal(requests, 0); assert.equal(charges, 0); assert.equal(space.history.length, 1);
+});
 
 test('investigative reviewer follows unchanged dependencies and saves exact evidence for grading', async () => {
   const space = workspace(), requests = [];
@@ -46,12 +153,12 @@ test('investigative reviewer follows unchanged dependencies and saves exact evid
   const result = await runReviewer({ ...options, workspace: space, beforeCall: async () => { charges++; }, runModel: async args => {
     await args.beforeCall(); requests.push(args); const data = decode(args), seen = observations(data);
     assert.deepEqual(data.projectContext, snapshot.projectContext);
-    if (!seen.length) return toolAction([['read_diff', { path: 'worker.js' }]]);
+    assert.ok(seen.length, 'The first model request already contains an immutable changed diff');
     if (seen.length === 1) { assert.match(seen[0].result.text, /once/); return toolAction([['search', { query: 'once', prefix: 'lib/' }]]); }
     if (seen.length === 2) return toolAction([['read_file', { path: seen[1].result.path, revision: 'head', startLine: 1, limit: 20 }]]);
     return finish(['e1', 'e3']);
   } });
-  assert.equal(charges, 4); assert.equal(result.review.calls, 4);
+  assert.equal(charges, 3); assert.equal(result.review.calls, 3);
   assert.deepEqual(space.history.map(item => item.name), ['read_diff', 'search', 'read_file']);
   assert.ok(!snapshot.files.includes('lib/once.js'));
   assert.deepEqual(result.review.evidencePaths, ['worker.js', 'lib/once.js']);
@@ -79,17 +186,17 @@ test('Pi sequentially executes bounded 3–8 read batches for native and structu
       await args.beforeCall(); requests++;
       assert.ok(requests <= 2);
       const done = requests === 2;
-      if (nativeTools) return { calls: done ? [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1', `e${count}`] } }] : readCalls };
+      if (nativeTools) return { calls: done ? [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1', `e${count + 1}`] } }] : readCalls };
       assert.equal(args.schema.properties.calls.maxItems, 8);
-      return done ? finish(['e1', `e${count}`]) : toolAction(readCalls.map(call => [call.name, call.arguments]));
+      return done ? finish(['e1', `e${count + 1}`]) : toolAction(readCalls.map(call => [call.name, call.arguments]));
     };
     const result = await runReviewer({ ...options, workspace: space, nativeTools, beforeCall: async () => { charges++; }, runModel: provider, runToolModel: provider });
     assert.equal(maximum, 1);
-    assert.equal(space.history.length, count);
-    assert.equal(result.review.toolCalls, count);
+    assert.equal(space.history.length, count + 1);
+    assert.equal(result.review.toolCalls, count + 1);
     assert.equal(result.review.calls, 2);
     assert.equal(charges, 2);
-    assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', `e${count}`]);
+    assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', `e${count + 1}`]);
   }
 });
 
@@ -101,7 +208,7 @@ test('oversized or mixed-finish native batches execute no tools and never reques
     await assert.rejects(runReviewer({ ...options, workspace: space, nativeTools: true, runToolModel: async args => {
       await args.beforeCall(); requests++; return { calls };
     }, runModel: async () => assert.fail('No summary or repair request is allowed') }), { code: 'INVALID_REVIEW_ACTION' });
-    assert.equal(space.history.length, 0);
+    assert.equal(space.history.length, 1, 'Only the automatic seed ran; no tool from the invalid response executed');
     assert.equal(requests, 1);
   }
 });
@@ -115,8 +222,8 @@ test('read pages honor both the configured ceiling and context room reserved for
       await args.beforeCall(); requests++;
       return toolAction(compactionReads());
     } }), { code: 'TOOL_RESULT_LIMIT' });
-    assert.equal(requests, 1, 'An oversized observation cannot cause a repair request');
-    assert.equal(space.history.length, 1, 'The rest of the batch stops when its page budget is exceeded');
+    assert.equal(requests, 0, 'An oversized seed observation fails before any provider request');
+    assert.equal(space.history.length, 1, 'Seeding stops when its page budget is exceeded');
   }
 });
 
@@ -141,7 +248,7 @@ test('Pi native compaction preserves the exact evidence archive, project context
     assert.equal(data.remainingCalls, limit - charges + 1);
     if (summaryCalls) {
       assert.match(JSON.stringify(data.conversation), /Exact observation e1/);
-      return finish(['e1', 'e2']);
+      return finish(['e1', 'e3']);
     }
     return toolAction(compactionReads());
   } });
@@ -151,8 +258,8 @@ test('Pi native compaction preserves the exact evidence archive, project context
   assert.equal(result.review.harness, 'pi');
   assert.equal(result.review.calls, charges);
   assert.equal(charges, turns + summaryCalls);
-  assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', 'e2']);
-  assert.equal(result.review.evidence[0].result.text, '+return once(id, operation);');
+  assert.deepEqual(result.review.evidence.map(item => item.id), ['e1', 'e3']);
+  assert.equal(result.review.evidence[0].result.text, DIFF);
   assert.equal(result.review.evidence[1].result.text, `if (seen.has(id)) return; seen.add(id); operation();\n${'x'.repeat(600)}`);
   assert.equal(result.review.evidence[1].result.oid, 'a'.repeat(40));
   assert.deepEqual(result.review.projectContext, snapshot.projectContext);
@@ -168,7 +275,7 @@ test('Pi retains opaque reasoning for native continuation but excludes it from n
       await args.beforeCall();
       turns++;
       assert.match(args.messages.at(-1).content, /A queue worker that must deduplicate retries within one process/);
-      if (compactCalls) return { calls: [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary: 'The helper makes duplicate operations return early.', evidenceIds: ['e1', 'e2'] } }] };
+      if (compactCalls) return { calls: [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary: 'The helper makes duplicate operations return early.', evidenceIds: ['e1', 'e3'] } }] };
       if (turns > 1) {
         const original = args.messages.find(message => message.reasoning_details);
         assert.equal(original.reasoning_details[0].data, encrypted);
@@ -193,7 +300,7 @@ test('Pi retains opaque reasoning for native continuation but excludes it from n
   assert.equal(result.review.compactions, 1);
   assert.equal(result.review.calls, turns + compactCalls);
   assert.equal(result.review.calls, charges);
-  assert.equal(result.review.evidence[0].result.text, '+return once(id, operation);');
+  assert.equal(result.review.evidence[0].result.text, DIFF);
   assert.equal(result.review.evidence[1].result.oid, 'a'.repeat(40));
   assert.doesNotMatch(JSON.stringify(result.review), /opaque-private-reasoning|reasoning_details/);
 });
@@ -218,10 +325,10 @@ test('an oversized opaque continuation fails closed when Pi has no earlier turn 
 
 test('fabricated or listing-only evidence cannot support an assessment', async () => {
   for (const [first, ids, candidate = question] of [
-    [toolAction([['list_files', {}]]), ['e1']],
+    [toolAction([['list_files', {}]]), ['e2']],
     [toolAction([['read_diff', { path: 'worker.js' }]]), ['invented']],
-    [toolAction([['read_file', { path: 'lib/once.js' }]]), ['e1'], { ...question, evidence: [question.evidence[1]] }],
-    [toolAction([['read_diff', { path: '.env' }]]), ['e1']],
+    [toolAction([['read_file', { path: 'lib/once.js' }]]), ['e2'], { ...question, evidence: [question.evidence[1]] }],
+    [toolAction([['read_diff', { path: '.env' }]]), ['e2']],
   ]) {
     let turn = 0;
     await assert.rejects(runReviewer({ ...options, workspace: workspace(), runModel: async args => { await args.beforeCall(); return turn++ ? finish(ids, candidate) : first; } }), { code: 'INSUFFICIENT_EVIDENCE' });
@@ -238,6 +345,99 @@ test('provider calls including compaction obey the shared budget with no retry o
   requests = 0;
   await assert.rejects(runReviewer({ ...options, workspace: workspace(), beforeCall: async () => { throw new Error('shared budget exhausted'); }, runModel: async args => { await args.beforeCall(); requests++; } }), /shared budget exhausted/);
   assert.equal(requests, 0);
+});
+
+test('small and medium reviews reserve synthesis within their size caps for both transports', async () => {
+  assert.equal(reviewerTurnLimit('small', 8), 3);
+  assert.equal(reviewerTurnLimit('medium', 8), 5);
+  assert.equal(reviewerTurnLimit('large', 8), 8);
+  assert.equal(reviewerTurnLimit('small', 2), 2, 'Size caps cannot raise configured limits');
+  for (const nativeTools of [false, true]) for (const [tier, limit] of [['small', 3], ['medium', 5], ['large', 8]]) {
+    const space = workspace();
+    let requests = 0, charges = 0;
+    const provider = async args => {
+      await args.beforeCall(); requests++;
+      const final = requests === limit;
+      if (nativeTools) {
+        const definitions = args.tools.map(tool => tool.function.name);
+        assert.deepEqual(definitions, ['list_files', 'read_file', 'read_diff', 'search', 'finish_review']);
+        assert.deepEqual(args.toolChoice, final ? { type: 'function', function: { name: 'finish_review' } } : undefined);
+        const historicalCalls = args.messages.flatMap(message => message.tool_calls ?? []);
+        for (const call of historicalCalls) assert.ok(definitions.includes(call.function.name), 'Historical calls retain their tool definitions');
+        if (final) {
+          assert.ok(historicalCalls.some(call => call.function.name === 'read_diff'));
+          assert.match(args.messages.at(-1).content, /Final synthesis: investigation is closed/);
+          return { calls: [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1', 'e3'] } }] };
+        }
+        return { calls: [
+          { id: `diff-${requests}`, name: 'read_diff', arguments: { path: 'worker.js' } },
+          { id: `helper-${requests}`, name: 'read_file', arguments: { path: 'lib/once.js' } },
+        ] };
+      }
+      const data = decode(args);
+      assert.equal(data.remainingCalls, limit - requests + 1);
+      assert.deepEqual(args.schema.properties.action.enum, final ? ['finish'] : ['tools', 'finish']);
+      assert.equal(args.schema.properties.calls.maxItems, final ? 0 : 8);
+      if (final) {
+        assert.deepEqual(data.tools, []);
+        assert.deepEqual(args.schema.properties.assessment, schema);
+        assert.match(args.prompt, /Final synthesis: investigation is closed/);
+        return finish();
+      }
+      return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+    };
+    const result = await runReviewer({ ...options, config: { ...config, changeTier: tier }, workspace: space, nativeTools,
+      beforeCall: async () => { charges++; }, runModel: provider, runToolModel: provider });
+    assert.equal(requests, limit); assert.equal(charges, limit); assert.equal(result.review.calls, limit);
+    assert.equal(space.history.length, 1 + (limit - 1) * 2, 'One seed precedes investigation; final synthesis executes no more repository reads');
+    assert.deepEqual(result.questions, [question]);
+  }
+});
+
+test('a noncompliant native final turn cannot execute another read or spend a repair call', async () => {
+  const space = workspace(); let requests = 0, charges = 0;
+  await assert.rejects(runReviewer({ ...options, maxReviewerCalls: 2, workspace: space, nativeTools: true,
+    beforeCall: async () => { charges++; },
+    runToolModel: async args => {
+      await args.beforeCall(); requests++;
+      if (requests === 2) {
+        assert.deepEqual(args.toolChoice, { type: 'function', function: { name: 'finish_review' } });
+        assert.ok(args.tools.some(tool => tool.function.name === 'read_diff'), 'A schema retained for history does not authorize another read');
+      }
+      return { calls: [{ id: `read-${requests}`, name: 'read_diff', arguments: { path: 'worker.js' } }] };
+    }, runModel: async () => assert.fail('No compaction or repair request is allowed'),
+  }), { code: 'REVIEWER_BUDGET' });
+  assert.equal(requests, 2); assert.equal(charges, 2); assert.equal(space.history.length, 2);
+});
+
+test('header-only seed observations fail before spending any model allowance', async () => {
+  const space = workspace({ read: (_name, args, evidencePaths) => {
+    evidencePaths.add(args.path);
+    return { path: args.path, revision: 'base..head', baseOid: 'a'.repeat(40), headOid: 'b'.repeat(40), baseMode: '100644', headMode: '100644', text: 'diff --git a/worker.js b/worker.js\n--- a/worker.js\n+++ b/worker.js\n', offset: 0, nextOffset: null, truncated: false, evidencePaths: [args.path] };
+  } }); let requests = 0;
+  await assert.rejects(runReviewer({ ...options, maxReviewerCalls: 2, workspace: space,
+    runModel: async args => { await args.beforeCall(); requests++; return toolAction([['list_files', {}]]); },
+  }), { code: 'INSUFFICIENT_EVIDENCE' });
+  assert.equal(requests, 0); assert.equal(space.history.length, 1);
+});
+
+test('Pi cannot spend the reserved synthesis request on automatic compaction', async () => {
+  let charges = 0, summaries = 0, turns = 0;
+  const result = await runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 },
+    maxReviewerCalls: 3, workspace: workspace({ padding: 600 }),
+    beforeCall: async () => { charges++; }, runModel: async args => {
+      await args.beforeCall();
+      if (isSummary(args)) { summaries++; return { summary }; }
+      turns++;
+      if (decode(args).remainingCalls === 1) {
+        assert.deepEqual(args.schema.properties.action.enum, ['finish']);
+        return finish();
+      }
+      return toolAction(compactionReads());
+    },
+  });
+  assert.equal(charges, 3); assert.equal(turns, 3); assert.equal(summaries, 0);
+  assert.equal(result.review.calls, 3); assert.equal(result.review.compactions, 0);
 });
 
 test('Pi compaction must pass the shared beforeCall budget before any summary is requested', async () => {
@@ -304,13 +504,13 @@ test('invalid questions stop before Pi can spend another request repairing them'
   await assert.rejects(runReviewer({ ...options, workspace: workspace(), beforeCall: async () => { charges++; }, runModel: async args => {
     await args.beforeCall(); calls++;
     assert.ok(calls <= 2, 'There must be no repair request');
-    return calls === 1 ? toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]) : finish(['e1', 'e2'], { ...question, choices: ['Only one invalid choice'] });
+    return calls === 1 ? toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]) : finish(['e1', 'e3'], { ...question, choices: ['Only one invalid choice'] });
   } }), { code: 'INVALID_MODEL_OUTPUT' });
   assert.equal(calls, 2); assert.equal(charges, 2);
 });
 
 test('graded answers reuse reviewed snippets and context without reopening the repository', async () => {
-  const reviewed = await runReviewer({ ...options, workspace: workspace(), runModel: async args => { await args.beforeCall(); return observations(decode(args)).length ? finish() : toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]); } });
+  const reviewed = await runReviewer({ ...options, workspace: workspace(), runModel: async args => { await args.beforeCall(); return observations(decode(args)).some(item => item.tool === 'read_file') ? finish(['e1', 'e2']) : toolAction([['read_file', { path: 'lib/once.js' }]]); } });
   let calls = 0;
   const evaluator = createEvaluator({ env: {}, workspaceFactory: () => { throw new Error('Must not reopen repository'); }, openRouter: async args => {
     await args.beforeCall();
@@ -351,10 +551,10 @@ test('real immutable workspace follows unchanged callers while ignored and worki
   assert.equal(rejected.error.code, 'PATH_UNAVAILABLE');
   const result = await runReviewer({ ...options, snapshot: change, config: { ...settings, changeTier: 'small' }, workspace: space, runModel: async args => {
     await args.beforeCall(); const seen = observations(decode(args));
-    if (!seen.length) return toolAction([['read_diff', { path: 'worker.js' }]]);
+    assert.ok(seen.length, 'The first request already contains the changed immutable diff');
     if (seen.length === 1) { assert.match(seen[0].result.text, /once/); return toolAction([['read_file', { path: 'lib/once.js' }]]); }
     assert.match(seen[1].result.text, /seen\.has/);
-    return finish();
+    return finish(['e1', 'e2']);
   } });
   assert.deepEqual(result.review.evidencePaths, ['worker.js', 'lib/once.js']);
   assert.doesNotMatch(JSON.stringify(result), /secret-marker|UNCOMMITTED_SECRET_CONTENT|DO_NOT_SEND_PRIVATE_KEY/);

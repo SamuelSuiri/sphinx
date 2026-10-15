@@ -9,7 +9,7 @@ export const DEFAULT_CONFIG = {
   level: 'standard', mode: 'block', events: ['pre-push'],
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
-  maxModelCalls: 10, maxOutputTokens: 4096, allowPaid: false,
+  maxModelCalls: 20, maxOutputTokens: 4096, allowPaid: false,
   agentMaxTurns: 8, toolResultBytes: 16000,
   backgroundPreparation: true, preparationDebounceMs: 1500,
   models: {
@@ -164,7 +164,11 @@ export function stableStringify(value) {
   return JSON.stringify(value);
 }
 export function policyHash(config) {
-  return createHash('sha256').update(stableStringify(config)).digest('hex');
+  // The call ceiling controls spending, not what the human must understand.
+  // Keep the historical default in the canonical representation so existing
+  // 10-call checkpoints retain their IDs when the user changes this ceiling.
+  // This compatibility constant must not follow DEFAULT_CONFIG.
+  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10 })).digest('hex');
 }
 
 export async function saveOpenRouterKey(key, env = process.env) {

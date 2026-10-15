@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
-import { install, uninstall, doctor, dispatchHook } from '../src/install.js';
+import { install, uninstall, doctor, dispatchHook, detectAgents } from '../src/install.js';
 import { getPaths } from '../src/config.js';
 import { lifecycleHome } from '../src/lifecycle-integrations.js';
 
@@ -40,7 +40,8 @@ test('Cursor, OpenCode and Pi install together, preserve user settings, and unin
   const jsonc = '// Keep comments\n{"model":"my/model", "plugin":["my-plugin"]}\n';
   await writeFile(openCodeConfig, jsonc);
   const result = await install({ ...f.options, agents: 'cursor,opencode,pi' });
-  assert.match(result.warnings.join('\n'), /automatically opens a separate Sphinx terminal/);
+  assert.deepEqual(result.agents, ['cursor', 'opencode', 'pi']);
+  assert.deepEqual(result.warnings, []);
   assert.match(result.messages.join('\n'), /Pi extension installed with native/);
   await install({ ...f.options, agents: 'cursor,opencode,pi' });
   const cursor = await json(cursorFile);
@@ -62,6 +63,9 @@ test('Cursor, OpenCode and Pi install together, preserve user settings, and unin
 test('new Cursor settings disappear on uninstall and auto detection finds all supported agent homes', async t => {
   const f = await fixture(t);
   for (const directory of [f.paths.codexHome, f.paths.claudeHome, lifecycleHome('cursor', f.paths, f.env), lifecycleHome('opencode', f.paths, f.env), path.join(f.home, '.pi', 'agent')]) await mkdir(directory, { recursive: true });
+  assert.deepEqual(await detectAgents(f.options), ['codex', 'claude', 'pi', 'cursor', 'opencode']);
+  await assert.rejects(readFile(f.paths.install), { code: 'ENOENT' });
+  assert.throws(() => f.git('config', '--global', '--get', 'core.hooksPath'));
   await install({ ...f.options, agents: 'auto' });
   const manifest = await json(f.paths.install);
   assert.deepEqual(Object.keys(manifest.agents).sort(), ['claude', 'codex', 'cursor', 'opencode', 'pi']);
@@ -133,7 +137,8 @@ test('global installation chains custom hooks, preserves agent settings, and rev
   await writeFile(codexFile, JSON.stringify(existing));
   await writeFile(claudeFile, JSON.stringify({ model: 'user-model', permissions: { deny: ['Bash(rm *)'] } }));
   const result = await install({ ...f.options, agents: 'codex,claude' });
-  assert.ok(result.warnings.some(w => w.includes('trust')));
+  assert.deepEqual(result.agents, ['codex', 'claude']);
+  assert.deepEqual(result.warnings, []);
   await install({ ...f.options, agents: 'codex,claude' });
   assert.equal((await json(codexFile)).hooks.SessionStart.length, 2);
   assert.equal((await json(claudeFile)).model, 'user-model');
@@ -199,6 +204,8 @@ test('repository override is diagnosed and explicitly chained without replacing 
   assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, false);
   await install({ ...f.options, repo: true });
   assert.equal((await doctor(f.options)).checks.find(c => c.name === 'Current repository').ok, true);
+  const reinstalled = await install(f.options);
+  assert.equal(reinstalled.warnings.some(w => w.includes('overrides')), false, 'An existing Sphinx repository dispatcher already covers this override');
   assert.equal(await dispatchHook({ event: 'pre-push', input: '', cwd: f.repo, env: f.env, gate: async () => 0 }), 12);
   await uninstall({ ...f.options, repo: true });
   assert.equal(f.git('config', '--local', '--get', 'core.hooksPath'), 'custom-hooks');
@@ -329,6 +336,7 @@ test('native questionnaire hooks register host MCP servers without changing unre
     const document = await json(file);
     const events = name === 'codex' ? ['PostToolUse'] : ['PostToolUse', 'PostToolUseFailure'];
     assert.equal(document.hooks.SessionStart.length, 1);
+    assert.equal(document.hooks.SessionStart[0].hooks[0].statusMessage, 'Sphinx session setup');
     for (const event of events) {
       const group = document.hooks[event][0];
       assert.equal(group.matcher, 'Bash');
@@ -356,6 +364,7 @@ test('legacy SessionStart-only manifest upgrades in place and removes cleanly', 
   await install({ ...f.options, agents: 'codex' });
   const manifest = await json(f.paths.install), record = manifest.agents.codex;
   const hooks = await json(record.file);
+  delete hooks.hooks.SessionStart[0].hooks[0].statusMessage;
   delete hooks.hooks.PostToolUse;
   await writeFile(record.file, JSON.stringify(hooks));
   await rm(record.mcp.file);
@@ -365,10 +374,52 @@ test('legacy SessionStart-only manifest upgrades in place and removes cleanly', 
   await install({ ...f.options, agents: 'codex' });
   const migrated = await json(record.file);
   assert.equal(migrated.hooks.SessionStart.length, 1);
+  assert.equal(migrated.hooks.SessionStart[0].hooks[0].statusMessage, 'Sphinx session setup');
   assert.equal(migrated.hooks.PostToolUse.length, 1);
   assert.equal((await doctor(f.options)).checks.every(check => check.ok), true);
   await uninstall(f.options);
   await assert.rejects(readFile(record.file), { code: 'ENOENT' });
+});
+
+test('unlabelled native installations gain labels once and preserve unrelated hooks on removal', async t => {
+  const f = await fixture(t);
+  await install({ ...f.options, agents: 'codex,claude' });
+  const manifest = await json(f.paths.install);
+  const other = { type: 'command', command: 'my-session-hook', statusMessage: 'My session hook' };
+  for (const name of ['codex', 'claude']) {
+    const record = manifest.agents[name], document = await json(record.file);
+    delete record.hooks.find(spec => spec.event === 'SessionStart').group.hooks[0].statusMessage;
+    delete document.hooks.SessionStart[0].hooks[0].statusMessage;
+    document.hooks.SessionStart[0].hooks.push(other);
+    await writeFile(record.file, JSON.stringify(document));
+  }
+  await writeFile(f.paths.install, JSON.stringify(manifest));
+  await install({ ...f.options, agents: 'codex,claude' });
+  const upgraded = new Map();
+  for (const name of ['codex', 'claude']) {
+    const file = manifest.agents[name].file, document = await json(file);
+    const handlers = document.hooks.SessionStart.flatMap(group => group.hooks);
+    assert.equal(handlers.length, 2);
+    assert.deepEqual(handlers.find(handler => handler.command === other.command), other);
+    assert.equal(handlers.filter(handler => handler.statusMessage === 'Sphinx session setup').length, 1);
+    upgraded.set(file, await readFile(file, 'utf8'));
+  }
+  await install({ ...f.options, agents: 'codex,claude' });
+  for (const [file, text] of upgraded) assert.equal(await readFile(file, 'utf8'), text);
+  assert.equal((await doctor(f.options)).checks.every(check => check.ok), true);
+  await uninstall(f.options);
+  for (const file of upgraded.keys()) assert.deepEqual(await json(file), { hooks: { SessionStart: [{ hooks: [other] }] } });
+});
+
+test('a user-edited hook label is preserved instead of overwritten or removed', async t => {
+  const f = await fixture(t);
+  await install({ ...f.options, agents: 'codex' });
+  const record = (await json(f.paths.install)).agents.codex, document = await json(record.file);
+  document.hooks.SessionStart[0].hooks[0].statusMessage = 'My custom checkpoint setup';
+  await writeFile(record.file, JSON.stringify(document));
+  await assert.rejects(install({ ...f.options, agents: 'codex' }), /Refusing to replace an edited codex integration/);
+  await uninstall(f.options);
+  assert.deepEqual(await json(record.file), { hooks: { SessionStart: document.hooks.SessionStart } });
 });
 
 test('existing MCP server names and edited native hook matchers are never overwritten', async t => {

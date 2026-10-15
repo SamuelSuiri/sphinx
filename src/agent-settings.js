@@ -105,7 +105,8 @@ export function nativeHookSpecs(name, sessionHandler) {
     timeout: 1800, statusMessage: 'Sphinx understanding check',
   };
   return [
-    { event: 'SessionStart', group: { hooks: [sessionHandler] } },
+    // Codex uses the handler's statusMessage as its /hooks display name too.
+    { event: 'SessionStart', group: { hooks: [{ ...sessionHandler, statusMessage: 'Sphinx session setup' }] } },
     { event: 'PostToolUse', group: { matcher: 'Bash', hooks: [handler] } },
     ...(name === 'claude' ? [{ event: 'PostToolUseFailure', group: { matcher: 'Bash', hooks: [handler] } }] : []),
   ];

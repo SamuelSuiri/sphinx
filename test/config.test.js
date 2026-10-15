@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, getPaths, loadConfig, openRouterKey, policyHash, repositoryConfigInfo, saveConfig, saveOpenRouterKey, validateConfig, writeJson } from '../src/config.js';
+import { DEFAULT_CONFIG, getPaths, loadConfig, openRouterKey, policyHash, repositoryConfigInfo, saveConfig, saveOpenRouterKey, stableStringify, validateConfig, writeJson } from '../src/config.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'sphinx-config-test-'));
@@ -17,7 +18,7 @@ async function fixture(t) {
 test('default configuration is free, bounded, and valid', () => {
   assert.equal(validateConfig(structuredClone(DEFAULT_CONFIG)).provider, 'openrouter');
   assert.equal(DEFAULT_CONFIG.allowPaid, false);
-  assert.ok(DEFAULT_CONFIG.maxModelCalls > 0 && DEFAULT_CONFIG.maxModelCalls <= 10);
+  assert.equal(DEFAULT_CONFIG.maxModelCalls, 20);
   assert.ok(DEFAULT_CONFIG.maxOutputTokens > 0);
   for (const route of Object.values(DEFAULT_CONFIG.models)) assert.deepEqual(route, { provider: 'openrouter', model: 'openrouter/free' });
 });
@@ -186,7 +187,16 @@ test('policy hashes ignore object-key ordering and change with assessment/spend/
   const original = structuredClone(DEFAULT_CONFIG);
   const reordered = Object.fromEntries(Object.entries(original).reverse());
   assert.equal(policyHash(original), policyHash(reordered));
-  for (const changed of [{ ...original, maxModelCalls: 9 }, { ...original, level: 'relaxed' }, { ...original, exclude: ['private/**'] }, { ...original, allowPaid: true }]) assert.notEqual(policyHash(original), policyHash(changed));
+  for (const changed of [{ ...original, level: 'relaxed' }, { ...original, exclude: ['private/**'] }, { ...original, allowPaid: true }, { ...original, model: 'another-model' }, { ...original, maxContextBytes: 50000 }]) assert.notEqual(policyHash(original), policyHash(changed));
+});
+
+test('changing the call ceiling preserves the historical ten-call policy identity', () => {
+  const legacy = { ...structuredClone(DEFAULT_CONFIG), maxModelCalls: 10 };
+  // Compute the pre-upgrade representation independently of policyHash.
+  const historicalHash = createHash('sha256').update(stableStringify(legacy)).digest('hex');
+  for (const maxModelCalls of [1, 9, 10, 20, 100]) {
+    assert.equal(policyHash({ ...legacy, maxModelCalls }), historicalHash);
+  }
 });
 
 test('saved credentials are private, env wins, and keys stay out of config', async t => {

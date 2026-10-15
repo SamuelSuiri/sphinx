@@ -12,10 +12,12 @@ const filename = (token, env) => {
 };
 
 /** Git alone creates these requests. They contain routing metadata, never code or answers. */
-export async function queuePresentation(session, { env = process.env } = {}) {
+export async function queuePresentation(session, { env = process.env, delivery } = {}) {
+  if (delivery !== undefined && delivery !== 'hook') throw new Error('Invalid questionnaire delivery.');
   const request = {
     version: 1, token: randomUUID(), id: session.id,
     repoRoot: session.snapshot.repoRoot, createdAt: Date.now(),
+    ...(delivery === 'hook' ? { delivery } : {}),
     ...(env.PI_SESSION_ID ? { host: 'pi', hostSession: env.PI_SESSION_ID }
       : env.SPHINX_OPENCODE_SESSION ? { host: 'opencode', hostSession: env.SPHINX_OPENCODE_SESSION }
       : env.SPHINX_CURSOR_SESSION ? { host: 'cursor', hostSession: env.SPHINX_CURSOR_SESSION }
@@ -40,6 +42,9 @@ export async function listPresentations({ cwd, host, hostSession, checkpointIds,
     const request = await readJson(path.join(directory(env), file), null);
     if (!request || request.version !== 1 || !/^[a-f0-9]{64}$/.test(request.id)
       || `${request.token}.json` !== file || !Number.isFinite(request.createdAt)) continue;
+    // Git owns these while it waits. A post-tool callback must never start a
+    // second interview, including after cancellation or a killed hook process.
+    if (request.delivery === 'hook') continue;
     if (explicitIds.size && !explicitIds.has(request.id)) continue;
     // Agent session IDs follow shell commands across git -C and cd. Untagged
     // terminal operations stay in their exact repository instead of crossing projects.

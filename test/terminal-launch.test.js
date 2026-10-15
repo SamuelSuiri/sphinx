@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, symlink, stat } from 'node:fs/
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
-import { terminalCommand, launchCheckpointTerminal, checkpointTerminalStatus, waitForCheckpointTerminal, runCheckpointTerminal, createTerminalEnvironmentBridge, readTerminalEnvironment } from '../src/terminal-launch.js';
+import { terminalCommand, launchCheckpointTerminal, checkpointTerminalStatus, waitForCheckpointTerminal, runCheckpointTerminal, createTerminalEnvironmentBridge, readTerminalEnvironment, claimCheckpointDialog, finishCheckpointDialog } from '../src/terminal-launch.js';
 import { terminalHandoff } from '../src/lifecycle-integrations.js';
 
 const ID = 'a'.repeat(64);
@@ -171,6 +171,107 @@ test('worker receives env-only provider keys through IPC without persisting them
   assert.equal(captured.OPENROUTER_API_KEY, 'PRIVATE-KEY');
   assert.doesNotMatch(await readFile(f.recordFile, 'utf8'), /PRIVATE-KEY|OPENROUTER_API_KEY/);
   assert.equal((await json(f.recordFile)).status, 'pending');
+});
+
+test('hook delivery privately preserves only normalized Git operation context and marks a waiting original Git invocation', async t => {
+  const f = await fixture(t); let captured, bridge, launcherEnv;
+  const operation = { GIT_INDEX_FILE: path.join(f.repoRoot, '.git', 'next-index.lock'), GIT_DIR: path.join(f.repoRoot, '.git'), GIT_WORK_TREE: f.repoRoot, GIT_COMMON_DIR: path.join(f.repoRoot, '.git') };
+  const env = { ...f.env, ...operation, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: 'PRIVATE-GIT-HEADER' };
+  await launchCheckpointTerminal({ ...f.options, env, request: { ...f.request, delivery: 'hook', event: 'pre-commit' }, environmentBridge: async (...args) => { bridge = await createTerminalEnvironmentBridge(...args); return bridge; }, launch: async (_command, values) => { launcherEnv = values.env; return true; } });
+  t.after(() => bridge.close());
+  const record = await json(f.recordFile);
+  assert.equal(record.waitingGit, true);
+  assert.doesNotMatch(await readFile(f.recordFile, 'utf8'), /next-index|GIT_|PRIVATE-GIT-HEADER/);
+  for (const key of [...Object.keys(operation), 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) assert.equal(launcherEnv[key], undefined);
+  await runCheckpointTerminal({ recordFile: f.recordFile, token: record.token, env: { ...f.env, GIT_INDEX_FILE: '/wrong/index', GIT_DIR: '/wrong/repo', GIT_WORK_TREE: '/wrong/tree', GIT_COMMON_DIR: '/wrong/common', GIT_CONFIG_VALUE_0: 'PRIVATE-AMBIENT' }, isTTY: true, spawnImpl: (_command, args, values) => {
+    captured = values.env; assert.deepEqual(args.slice(-3), ['check', '--id', ID]);
+    const child = new EventEmitter(); setImmediate(() => child.emit('exit', 0)); return child;
+  } });
+  for (const [key, value] of Object.entries(operation)) assert.equal(captured[key], value);
+  assert.equal(captured.SPHINX_WAITING_GIT, '1'); assert.equal(captured.GIT_CONFIG_VALUE_0, undefined);
+});
+
+test('normal after-tool delivery clears ambient Git context and cannot forward hook-only state', async t => {
+  const f = await fixture(t); let bridge, captured;
+  await launchCheckpointTerminal({ ...f.options, env: { ...f.env, GIT_INDEX_FILE: '/outside/index', GIT_DIR: '/outside/git', SPHINX_WAITING_GIT: '1' }, environmentBridge: async (...args) => { bridge = await createTerminalEnvironmentBridge(...args); return bridge; }, launch: async () => true });
+  t.after(() => bridge.close()); const record = await json(f.recordFile); assert.equal(record.waitingGit, false);
+  await runCheckpointTerminal({ recordFile: f.recordFile, token: record.token, env: { ...f.env, GIT_DIR: '/ambient/git', SPHINX_WAITING_GIT: '1' }, isTTY: true, spawnImpl: (_command, _args, values) => {
+    captured = values.env; const child = new EventEmitter(); setImmediate(() => child.emit('exit', 1)); return child;
+  } });
+  assert.equal(captured.GIT_INDEX_FILE, undefined); assert.equal(captured.GIT_DIR, undefined); assert.equal(captured.SPHINX_WAITING_GIT, undefined);
+});
+
+test('an aborted hook launch never opens a GUI or persists a new terminal record', async t => {
+  const f = await fixture(t), controller = new AbortController(); controller.abort();
+  await assert.rejects(launchCheckpointTerminal({ ...f.options, signal: controller.signal, launch: () => assert.fail('must not launch') }), /abort/i);
+  await assert.rejects(readFile(f.recordFile), { code: 'ENOENT' });
+});
+
+test('a native dialog reserves the checkpoint before a direct Git terminal can open', async t => {
+  const f = await fixture(t);
+  const claim = await claimCheckpointDialog({ request: f.request, env: f.env });
+  assert.equal(claim.status, 'claimed');assert.equal(claim.id, ID);
+  const record = await json(f.recordFile);
+  assert.equal(record.kind, 'native');assert.equal(record.status, 'running');assert.equal(record.pid, process.pid);
+  assert.equal(record.cliPath, undefined);assert.equal(record.envSocket, undefined);
+  const launched = await launchCheckpointTerminal({ ...f.options, launch: () => assert.fail('native form already owns this checkpoint') });
+  assert.equal(launched.status, 'already-open');
+  assert.equal((await claimCheckpointDialog({ request: { ...f.request, token: randomUUID() }, env: f.env })).status, 'busy');
+  assert.equal((await runCheckpointTerminal({ recordFile: f.recordFile, token: claim.token, env: f.env, isTTY: true, spawnImpl: () => assert.fail('native record is not a CLI job') })).status, 'ignored');
+  assert.deepEqual(await finishCheckpointDialog({ id: ID, token: claim.token, status: 'passed', env: f.env }), { status: 'passed', id: ID });
+  assert.equal(await waitForCheckpointTerminal({ id: ID, env: f.env, timeoutMs: 20 }), 'passed');
+});
+
+test('a terminal launch reservation prevents a racing native dialog in both locked and starting states', async t => {
+  const f = await fixture(t); let release, entered;
+  const begun = new Promise(resolve => { entered = resolve; });
+  const launching = launchCheckpointTerminal({ ...f.options, launch: async () => { entered(); await new Promise(resolve => { release = resolve; }); return true; } });
+  await begun;
+  assert.deepEqual(await claimCheckpointDialog({ request: f.request, env: f.env }), { status: 'busy', id: ID });
+  release();await launching;
+  assert.equal((await claimCheckpointDialog({ request: f.request, env: f.env })).status, 'busy');
+  const record = await json(f.recordFile);assert.equal(record.kind, 'terminal');
+  assert.equal((await finishCheckpointDialog({ id: ID, token: record.token, status: 'passed', env: f.env })).status, 'ignored');
+  assert.equal((await json(f.recordFile)).status, 'starting');
+});
+
+test('native pause releases ownership; stale or wrong tokens cannot finish another interview', async t => {
+  const f = await fixture(t);
+  const first = await claimCheckpointDialog({ request: f.request, env: f.env });
+  assert.equal((await finishCheckpointDialog({ id: ID, token: randomUUID(), status: 'passed', env: f.env })).status, 'ignored');
+  assert.equal((await json(f.recordFile)).status, 'running');
+  assert.equal((await finishCheckpointDialog({ id: ID, token: first.token, status: 'pending', env: f.env })).status, 'pending');
+  assert.equal(await waitForCheckpointTerminal({ id: ID, env: f.env, timeoutMs: 20 }), 'pending');
+  const second = await claimCheckpointDialog({ request: { ...f.request, token: randomUUID() }, env: f.env });
+  assert.equal(second.status, 'claimed');assert.notEqual(second.token, first.token);
+  assert.equal((await finishCheckpointDialog({ id: ID, token: first.token, status: 'passed', env: f.env })).status, 'ignored');
+  assert.equal((await json(f.recordFile)).token, second.token);
+  await finishCheckpointDialog({ id: ID, token: second.token, status: 'passed', env: f.env });
+  assert.equal((await finishCheckpointDialog({ id: ID, token: second.token, status: 'pending', env: f.env })).status, 'ignored');
+  assert.equal((await json(f.recordFile)).status, 'passed');
+});
+
+test('dead native owners can be replaced by another dialog or a terminal without trusting stale completion', async t => {
+  const f = await fixture(t);
+  const first = await claimCheckpointDialog({ request: f.request, env: f.env, pid: 12345 });
+  const second = await claimCheckpointDialog({ request: { ...f.request, token: randomUUID() }, env: f.env, isAlive: () => false, pid: 23456 });
+  assert.equal(second.status, 'claimed');assert.notEqual(second.token, first.token);
+  let launches = 0;
+  const terminal = await launchCheckpointTerminal({ ...f.options, request: { ...f.request, token: randomUUID() }, isAlive: () => false, launch: async () => { launches++;return true; } });
+  assert.equal(terminal.status, 'opened');assert.equal(launches, 1);
+  assert.equal((await finishCheckpointDialog({ id: ID, token: second.token, status: 'passed', env: f.env })).status, 'ignored');
+  assert.equal((await json(f.recordFile)).kind, 'terminal');
+});
+
+test('simultaneous native claims choose one owner and finishing waits for a short conflicting lock', async t => {
+  const f = await fixture(t);
+  const claims = await Promise.all([claimCheckpointDialog({ request: f.request, env: f.env }), claimCheckpointDialog({ request: f.request, env: f.env })]);
+  assert.equal(claims.filter(value => value.status === 'claimed').length, 1);assert.equal(claims.filter(value => value.status === 'busy').length, 1);
+  const owner = claims.find(value => value.status === 'claimed');
+  await writeFile(`${f.recordFile}.lock`, JSON.stringify({ pid: process.pid }));
+  const finish = finishCheckpointDialog({ id: ID, token: owner.token, status: 'pending', env: f.env });
+  await new Promise(resolve => setTimeout(resolve, 10));await rm(`${f.recordFile}.lock`);
+  assert.equal((await finish).status, 'pending');assert.equal((await json(f.recordFile)).status, 'pending');
 });
 
 test('simultaneous duplicate terminal workers claim one interview atomically', async t => {

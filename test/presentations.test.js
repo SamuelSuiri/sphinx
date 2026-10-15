@@ -30,6 +30,21 @@ test('Git presentation requests contain metadata only and are claimed once', asy
   assert.equal((await f.list()).length, 1, 'Retrying Git queues a new automatic form');
 });
 
+test('waiting Git owns its whole batch without exposing requests to native post-tool callbacks', async t => {
+  const f = await fixture(t);
+  const first = await queuePresentation(f.session, { env: f.env, delivery: 'hook' });
+  const second = await queuePresentation({ ...f.session, id: 'b'.repeat(64) }, { env: f.env, delivery: 'hook' });
+  assert.deepEqual(await f.list(), []);
+  assert.deepEqual(await f.list({ host: 'cursor', checkpointIds: [first.id, second.id] }), []);
+  assert.equal(first.delivery, 'hook');
+  assert.equal(await claimPresentation(first, { env: f.env }), true);
+  assert.equal(await claimPresentation(second, { env: f.env }), true);
+  assert.deepEqual(await f.list(), []);
+  const fallback = await queuePresentation(f.session, { env: f.env });
+  assert.equal((await f.list())[0].token, fallback.token, 'Only an explicit unavailable-launch fallback becomes native work');
+  await assert.rejects(queuePresentation(f.session, { env: f.env, delivery: 'invented' }), /Invalid questionnaire delivery/);
+});
+
 test('same-snapshot retries coalesce without discarding attempts queued after listing', async t => {
   const f = await fixture(t);
   await queuePresentation(f.session, { env: f.env }); await queuePresentation(f.session, { env: f.env });

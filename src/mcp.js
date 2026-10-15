@@ -127,11 +127,11 @@ export function sanitizeCheckpointSummary(value) {
 
 function toolResult(summary, args, message, isError = ['error', 'unsupported', 'busy'].includes(summary.status)) {
   const instructions = {
-    passed: 'The human completed the native questionnaire. Retry only Git operations that Sphinx blocked. Advisory operations already proceeded; do not repeat them.',
-    pending: 'The native questionnaire remains pending. Do not retry the Git operation until the human asks to resume.',
+    passed: 'The human completed the fallback native questionnaire. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.',
+    pending: 'The fallback native questionnaire remains pending. Do not retry the Git operation until the human asks to resume and the previous Git process has exited. Never duplicate a waiting operation.',
     unsupported: 'Native forms are unavailable in this client. No evaluator was called. The checkpoint remains pending; the human can use sphinx check in a terminal.',
-    error: 'The native checkpoint could not complete and remains pending. Do not retry until the human asks to resume; sphinx check in a terminal can inspect or resume it.',
-    busy: 'A native checkpoint is already open in this MCP connection. Wait for the human to finish it.',
+    error: 'The fallback native checkpoint could not complete and remains pending. Do not retry until the human asks to resume and the previous Git process has exited; sphinx check in a terminal can inspect or resume it.',
+    busy: 'A Sphinx questionnaire is already open. Wait for the human to finish it; do not open another interview or duplicate a waiting Git operation.',
     'not-required': 'No native checkpoint is queued.',
   };
   const hookOutput = summary.status === 'not-required' && summary.checkpoints.length === 0 ? {} : {
@@ -266,7 +266,7 @@ export function runMcpServer({
       if (!closed && !context.suppressResponse) {
         const timedOut = error?.code === 'MCP_ELICITATION_TIMEOUT' || error?.code === 'MCP_REQUEST_TIMEOUT';
         result(id, toolResult({ status: timedOut ? 'pending' : 'error', checkpoints: [] }, args, timedOut
-          ? 'The native checkpoint timed out and remains pending. Do not retry until the human asks to resume; sphinx check in a terminal can resume it.'
+          ? 'The fallback native checkpoint timed out and remains pending. Do not retry until the human asks to resume and the previous Git process has exited; sphinx check in a terminal can resume it.'
           : undefined, true));
       }
     } finally {

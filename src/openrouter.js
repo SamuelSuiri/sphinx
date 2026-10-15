@@ -3,7 +3,7 @@ import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
 
 const incomplete = 'No completion was recorded; Sphinx did not retry or switch models.';
 const failureAdvice = {
-  400: 'Model rejected the structured-output request. Select a model supporting JSON schema.',
+  400: 'Model rejected the structured-output or tool request. Select a model supporting the requested format.',
   401: 'API key was rejected. Run sphinx auth.',
   402: 'OpenRouter account has insufficient credits.',
   404: 'No compatible provider was available for this request. Select a route supporting JSON schema or retry later.',
@@ -11,10 +11,55 @@ const failureAdvice = {
   503: 'Selected model is unavailable. Retry later or explicitly select another route.',
 };
 
-function providerFailure(code) {
+const typedAdvice = {
+  context_length_exceeded: 'The request exceeds the selected model\'s context window. Reduce maxContextBytes or select a model with a larger context window.',
+  max_tokens_exceeded: 'The provider reached the output token limit. Increase maxOutputTokens or select another compatible model.',
+  token_limit_exceeded: 'The provider reported a token budget limit. Check the configured token and account limits.',
+  string_too_long: 'A request field exceeds the provider\'s length limit. Reduce the review context or select another compatible model.',
+  authentication: failureAdvice[401],
+  permission_denied: 'The API key lacks permission or the provider blocked this request. Check the selected route and account permissions.',
+  payment_required: failureAdvice[402],
+  rate_limit_exceeded: failureAdvice[429],
+  provider_overloaded: 'The provider is temporarily overloaded. Wait and retry within the remaining allowance.',
+  provider_unavailable: failureAdvice[503],
+  invalid_request: failureAdvice[400],
+  invalid_prompt: 'The provider rejected the message format. Check route compatibility before retrying.',
+  not_found: failureAdvice[404],
+  precondition_failed: 'The provider rejected a request precondition. Check route compatibility before retrying.',
+  payload_too_large: 'The request exceeds the provider\'s size limit. Reduce the review context or select another compatible model.',
+  unprocessable: failureAdvice[400],
+  content_policy_violation: 'The provider refused or filtered the request. Review the selected model\'s content policy.',
+  refusal: 'The provider refused or filtered the request. Review the selected model\'s content policy.',
+  server: 'The provider reported an internal error. Wait and retry within the remaining allowance.',
+  timeout: 'The provider timed out. Retry later within the remaining allowance.',
+  unmapped: 'The provider returned an unclassified error. Retry later or explicitly select another route.',
+};
+
+export class OpenRouterError extends Error {
+  constructor(message, { status, errorType } = {}) {
+    super(message);
+    this.name = 'OpenRouterError';
+    this.code = 'OPENROUTER_PROVIDER_ERROR';
+    if (status !== undefined) this.status = status;
+    if (errorType !== undefined) this.errorType = errorType;
+  }
+}
+
+function providerFailure(code, errorType) {
   // Provider messages can contain request text or credentials. Only expose known advice.
-  const advice = Number.isInteger(code) && Object.hasOwn(failureAdvice, code) ? failureAdvice[code] : undefined;
+  const advice = Object.hasOwn(typedAdvice, errorType) ? typedAdvice[errorType]
+    : Number.isInteger(code) && Object.hasOwn(failureAdvice, code) ? failureAdvice[code] : undefined;
   return `${advice || 'Request failed. Retry later or explicitly select another route.'} ${incomplete}`;
+}
+
+function providerError(prefix, error, httpStatus) {
+  const code = error?.code;
+  const status = Number.isInteger(code) && code >= 400 && code <= 599 ? code : httpStatus;
+  const candidate = error?.metadata?.error_type;
+  const errorType = typeof candidate === 'string' && Object.hasOwn(typedAdvice, candidate) ? candidate : undefined;
+  const details = [status !== undefined && `code: ${status}`, errorType && `error_type: ${errorType}`].filter(Boolean);
+  const diagnostic = details.length ? ` (${details.join('; ')})` : ' (no error code or category returned)';
+  return new OpenRouterError(`${prefix}${diagnostic}. ${providerFailure(status, errorType)}`, { status, errorType });
 }
 
 function tokenUsage(data) {
@@ -28,9 +73,9 @@ function tokenUsage(data) {
 }
 
 function requireFinishedChoice(data, config, allowTools = false) {
-  if (data.error) throw new Error(`OpenRouter reported a provider error. ${providerFailure(data.error.code)}`);
+  if (data.error) throw providerError('OpenRouter reported a provider error', data.error);
   const choice = Array.isArray(data.choices) ? data.choices[0] : undefined;
-  if (choice?.error || choice?.finish_reason === 'error') throw new Error(`OpenRouter reported a provider error during generation (finish_reason: error). ${providerFailure(choice.error?.code)}`);
+  if (choice?.error || choice?.finish_reason === 'error') throw providerError('OpenRouter reported a provider error during generation (finish_reason: error)', choice.error);
   if (choice?.finish_reason === 'length') {
     throw new Error(`OpenRouter cut off the assessment at its output limit (finish_reason: length; request budget: ${config.maxOutputTokens} tokens, including reasoning).${tokenUsage(data)} Increase maxOutputTokens in your global Sphinx configuration or select another compatible model. ${incomplete}`);
   }
@@ -52,8 +97,14 @@ function requireFinishedChoice(data, config, allowTools = false) {
   return choice.message.content;
 }
 
-async function requestOpenRouter({messages, schema, tools, config, env = process.env, fetchImpl = fetch, beforeCall, signal}) {
+async function requestOpenRouter({messages, schema, tools, toolChoice, config, env = process.env, fetchImpl = fetch, beforeCall, signal}) {
   signal?.throwIfAborted();
+  if (toolChoice !== undefined && (toolChoice?.type !== 'function' ||
+    Object.keys(toolChoice).length !== 2 || !toolChoice.function || Object.keys(toolChoice.function).length !== 1 ||
+    typeof toolChoice.function.name !== 'string' || !toolChoice.function.name ||
+    !Array.isArray(tools) || !tools.some(tool => tool.function?.name === toolChoice.function.name))) {
+    throw new Error('The required reviewer tool must be one of the supplied function tools. No model request was made.');
+  }
   const key = await openRouterKey(env);
   if (!key) throw new Error('OpenRouter requires an API key, including free models. Run sphinx auth or set OPENROUTER_API_KEY. Create a key at https://openrouter.ai/settings/keys.');
   const model = config.model || 'openrouter/free';
@@ -62,7 +113,7 @@ async function requestOpenRouter({messages, schema, tools, config, env = process
   const provider = { require_parameters: true };
   if (!config.allowPaid || free) provider.max_price = { prompt: 0, completion: 0, request: 0 };
   const body = { model, provider, stream: false, max_completion_tokens: config.maxOutputTokens, messages };
-  if (tools) { body.tools = tools; body.tool_choice = 'required'; }
+  if (tools) { body.tools = tools; body.tool_choice = toolChoice ?? 'required'; }
   if (schema) body.response_format = { type: 'json_schema', json_schema: { name: 'sphinx_result', strict: true, schema } };
   const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor((config.timeoutSeconds ?? 180) * 1000)));
   const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -82,9 +133,6 @@ async function requestOpenRouter({messages, schema, tools, config, env = process
     if (signal?.aborted) throw signal.reason;
     throw new Error(e.name === 'TimeoutError' ? 'OpenRouter timed out. No completion was recorded; retry when ready.' : 'Could not reach OpenRouter. No completion was recorded. Check your connection.');
   }
-  if (!response.ok) {
-    throw new Error(`OpenRouter HTTP ${response.status}: ${providerFailure(response.status)}`);
-  }
   let data;
   try {
     let bytes=0;
@@ -96,7 +144,12 @@ async function requestOpenRouter({messages, schema, tools, config, env = process
       chunks.push(Buffer.from(chunk));
     }
     data=JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch { if (signal?.aborted) throw signal.reason; throw new Error('OpenRouter returned invalid or oversized JSON. No completion was recorded.'); }
+  } catch {
+    if (signal?.aborted) throw signal.reason;
+    if (!response.ok) throw providerError(`OpenRouter HTTP ${response.status}`, undefined, response.status);
+    throw new Error('OpenRouter returned invalid or oversized JSON. No completion was recorded.');
+  }
+  if (!response.ok) throw providerError(`OpenRouter HTTP ${response.status}`, data?.error ?? data?.choices?.[0]?.error, response.status);
   if (!data || typeof data!=='object' || Array.isArray(data)) throw new Error('OpenRouter returned an invalid response object.');
   requestSignal.throwIfAborted();
   return requireFinishedChoice(data, config, Boolean(tools));
@@ -126,6 +179,9 @@ export async function callOpenRouterTurn(options) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error(`OpenRouter returned invalid reviewer tool arguments. ${incomplete}`);
     return { id: call.id, name: call.function.name, arguments: args };
   });
+  if (options.toolChoice && (calls.length !== 1 || calls[0].name !== options.toolChoice.function.name)) {
+    throw new Error(`OpenRouter did not return the required reviewer tool. No tools from this response were executed. ${incomplete}`);
+  }
   const assistant = { role: 'assistant', content: typeof message.content === 'string' ? message.content : null, tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) };
   // Some providers require their opaque reasoning continuation data on later tool turns.
   if (Array.isArray(message.reasoning_details) && message.reasoning_details.length) assistant.reasoning_details = message.reasoning_details;

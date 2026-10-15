@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, writeJson } from '../src/config.js';
 import { createSessionStore, sessionFile } from '../src/sessions.js';
+import { OpenRouterError } from '../src/openrouter.js';
 
 const q={id:'retry',concept:'idempotency',prompt:'Can a repeated request duplicate the operation? Give the cause.',choices:['Yes','No'],expectedAnswer:'Yes: no deduplication.',rationale:'The insert happens on every call.',evidence:[{path:'src/order.js',reason:'An unconditional insert.'}]};
 const snapshot={id:'a'.repeat(64),repoRoot:'/test/repo',repoId:'r',event:'pre-push',target:{ref:'refs/heads/main'},files:['src/order.js'],evidence:'insert()',stats:{additions:10,deletions:1,files:1}};
@@ -71,7 +72,7 @@ test('learning and dispute requests cannot award a pass',async t=>{
 test('failed generation consumes a call and a budget limit prevents further calls',async t=>{
   let calls=0;
   const {store,config}=await fixture(t,{generate:async()=>{calls++;throw new Error('Unavailable');}});
-  config.maxModelCalls=2;
+  config.maxModelCalls=3;
   await store.ensure(snapshot,config);
   await assert.rejects(store.start(snapshot.id,config),/Unavailable/);
   await assert.rejects(store.start(snapshot.id,config),/call limit/);
@@ -261,5 +262,164 @@ test('oversized new question sets fail without saving questions or approving the
   assert.equal(record.status,'pending');
   assert.equal(record.questions.length,0);
   assert.equal(record.calls,1);
+  assert.equal(await store.approved(snapshot,config),false);
+});
+
+async function failedReview(store, env, config, calls = 9) {
+  const session = await store.ensure(snapshot, config);
+  session.calls = calls;
+  session.preparation = { status: 'failed', completedAt: new Date().toISOString() };
+  await writeJson(sessionFile(snapshot.id, env), session);
+  return session;
+}
+
+test('ordinary review errors keep their recovery flow and reviewer exhaustion reuses the remaining allowance', async t => {
+  const authError=new Error('Evaluator authentication is unavailable. Configure it and try again.');
+  const first=await fixture(t,{generate:async()=>{throw authError;}});
+  await first.store.ensure(snapshot,first.config);
+  await assert.rejects(first.store.start(snapshot.id,first.config),error=>error===authError && !error.message.includes('--retry-review'));
+  assert.equal((await first.store.read(snapshot.id)).calls,1);
+  const exhausted=Object.assign(new Error('Review turn budget exhausted.'),{code:'REVIEWER_BUDGET'});
+  const second=await fixture(t,{generate:async()=>{throw exhausted;}});
+  await second.store.ensure(snapshot,second.config);
+  await assert.rejects(second.store.start(snapshot.id,second.config),error=>error.code==='REVIEWER_BUDGET' && error.message.includes(`sphinx check --id ${snapshot.id}`) && !error.message.includes('--retry-review'));
+  assert.equal((await second.store.read(snapshot.id)).callLimit,undefined);
+});
+
+test('typed provider failures reuse remaining allowance with exact recovery command and sanitized diagnostic fields', async t => {
+  const providerError=Object.assign(new OpenRouterError('OpenRouter provider error (finish_reason: error).',{status:503,errorType:'server'}),{
+    generationId:'gen-safe-test',
+    cause:new Error('PRIVATE PROVIDER PAYLOAD'),
+  });
+  const {store,env,config}=await fixture(t,{generate:async(_s,_c,{beforeCall})=>{await beforeCall();await beforeCall();await beforeCall();throw providerError;}});
+  config.maxModelCalls=10;
+  await failedReview(store,env,config);await store.retryReview(snapshot.id,config);
+  await assert.rejects(store.start(snapshot.id,config),error=>{
+    assert.equal(error.name,'OpenRouterError');assert.equal(error.code,'OPENROUTER_PROVIDER_ERROR');assert.equal(error.status,503);
+    assert.equal(error.errorType,'server');assert.equal(error.generationId,undefined);assert.equal(error.cause,undefined);
+    assert.match(error.message,/7 model calls remain.*12\/19 used/);
+    assert.ok(error.message.includes(`sphinx check --id ${snapshot.id}`));assert.doesNotMatch(error.message,/--retry-review|PRIVATE PROVIDER/);
+    return true;
+  });
+  const record=await store.read(snapshot.id);
+  assert.equal(record.calls,12);assert.equal(record.callLimit,19);assert.equal(record.reviewRetries.length,1);
+  assert.equal(record.questions.length,0);assert.equal(record.preparation.status,'failed');assert.equal(await store.approved(snapshot,config),false);
+});
+
+test('typed provider failure offers extension only when the remaining budget cannot fit review and grading', async t => {
+  const providerError=Object.assign(new OpenRouterError('Provider unavailable.',{status:503}),{generationId:'gen-safe-test'});
+  const {store,config}=await fixture(t,{generate:async()=>{throw providerError;}});
+  config.maxModelCalls=3;await store.ensure(snapshot,config);
+  await assert.rejects(store.start(snapshot.id,config),error=>{
+    assert.equal(error.code,'OPENROUTER_PROVIDER_ERROR');assert.equal(error.status,503);assert.equal(error.generationId,undefined);
+    assert.ok(error.message.includes(`sphinx check --id ${snapshot.id} --retry-review`));
+    assert.doesNotMatch(error.message,/retry within that allowance/);return true;
+  });
+  assert.equal((await store.read(snapshot.id)).calls,1);assert.equal((await store.read(snapshot.id)).callLimit,undefined);
+});
+
+test('explicit review retry retains prior usage, authorizes one fresh allowance, and performs no inference', async t => {
+  let generations = 0, grades = 0;
+  const {store,env,config}=await fixture(t, {
+    generate:async()=>{generations++;return {questions:[q]};},
+    grade:async()=>{grades++;return {verdict:'correct',feedback:'Correct.',followUp:null};},
+  });
+  config.maxModelCalls=10;
+  await failedReview(store,env,config);
+  const authorized=await store.retryReview(snapshot.id,config);
+  assert.deepEqual(authorized.usage,{calls:9,limit:19});
+  assert.equal(authorized.reviewAttempts,2);
+  assert.equal(authorized.status,'pending');assert.equal(authorized.preparation.status,'pending');
+  assert.equal(generations,0);assert.equal(grades,0);assert.equal(await store.approved(snapshot,config),false);
+  const record=await store.read(snapshot.id);
+  assert.equal(record.config.maxModelCalls,10);
+  assert.deepEqual(record.reviewRetries,[{at:record.reviewRetries[0].at,calls:9,previousLimit:10,limit:19}]);
+  assert.equal(Number.isFinite(Date.parse(record.reviewRetries[0].at)),true);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  assert.equal((await store.start(snapshot.id,config)).usage.calls,10);
+  const passed=await store.answer(snapshot.id,'Yes, every attempt inserts.',config);
+  assert.deepEqual(passed.usage,{calls:11,limit:19});assert.equal(passed.status,'passed');
+  assert.equal(generations,1);assert.equal(grades,1);
+});
+
+test('ordinary starts never reset or extend a failed review budget and explain the exact explicit recovery command', async t => {
+  let generations=0;
+  const {store,env,config}=await fixture(t,{generate:async()=>{generations++;return {questions:[q]};}});
+  config.maxModelCalls=10;
+  await failedReview(store,env,config);
+  for (let attempt=0;attempt<2;attempt++) {
+    await assert.rejects(store.start(snapshot.id,config),error=>error.message.includes(`sphinx check --id ${snapshot.id} --retry-review`) && /at least 2/.test(error.message));
+  }
+  const record=await store.read(snapshot.id);
+  assert.equal(generations,0);assert.equal(record.calls,9);assert.equal(record.callLimit,undefined);assert.equal(record.reviewRetries,undefined);
+  assert.deepEqual(store.public(record).usage,{calls:9,limit:10});
+  assert.equal(record.preparation.status,'failed');assert.equal(await store.approved(snapshot,config),false);
+});
+
+test('fewer than two review calls fail before inference, and an inherently undersized fresh allowance is refused', async t => {
+  let generations=0;
+  const {store,config}=await fixture(t,{generate:async()=>{generations++;return {questions:[q]};}});
+  config.maxModelCalls=2;
+  await store.ensure(snapshot,config);
+  await assert.rejects(store.prepare(snapshot.id,config),/at least 2.*reserved grading.*No model request.*--retry-review/);
+  assert.equal(generations,0);assert.equal((await store.read(snapshot.id)).calls,0);
+  await assert.rejects(store.retryReview(snapshot.id,config),/configured allowance of 2 cannot fit/);
+  assert.equal((await store.read(snapshot.id)).reviewRetries,undefined);
+});
+
+test('explicit recovery validates unchanged policy and snapshot before changing any counters', async t => {
+  let stale=false;
+  const {store,env,config}=await fixture(t,{validate:async()=>{if(stale)throw new Error('Snapshot changed');}});
+  await failedReview(store,env,config);
+  const before=await store.read(snapshot.id);
+  await assert.rejects(store.retryReview(snapshot.id,{...config,level:'thorough'}),/settings changed/);
+  assert.deepEqual(await store.read(snapshot.id),before);
+  stale=true;
+  await assert.rejects(store.retryReview(snapshot.id,config),/Snapshot changed/);
+  assert.deepEqual(await store.read(snapshot.id),before);
+});
+
+test('unstarted reviews, active questions, grading failures, and passed receipts cannot be restarted', async t => {
+  let failGrade=true;
+  const {store,config}=await fixture(t,{grade:async()=>{if(failGrade)throw new Error('Grading unavailable');return {verdict:'correct',feedback:'Correct.',followUp:null};}});
+  await store.ensure(snapshot,config);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  await store.start(snapshot.id,config);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  await assert.rejects(store.answer(snapshot.id,'Yes.',config),/Grading unavailable/);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  assert.equal((await store.read(snapshot.id)).calls,2);
+  assert.equal((await store.read(snapshot.id)).questions[0].id,q.id);
+  failGrade=false;await store.answer(snapshot.id,'Yes.',config);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  assert.equal(await store.approved(snapshot,config),true);
+  assert.equal((await store.read(snapshot.id)).reviewRetries,undefined);
+});
+
+test('review retries share the session lock and cannot double-authorize concurrent requests', async t => {
+  let hold=false, entered, release;
+  const ready=new Promise(resolve=>{entered=resolve;}), pause=new Promise(resolve=>{release=resolve;});
+  const {store,env,config}=await fixture(t,{validate:async()=>{if(hold){entered();await pause;}}});
+  config.maxModelCalls=10;
+  await failedReview(store,env,config);
+  hold=true;
+  const first=store.retryReview(snapshot.id,config);await ready;
+  await assert.rejects(store.retryReview(snapshot.id,config),/already running/);
+  release();await first;
+  const record=await store.read(snapshot.id);
+  assert.equal(record.reviewRetries.length,1);assert.equal(record.calls,9);assert.equal(record.callLimit,19);
+});
+
+test('grading observes the extended cumulative limit and a later failure never silently extends it again', async t => {
+  const {store,env,config}=await fixture(t,{grade:async()=>({verdict:'ambiguous',feedback:'Unclear; no receipt.',followUp:null})});
+  config.maxModelCalls=3;
+  await failedReview(store,env,config,2);
+  await store.retryReview(snapshot.id,config);
+  assert.deepEqual((await store.start(snapshot.id,config)).usage,{calls:3,limit:5});
+  await store.answer(snapshot.id,'Maybe.',config);await store.answer(snapshot.id,'Maybe again.',config);
+  await assert.rejects(store.answer(snapshot.id,'Still maybe.',config),/call limit \(5\)/);
+  await assert.rejects(store.retryReview(snapshot.id,config),/Only a failed review/);
+  const record=await store.read(snapshot.id);
+  assert.equal(record.calls,5);assert.equal(record.callLimit,5);assert.equal(record.reviewRetries.length,1);
   assert.equal(await store.approved(snapshot,config),false);
 });

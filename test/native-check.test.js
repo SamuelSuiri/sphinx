@@ -10,6 +10,7 @@ import { pushSnapshots, revalidateSnapshot } from '../src/git.js';
 import { createSessionStore } from '../src/sessions.js';
 import { queuePresentation, listPresentations } from '../src/presentations.js';
 import { runNativeCheckpoint } from '../src/native-check.js';
+import { checkpointTerminalStatus, claimCheckpointDialog, finishCheckpointDialog } from '../src/terminal-launch.js';
 
 const exec = promisify(execFile);
 const q = {
@@ -106,15 +107,42 @@ for (const response of [{ action: 'decline' }, { action: 'cancel' }, { action: '
     assert.equal(f.graded.length, 0);
     assert.equal(await f.store.approved(f.snapshot, f.config), false);
     assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 0);
+    assert.equal((await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env })).status, 'pending');
   });
 }
 
 test('unsupported clients preserve requests and make no evaluator calls', async t => {
   const f = await fixture(t);
-  const result = await f.run({ supportsForm: false, elicit: async () => assert.fail('No form support') });
+  const result = await f.run({ supportsForm: false, elicit: async () => assert.fail('No form support'), reserveDialog: async () => assert.fail('No reservation without form support') });
   assert.equal(result.status, 'unsupported');
   assert.equal(f.generated(), 0);
   assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 1);
+});
+
+test('an existing questionnaire reservation prevents native inference and duplicate forms', async t => {
+  const f = await fixture(t);
+  const [request] = await listPresentations({ cwd: f.cwd, env: f.env });
+  const reservation = await claimCheckpointDialog({ request, env: f.env });
+  assert.equal(reservation.status, 'claimed');
+  const result = await f.run({ elicit: async () => assert.fail('Another questionnaire owns the checkpoint') });
+  assert.equal(result.status, 'busy');
+  assert.equal(f.generated(), 0); assert.equal(f.graded.length, 0);
+  assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 0);
+  assert.equal((await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env })).status, 'running');
+  await finishCheckpointDialog({ id: f.snapshot.id, token: reservation.token, status: 'pending', env: f.env });
+});
+
+test('native dialogs hold the shared reservation through human input and release only verified completion as passed', async t => {
+  const f = await fixture(t);
+  const result = await f.run({ elicit: async () => {
+    const status = await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env });
+    assert.equal(status.status, 'running');
+    const contender = await claimCheckpointDialog({ request: { id: f.snapshot.id, repoRoot: f.cwd, token: '00000000-0000-0000-0000-000000000000' }, env: f.env });
+    assert.equal(contender.status, 'busy');
+    return answer('Yes. Every attempt inserts.');
+  } });
+  assert.equal(result.status, 'passed');
+  assert.equal((await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env })).status, 'passed');
 });
 
 test('pausing consumes the queued Git batch so later inspection commands do not reopen it', async t => {
@@ -126,7 +154,10 @@ test('pausing consumes the queued Git batch so later inspection commands do not 
   assert.equal(forms, 1);
   assert.equal(f.generated(), 1);
   assert.equal((await listPresentations({ cwd: f.cwd, env: f.env })).length, 0);
-  assert.equal((await f.store.read(other.id)).status, 'pending');
+  // Requests queued in the same millisecond may be presented in either order.
+  // Exactly one was prepared; the rest of the consumed batch stays untouched.
+  const states = await Promise.all([f.snapshot.id, other.id].map(id => f.store.read(id)));
+  assert.deepEqual(states.map(session => session.status).sort(), ['active', 'pending']);
 });
 
 test('empty queues do not start the evaluator or open a form', async () => {
@@ -159,6 +190,7 @@ test('changed Git source while the form is open fails before grading', async t =
   assert.equal(result.status, 'error');
   assert.equal(f.graded.length, 0);
   assert.equal(await f.store.approved(f.snapshot, f.config), false);
+  assert.equal((await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env })).status, 'pending');
 });
 
 test('changed policy while the form is open fails before grading', async t => {
@@ -196,6 +228,7 @@ test('abort while grading does not record a receipt or disclose evaluator output
   assert.equal((await f.store.read(f.snapshot.id)).index, 0);
   assert.equal(result.calls, 2);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE_LAST_GRADE/);
+  assert.equal((await checkpointTerminalStatus({ id: f.snapshot.id, env: f.env })).status, 'pending');
 });
 
 test('source changes during final grading prevent completion', async t => {

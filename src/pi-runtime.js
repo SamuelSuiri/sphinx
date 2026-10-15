@@ -7,7 +7,7 @@ import { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsSto
 const size = value => Buffer.byteLength(JSON.stringify(value));
 
 /** Embed Pi's real AgentSession, with no ambient resources, tools or credentials. */
-export async function runPiSession({ systemPrompt, prompt, tools, request, maxContextBytes, maxOutputTokens, signal, onCompaction }) {
+export async function runPiSession({ systemPrompt, prompt, tools, request, maxContextBytes, maxOutputTokens, signal, onCompaction, canCompact = () => true }) {
   signal.throwIfAborted();
   const directory = await mkdtemp(join(tmpdir(), 'sphinx-reviewer-'));
   let session, fatal;
@@ -43,6 +43,10 @@ export async function runPiSession({ systemPrompt, prompt, tools, request, maxCo
             signal: options.signal ? AbortSignal.any([signal, options.signal]) : signal,
           });
           signal.throwIfAborted();
+          // Sphinx reserves the last charged request for assessment synthesis.
+          // Disable Pi's automatic compaction before it checks the next boundary;
+          // otherwise a summary can consume the request needed to finish.
+          if (!canCompact()) settingsManager.setCompactionEnabled(false);
           response.content = result.content;
           response.stopReason = result.content.some(item => item.type === 'toolCall') ? 'toolUse' : 'stop';
           if (result.nativeMessage) response.sphinxNativeMessage = result.nativeMessage;

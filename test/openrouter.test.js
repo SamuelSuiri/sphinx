@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callOpenRouter, callOpenRouterTurn } from '../src/openrouter.js';
+import { callOpenRouter, callOpenRouterTurn, OpenRouterError } from '../src/openrouter.js';
 import { DEFAULT_CONFIG, saveOpenRouterKey } from '../src/config.js';
 
 const apiKey = 'test-only-private-openrouter-key';
@@ -92,6 +92,48 @@ test('network and timeout errors do not leak request credentials', async () => {
       return true;
     });
   }
+});
+
+test('typed provider failures expose only known categories and numeric status, including HTTP error bodies', async () => {
+  const diagnostic = { code: 502, message: apiKey, metadata: { error_type: 'provider_overloaded', provider_name: apiKey, provider_code: apiKey, raw: apiKey } };
+  for (const response of [
+    () => Response.json({ id: apiKey, error: diagnostic }),
+    () => Response.json({ choices: [{ finish_reason: 'error', error: diagnostic, message: { content: apiKey } }] }),
+    () => Response.json({ error: diagnostic }, { status: 502 }),
+  ]) {
+    let charges = 0, requests = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, beforeCall: async () => { charges++; }, fetchImpl: async () => { requests++; return response(); } }), error => {
+      assert.ok(error instanceof OpenRouterError);
+      assert.equal(error.code, 'OPENROUTER_PROVIDER_ERROR');
+      assert.equal(error.status, 502);
+      assert.equal(error.errorType, 'provider_overloaded');
+      assert.match(error.message, /code: 502; error_type: provider_overloaded/);
+      assert.match(error.message, /temporarily overloaded/);
+      assert.ok(!error.message.includes(apiKey));
+      assert.ok(!JSON.stringify(error).includes(apiKey));
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.equal(charges, 1); assert.equal(requests, 1);
+  }
+});
+
+test('unknown provider diagnostics stay unclassified and safe; typed causes take precedence over status', async () => {
+  for (const diagnostic of [undefined, { code: apiKey, message: apiKey, metadata: { error_type: apiKey } }, { code: 9999, metadata: { error_type: 'constructor' } }]) {
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => Response.json({ choices: [{ finish_reason: 'error', error: diagnostic }] }) }), error => {
+      assert.equal(error.code, 'OPENROUTER_PROVIDER_ERROR');
+      assert.equal(error.status, undefined); assert.equal(error.errorType, undefined);
+      assert.match(error.message, /no error code or category returned/);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+  }
+  await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => Response.json({ error: { code: 500, metadata: { error_type: 'authentication' } } }, { status: 500 }) }), error => {
+    assert.match(error.message, /error_type: authentication/);
+    assert.match(error.message, /sphinx auth/);
+    assert.doesNotMatch(error.message, /internal error/);
+    return true;
+  });
 });
 
 test('truncated, refused, malformed, and provider-error responses never pass', async () => {
@@ -195,6 +237,39 @@ test('native reviewer requests preserve tool calls and observations with free-on
   assert.deepEqual(body.provider.max_price, { prompt: 0, completion: 0, request: 0 });
   assert.deepEqual(result.calls, [{ id: 'diff-1', name: 'read_diff', arguments: { path: 'worker.js' } }]);
   assert.deepEqual(result.message.reasoning_details, [{ type: 'reasoning.encrypted', data: 'opaque-provider-state' }]);
+});
+
+test('forced final synthesis preserves history schemas while selecting exactly one finish tool', async () => {
+  const finishTool = { type: 'function', function: { name: 'finish_review', parameters: { type: 'object', properties: {}, additionalProperties: false } } };
+  const toolChoice = { type: 'function', function: { name: 'finish_review' } };
+  const tools = [...nativeTools, finishTool];
+  const messages = [{ role: 'assistant', content: null, tool_calls: [nativeCall] }, { role: 'tool', tool_call_id: 'diff-1', content: 'immutable code observation' }];
+  const finishCall = { id: 'finish-1', type: 'function', function: { name: 'finish_review', arguments: '{}' } };
+  let requests = 0, charges = 0;
+  const options = { ...defaults, schema: undefined, messages, tools, toolChoice, beforeCall: async () => { charges++; } };
+  const response = await callOpenRouterTurn({ ...options, fetchImpl: async (_url, init) => {
+    requests++;
+    const body = JSON.parse(init.body);
+    assert.deepEqual(body.tools, tools); assert.deepEqual(body.messages, messages);
+    assert.deepEqual(body.tool_choice, toolChoice);
+    assert.deepEqual(body.provider.max_price, { prompt: 0, completion: 0, request: 0 });
+    return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [finishCall] } }] });
+  } });
+  assert.deepEqual(response.calls, [{ id: 'finish-1', name: 'finish_review', arguments: {} }]);
+  assert.equal(requests, 1); assert.equal(charges, 1);
+  for (const tool_calls of [[nativeCall], [finishCall, nativeCall], [finishCall, { ...finishCall, id: 'finish-2' }]]) {
+    await assert.rejects(callOpenRouterTurn({ ...options, fetchImpl: async () => Response.json({ choices: [{ finish_reason: 'tool_calls', message: { tool_calls } }] }) }), /did not return the required reviewer tool.*No tools.*executed/);
+  }
+});
+
+test('invalid forced tools fail before any budget charge or request', async () => {
+  let requests = 0, charges = 0;
+  for (const toolChoice of ['none', {}, null, { type: 'function', function: { name: 'shell' } }, { type: 'function', function: { name: 'read_diff', extra: apiKey } }]) {
+    await assert.rejects(callOpenRouterTurn({ ...defaults, schema: undefined, messages: [], tools: nativeTools, toolChoice,
+      beforeCall: async () => { charges++; }, fetchImpl: async () => { requests++; return success(); },
+    }), /required reviewer tool/);
+  }
+  assert.equal(requests, 0); assert.equal(charges, 0);
 });
 
 test('native reviewer accepts bounded multi-tool batches, including completed stop responses with no text', async () => {

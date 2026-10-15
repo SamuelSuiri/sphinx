@@ -15,11 +15,13 @@ const HERE = fileURLToPath(import.meta.url);
 export const TERMINAL_GUIDANCE = [
   'Sphinx checks the human\'s understanding at Git checkpoints selected by .sphinxconfig.',
   'Git alone decides when a checkpoint is required. Do not alter policy or bypass its hooks.',
-  'This integration automatically opens a separate Sphinx terminal window for the exact queued checkpoint and waits for the human\'s result. The human answers directly in that window. Do not open another interview or poll for answers.',
+  'For a blocking checkpoint, the Git hook opens a separate Sphinx terminal and keeps the original Git operation waiting. After the human passes and Git verifies the exact change and policy, that same operation continues automatically. Never start a duplicate Git operation while it waits.',
+  'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
+  'After shell execution, this integration handles fallback or advisory requests only. It opens a Sphinx terminal for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',
   'If automatic terminal opening is unavailable, the notice gives a manual fallback: the human runs `sphinx check` in their own terminal in the checked repository.',
   'Never run the interview or answer, explain, or dispute commands for the human. Do not relay questions or answers through chat, read private Sphinx session files or answer keys, or automate the questionnaire.',
   'Respect .sphinxignore and configured exclusions. The independent evaluator only sees permitted immutable Git evidence.',
-  'The human can learn, dispute, or pause inside the terminal questionnaire. Retry a blocked Git operation only after they complete the check; do not repeat advisory operations that already proceeded.',
+  'The human can learn, dispute, or pause inside the terminal questionnaire. After a fallback check passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.',
 ].join('\n');
 
 export function lifecycleHome(name, paths, env = process.env) {
@@ -61,9 +63,9 @@ async function write(file, content) {
   finally { await rm(temporary, { force: true }); }
 }
 
-function plan({ name, file, before, after, record, warnings }) {
+function plan({ name, file, before, after, record }) {
   return {
-    name, record, warnings,
+    name, record,
     async commit() {
       await checkDirectories(record.home, file);
       if (await text(file) !== before) throw new Error(`Settings changed during installation: ${file}. Retry installation.`);
@@ -103,8 +105,7 @@ export async function prepareCursorIntegration(paths, { env = process.env, previ
     document.hooks[event] ??= [];
     if (!document.hooks[event].some(item => same(item, handler))) document.hooks[event].push(handler);
   }
-  return plan({ name: 'cursor', file, before, after: `${JSON.stringify(document, null, 2)}\n`, record,
-    warnings: ['Cursor automatically opens a separate Sphinx terminal window for human answers on supported desktops. macOS may request permission to control Terminal. Headless sessions use a manual fallback. User hooks apply locally, not to cloud agents. Start a new session after installation.'] });
+  return plan({ name: 'cursor', file, before, after: `${JSON.stringify(document, null, 2)}\n`, record });
 }
 
 /** OpenCode 1.x local JS plugins load without changing opencode.json/JSONC. */
@@ -115,8 +116,7 @@ export async function prepareOpenCodeIntegration(paths, { env = process.env, pre
   const before = await text(file);
   const after = `// Managed by Sphinx. OpenCode 1.x lifecycle integration.\nimport { registerOpenCodeIntegration } from ${JSON.stringify(pathToFileURL(HERE).href)};\nexport const SphinxPlugin = async context => registerOpenCodeIntegration(context, { home: ${JSON.stringify(paths.home)} });\n`;
   if (before !== null && before !== after && (!previous || hash(before) !== previous.digest)) throw new Error(`Refusing to replace an existing or edited OpenCode plugin: ${file}`);
-  return plan({ name: 'opencode', file, before, after, record: { kind: 'opencode-terminal-v1', home, file, digest: hash(after) },
-    warnings: ['OpenCode 1.x automatically opens a separate Sphinx terminal window for human answers on supported desktops. macOS may request permission to control Terminal. Headless sessions use a manual fallback. Restart OpenCode to load the plugin.'] });
+  return plan({ name: 'opencode', file, before, after, record: { kind: 'opencode-terminal-v1', home, file, digest: hash(after) } });
 }
 
 export async function removeLifecycleIntegration(_paths, record) {
@@ -170,9 +170,9 @@ export async function terminalHandoff({ cwd, host, hostSession, checkpointIds, e
   if (!outcomes.length && !unavailable) return null;
   const completed = outcomes.filter(status => status === 'passed').length;
   unavailable += outcomes.filter(status => ['unavailable', 'interrupted'].includes(status)).length;
-  if (unavailable) return `Sphinx could not open a desktop terminal or keep its questionnaire running for ${unavailable === 1 ? 'a checkpoint' : `${unavailable} checkpoints`}. The checkpoint remains pending. The human can run \`sphinx check\` in their own terminal in the checked repository. Check desktop availability or Terminal automation permission before retrying the original Git operation. Do not open another interview, relay questions, answer for the human, or repeatedly retry Git.`;
-  if (completed === outcomes.length) return 'Sphinx understanding check completed directly in its terminal window. Retry only the original Git operation that was blocked; Git will verify the exact code and policy again. Do not repeat advisory operations that already proceeded.';
-  return 'The Sphinx terminal questionnaire remains incomplete or is still open. The human answers directly there. Do not open another interview, relay questions, answer for the human, poll for answers, or repeatedly retry Git. Wait for the human before continuing a blocked Git operation.';
+  if (unavailable) return `Sphinx could not open a desktop terminal or keep its fallback questionnaire running for ${unavailable === 1 ? 'a checkpoint' : `${unavailable} checkpoints`}. The checkpoint remains pending. The human can run \`sphinx check\` in their own terminal in the checked repository. Check desktop availability or Terminal automation permission. Do not open another interview, relay questions, answer for the human, or repeatedly retry Git. Never duplicate a waiting operation; retry only after completion and confirmation that the original Git operation exited with a Sphinx blocking failure.`;
+  if (completed === outcomes.length) return 'Sphinx fallback understanding check completed directly in its terminal window. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.';
+  return 'The Sphinx fallback terminal questionnaire remains incomplete or is still open. The human answers directly there. Do not open another interview, relay questions, answer for the human, poll for answers, or repeatedly retry Git. Never duplicate a waiting Git operation. Wait for the human before resuming a failed blocking operation.';
 }
 
 /** Read only Sphinx's exact emitted marker, never interpret or execute shell text. */

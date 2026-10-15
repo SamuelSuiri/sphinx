@@ -7,24 +7,28 @@ import { Writable } from 'node:stream';
 import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
 import { initializeRepository } from './repo-config.js';
 import * as git from './git.js';
-import { install, uninstall, doctor, dispatchHook } from './install.js';
+import { install, uninstall, doctor, dispatchHook, installedAgents, detectAgents } from './install.js';
+import { activateIntegrations } from './activation.js';
+import { checkbox } from './checkbox.js';
 import { agentHook } from './agent.js';
 import { createSessionStore } from './sessions.js';
+import { prepareInteractiveCheck } from './check-recovery.js';
 import { parseRoute } from './routing.js';
 import { createTerminal, withProgress } from './terminal.js';
 import { HELP, printHelp } from './help.js';
-import { askInstall, askPolicy, createPrompts, questionCapsText, routeText, splitList } from './prompts.js';
-import { queuePresentation } from './presentations.js';
+import { askInstall, askPolicy, createPrompts, questionCapsText, reviewCapsText, routeText, splitList } from './prompts.js';
+import { runGitGate } from './git-gate.js';
 import { loadProjectContext } from './repo-context.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
 const OPTIONS = {
-  install: ['yes', 'repo', 'agents', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', ...POLICY_FLAGS],
-  init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged'],
+  install: ['yes', 'repo', 'agents', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'launch', 'no-launch', ...POLICY_FLAGS],
+  activate: ['agents', 'json'],
+  init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json'], doctor: ['json'], auth: [], uninstall: ['repo'],
+  status: ['json'], config: ['json', 'max-model-calls'], doctor: ['json'], auth: [], uninstall: ['repo'],
   mcp: [],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -37,52 +41,74 @@ async function readStdin() {
   return value;
 }
 
-async function withReadline(operation, { output = process.stdout, terminal = true } = {}) {
-  const rl = createInterface({ input: process.stdin, output, terminal });
-  let closed = false;
-  rl.on('close', () => { closed = true; });
-  rl.on('SIGINT', () => rl.close());
+async function withReadline(operation, { output = process.stdout, terminal = !!(process.stdin.isTTY && output.isTTY && process.env.TERM !== 'dumb'), controller } = {}) {
+  let rl, closed = false;
+  const release = () => { const previous = rl; rl = undefined; previous?.close(); };
+  const interrupt = () => { controller?.abort(cancelled()); rl?.close(); };
+  const acquire = () => {
+    if (closed || process.stdin.readableEnded || process.stdin.destroyed) throw cancelled();
+    if (!rl) {
+      const current = createInterface({ input: process.stdin, output, terminal });
+      rl = current;
+      current.on('close', () => { if (rl === current) { closed = true; rl = undefined; controller?.abort(cancelled()); } });
+      current.on('SIGINT', () => current.close());
+    }
+    return rl;
+  };
   const ask = prompt => {
-    if (closed) return Promise.reject(cancelled());
+    const current = acquire();
     return new Promise((resolve, reject) => {
       const onClose = () => reject(cancelled());
-      rl.once('close', onClose);
-      rl.question(prompt).then(answer => { rl.off('close', onClose); resolve(answer); }, error => { rl.off('close', onClose); reject(closed ? cancelled() : error); });
+      current.once('close', onClose);
+      current.question(prompt).then(answer => { current.off('close', onClose); resolve(answer); }, error => { current.off('close', onClose); reject(closed ? cancelled() : error); });
     });
   };
-  try { return await operation(ask); } finally { rl.close(); }
+  ask.checkbox = options => {
+    if (closed || process.stdin.readableEnded || process.stdin.destroyed) throw cancelled();
+    release(); return checkbox({ ...options, ui: ui(), output });
+  };
+  const signals = controller ? ['SIGINT', 'SIGTERM', 'SIGHUP'] : [];
+  for (const event of signals) process.on(event, interrupt);
+  try {
+    // During an interview, Ctrl+C/EOF must cancel investigation and grading as
+    // well as a pending question. Other prompt flows retain lazy acquisition.
+    if (controller) acquire();
+    return await operation(ask);
+  } finally {
+    for (const event of signals) process.off(event, interrupt);
+    release();
+  }
 }
 
 async function repoConfig(cwd = process.cwd()) {
   const repo = await git.repository(cwd);
   return { repo, config: await loadConfig(repo.root) };
 }
-const store = createSessionStore({ validate: async (snapshot, config) => {
+async function validateCheckpoint(snapshot, config) {
   if (policyHash(await loadConfig(snapshot.repoRoot)) !== policyHash(config) || !(await git.revalidateSnapshot(snapshot, config))) throw new Error('The code, project context, or policy changed since this checkpoint. Retry the Git operation or run sphinx check with an explicit target.');
-} });
+}
+const store = createSessionStore({ validate: validateCheckpoint });
 
 async function gate({ event, args, input, cwd }) {
-  if (process.env.SPHINX_EVALUATOR === '1') return 0;
-  const { config } = await repoConfig(cwd);
-  const snapshots = event === 'pre-push'
-    ? await git.pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config })
-    : event === 'pre-commit' ? [await git.commitSnapshot({ cwd, config })].filter(Boolean) : [];
-  let pending = 0;
-  for (const snapshot of snapshots) {
-    if (await store.approved(snapshot, config)) continue;
-    const session = await store.ensure(snapshot, config); pending++;
-    await queuePresentation(session);
-    // Git hook output is always plain, including when FORCE_COLOR is set.
-    console.error(`Sphinx: understanding check needed for ${snapshot.target.ref} (${session.route.tier} change).`);
-    console.error('The installed agent hook opens the Sphinx questionnaire automatically. Complete it yourself, then retry.');
-    console.error(`Outside a supported agent, run sphinx check --id ${session.id} in your terminal.`);
+  const controller = new AbortController();
+  const cancel = () => controller.abort(Object.assign(new Error('Git operation cancelled. Progress is saved.'), { exitCode: 130 }));
+  const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  for (const event of signals) process.on(event, cancel);
+  try {
+    return await runGitGate({ event, args, input, cwd, signal: controller.signal });
+  } finally {
+    for (const event of signals) process.off(event, cancel);
   }
-  if (pending && config.mode === 'advisory') console.error('Sphinx: advisory mode; allowing this operation with an incomplete assessment.');
-  return pending && config.mode === 'block' ? 1 : 0;
+}
+
+function parseModelCalls(value) {
+  if (!/^(?:[1-9]|[1-9][0-9]|100)$/u.test(String(value))) throw new Error('--max-model-calls must be a whole number from 1 to 100.');
+  return Number(value);
 }
 
 export function applyInstallOptions(current, values) {
   const config = structuredClone(current);
+  if (values['max-model-calls'] !== undefined) config.maxModelCalls = parseModelCalls(values['max-model-calls']);
   for (const key of ['provider', 'model', 'level', 'mode']) if (values[key] !== undefined) config[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) config[key] = splitList(values[key]);
   if (values.provider !== undefined || values.model !== undefined) {
@@ -109,7 +135,7 @@ function policyRows(config) {
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
     ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
-    ['Behavior', !enabled ? 'Disabled for this repository' : config.mode === 'block' ? 'Pause the Git operation until the check is complete' : 'Advisory: record a check and allow the Git operation'],
+    ['Behavior', !enabled ? 'Disabled for this repository' : config.mode === 'block' ? 'The Git operation only goes through after you answer the understanding questions correctly' : 'Advisory: record a check and allow the Git operation'],
   ];
 }
 
@@ -119,6 +145,7 @@ function printConfiguration(terminal, config, { routes = true } = {}) {
     terminal.section('Evaluator routes');
     terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
     terminal.blank(); terminal.note(`Up to ${config.maxModelCalls} model calls per assessment, including failed requests. Completion lasts ${config.receiptHours} hours unless code, destination, or policy changes.`);
+    terminal.note(`Each review attempt is capped at ${reviewCapsText(config)} calls, within that total. The total also covers grading and learning follow-ups.`);
   }
 }
 
@@ -126,6 +153,30 @@ function printInstallationResult(terminal, result) {
   terminal.blank();
   for (const line of result.messages) terminal.success(line);
   for (const line of result.warnings) terminal.warning(line);
+}
+
+function printActivationResult(terminal, result) {
+  terminal.section('Open your coding agents');
+  if (!result.results.length) { terminal.note('No coding-agent integrations are configured. Choose agents with sphinx install.'); return; }
+  const labels = { codex: 'Codex', claude: 'Claude Code', pi: 'Pi', cursor: 'Cursor', opencode: 'OpenCode' };
+  terminal.rows(result.results.map(item => [labels[item.agent] || item.agent, `${item.status === 'opened' ? 'Opened' : 'Not opened'}. ${item.detail}`]));
+  terminal.blank();
+  terminal.note('Opened means a client was launched; hook trust and MCP connections are confirmed inside the client.');
+  const remaining = result.results.filter(item => item.status !== 'opened').map(item => item.agent);
+  if (remaining.length) terminal.command(`sphinx activate --agents ${remaining.join(',')}`);
+}
+
+async function activateCommand(values) {
+  const configured = await installedAgents();
+  const agents = values.agents === undefined || values.agents === 'auto' ? configured : splitList(values.agents);
+  if (values.agents !== undefined && values.agents !== 'auto' && (!agents.length || new Set(agents).size !== agents.length || agents.some(name => !['codex', 'claude', 'pi', 'cursor', 'opencode'].includes(name)))) {
+    throw new Error('--agents must be auto or a comma-separated selection of codex, claude, pi, cursor, opencode.');
+  }
+  const missing = agents.filter(name => !configured.includes(name));
+  if (missing.length) throw new Error(`Sphinx is not installed for ${missing.join(', ')}. Run sphinx install --agents ${missing.join(',')} first.`);
+  const result = await withProgress('Opening configured coding agents', () => activateIntegrations({ agents }), { enabled: !values.json });
+  if (values.json) json(result); else printActivationResult(ui(), result);
+  return result.results.some(item => item.status !== 'opened') ? 1 : 0;
 }
 
 async function auth() {
@@ -138,7 +189,7 @@ async function auth() {
     const hidden = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
     process.stdout.write('\nAPI key: ');
     let key;
-    try { key = await withReadline(ask => ask(''), { output: hidden }); } finally { process.stdout.write('\n'); }
+    try { key = await withReadline(ask => ask(''), { output: hidden, terminal: true }); } finally { process.stdout.write('\n'); }
     if (!key.trim() || /\s/.test(key.trim())) { terminal.warning('Enter a nonempty key without spaces, or press Ctrl+C to cancel.'); continue; }
     await saveOpenRouterKey(key);
     terminal.success('OpenRouter key saved.'); terminal.note(getPaths().credentials); return;
@@ -147,6 +198,7 @@ async function auth() {
 
 async function installCommand(initial) {
   const terminal = ui(), current = await loadConfig();
+  if (initial.launch && initial['no-launch']) throw new Error('Choose either --launch or --no-launch, not both.');
   if (initial.repo) {
     const incompatible = Object.keys(initial).filter(key => !['repo', 'yes'].includes(key));
     if (incompatible.length) throw new Error(`install --repo only repairs repository hook coverage. Remove ${incompatible.map(key => `--${key}`).join(', ')} or run global sphinx install separately.`);
@@ -156,9 +208,16 @@ async function installCommand(initial) {
   applyInstallOptions(current, initial);
   if (!initial.yes && !process.stdin.isTTY) throw new Error('Run sphinx install in a terminal for guided setup, or use --yes with your chosen options. See sphinx install --help.');
   terminal.banner(); terminal.paragraph('Connect Git and your coding agents once for this machine. Existing hooks and unrelated agent settings are preserved.');
-  const values = initial.yes ? initial : await withReadline(ask => askInstall(current, initial, createPrompts({ ask, ui: terminal })));
+  const launch = !initial['no-launch'] && (initial.launch || !initial.yes);
+  if (launch) terminal.paragraph('After setup, Sphinx opens selected installed clients in fresh sessions. Existing sessions stay open. Use --no-launch to defer this step.');
+  const detected = !initial.yes && initial.agents === undefined ? await detectAgents() : [];
+  const values = initial.yes ? initial : await withReadline(ask => askInstall(current, initial, createPrompts({ ask, ui: terminal,
+    select: process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb' ? ask.checkbox : undefined,
+  }), { detectedAgents: detected }));
   const config = applyInstallOptions(current, values);
-  terminal.section('Your setup'); printConfiguration(terminal, config);
+  terminal.section('Machine-wide defaults');
+  terminal.paragraph('Each repository can override these branches and remotes in .sphinxconfig to match its own production setup.');
+  printConfiguration(terminal, config);
   terminal.rows([['Agent integrations', values.agents || 'auto (detect installed agents)']]);
   if (Object.values(config.models).some(route => route.provider === 'openrouter') && !(await openRouterKey())) {
     if (process.stdin.isTTY && !values.yes) await auth();
@@ -166,8 +225,17 @@ async function installCommand(initial) {
   }
   const result = await install({ config, agents: values.agents || 'auto', cliPath: CLI_PATH });
   await saveConfig(config); printInstallationResult(terminal, result);
-  terminal.section('Next'); terminal.command('sphinx status');
-  terminal.note('Use sphinx init for repository policy and excluded paths. Restart agent sessions to load the integration.');
+  if (result.agents.length) {
+    if (launch) printActivationResult(terminal, await withProgress('Opening your coding agents', () => activateIntegrations({ agents: result.agents })));
+    else {
+      terminal.section('Open your coding agents');
+      terminal.command(`sphinx activate --agents ${result.agents.join(',')}`);
+      terminal.note('Opens fresh clients to load Sphinx.');
+      if (result.agents.includes('codex')) terminal.note('Codex hook trust still requires your approval in /hooks.');
+    }
+  }
+  terminal.section('Repository setup'); terminal.command('sphinx init');
+  terminal.note('Choose repository policy, project context, and excluded paths. Use sphinx status to check Git coverage.');
   terminal.blank(); terminal.note(`Global settings: ${getPaths().config}`); return 0;
 }
 
@@ -209,7 +277,13 @@ function printSession(session, terminal = ui()) {
   if (session.feedback) {
     terminal.section(session.verdict === 'incorrect' ? 'Review this concept' : session.verdict === 'ambiguous' ? 'Clarification needed' : 'Feedback'); terminal.paragraph(session.feedback);
   }
-  if (session.status === 'passed') { terminal.blank(); terminal.success('Understanding check complete.'); terminal.paragraph('Retry your original Git operation.'); return; }
+  if (session.status === 'passed') {
+    terminal.blank(); terminal.success('Understanding check complete.');
+    terminal.paragraph(process.env.SPHINX_WAITING_GIT === '1'
+      ? "Approval saved. Return to the original Git output for the operation's result."
+      : 'Approval saved for this exact change and destination. A waiting Git operation can now continue.');
+    return;
+  }
   terminal.blank(); terminal.note(`${session.route.tier} change · ${routeText(session.route)} · ${session.usage.calls}/${session.usage.limit} model calls`);
   if (!session.question) { terminal.paragraph('Assessment queued. Run sphinx check to begin.'); return; }
   terminal.section(`Question ${session.progress.completed + 1} of ${session.progress.total}`); terminal.paragraph(session.question.prompt);
@@ -218,6 +292,7 @@ function printSession(session, terminal = ui()) {
 }
 
 async function checkCommand(values) {
+  if (values['retry-review'] && !values.id) throw new Error('--retry-review requires --id to select the failed checkpoint. Find it with sphinx pending.');
   const { repo, config } = await repoConfig(); let session;
   if (values.id) session = await store.read(values.id);
   else if (!values.staged && !values.remote && !values.branch) {
@@ -230,10 +305,28 @@ async function checkCommand(values) {
     session = await store.ensure(snapshot, config);
   }
   if (!values.json && !process.stdin.isTTY) throw new Error('Use sphinx check --json from a coding agent, or run in an interactive terminal.');
-  let state = await withProgress(session.questions.length ? 'Loading prepared questions' : `Reviewing the change with ${routeText(session.route)}`, () => store.start(session.id, config), { enabled: !values.json });
-  if (values.json) { json(state); return 0; }
+  const start = signal => withProgress(session.questions.length ? 'Loading prepared questions' : `Reviewing the change with ${routeText(session.route)}`, () => store.start(session.id, config, { signal }), { enabled: !values.json });
+  if (values.json) {
+    if (values['retry-review']) await store.retryReview(session.id, config);
+    json(await start()); return 0;
+  }
   const terminal = ui(); terminal.section('Understanding check'); terminal.paragraph('This is open-book. Inspect the code when useful; explain the behavior in your own words.');
+  const controller = new AbortController(), { signal } = controller;
   return withReadline(async ask => {
+    if (values['retry-review']) {
+      await store.retryReview(session.id, config, { signal });
+      signal.throwIfAborted();
+      terminal.note(`Starting a new review attempt with up to ${config.maxModelCalls} additional model calls, including grading. Previous usage remains counted.`);
+    }
+    let state = await prepareInteractiveCheck({
+      start: () => start(signal), inspect: async () => store.public(await store.read(session.id)),
+      authorizeMore: () => store.retryReview(session.id, config, { signal }),
+      validate: () => validateCheckpoint(session.snapshot, config), config,
+      choose: createPrompts({ ask, ui: terminal }).choose, ui: terminal,
+      waitingGit: process.env.SPHINX_WAITING_GIT === '1', signal,
+    });
+    signal.throwIfAborted();
+    if (!state) return 1;
     while (state.status !== 'passed') {
       printSession(state, terminal);
       const answer = (await ask('\nYour answer: ')).trim();
@@ -242,10 +335,11 @@ async function checkCommand(values) {
       const dispute = answer.startsWith('/dispute '), learn = answer === '/learn';
       if (answer === '/dispute') { terminal.warning('Add a reason: /dispute <what is ambiguous or unsupported>'); continue; }
       if (answer.startsWith('/') && !dispute && !learn) { terminal.warning('Use /learn, /dispute <reason>, or /quit; otherwise enter your answer.'); continue; }
-      state = await withProgress(learn ? 'Preparing an explanation and new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: state.question.id }));
+      state = await withProgress(learn ? 'Preparing an explanation and new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: state.question.id, signal }));
+      signal.throwIfAborted();
     }
-    printSession(state, terminal); return 0;
-  });
+    signal.throwIfAborted(); printSession(state, terminal); return 0;
+  }, { controller });
 }
 
 function printPending(terminal, pending) {
@@ -301,6 +395,7 @@ export async function main(argv) {
     provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' },
   } });
   const [command, id] = positionals;
   if (values.version) { if (values.json) json({ version: '0.1.0' }); else console.log('0.1.0'); return 0; }
@@ -312,6 +407,7 @@ export async function main(argv) {
   if (needsId && !id) throw new Error(`An assessment ID is required. Run sphinx pending to find it. Usage: ${HELP[command].usage}`);
   if (['answer', 'dispute'].includes(command) && !values.text?.trim()) throw new Error(`--text is required. Usage: ${HELP[command].usage}`);
   if (command === 'install') return installCommand(values);
+  if (command === 'activate') return activateCommand(values);
   if (command === 'init') return initCommand(values);
   if (command === 'prepare') {
     if (values.worker && values.retry) throw new Error('--retry is for an explicit preparation request, not a worker.');
@@ -340,6 +436,20 @@ export async function main(argv) {
     return result.checks.every(check => check.ok) ? 0 : 1;
   }
   if (command === 'config') {
+    if (values['max-model-calls'] !== undefined) {
+      const maxModelCalls = parseModelCalls(values['max-model-calls']);
+      const config = await loadConfig(), previousMaxModelCalls = config.maxModelCalls;
+      config.maxModelCalls = maxModelCalls;
+      await saveConfig(config);
+      const result = { scope: 'global', path: getPaths().config, previousMaxModelCalls, maxModelCalls, config };
+      if (values.json) { json(result); return 0; }
+      const terminal = ui();
+      terminal.success(`Saved machine-wide limit: ${maxModelCalls} model calls per assessment (previously ${previousMaxModelCalls}).`);
+      terminal.note(result.path);
+      terminal.paragraph('This is the total allowance for review, compaction, grading, learning follow-ups, and failed requests. Saving it makes no model request.');
+      terminal.note(`Per-review caps remain ${reviewCapsText(config)} calls, within the total allowance.`);
+      return 0;
+    }
     const repo = await git.repository(process.cwd()).catch(() => null), config = await loadConfig(repo?.root);
     if (values.json) { json(config); return 0; }
     const terminal = ui(); terminal.section('Effective configuration'); terminal.rows([['Global settings', getPaths().config]]);
@@ -350,7 +460,7 @@ export async function main(argv) {
     }
     terminal.section('Checkpoint policy'); printConfiguration(terminal, config);
     terminal.section('Limits and exclusions'); terminal.rows([['Reviewer context', `${config.maxContextBytes.toLocaleString()} bytes in active context; older investigation is compacted`], ['Tool result', `${config.toolResultBytes.toLocaleString()} bytes per page`], ['Reviewer turns', `Up to ${config.agentMaxTurns}, within the shared model-call budget`], ['Reviewer timeout', `${config.timeoutSeconds} seconds per investigation`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
-    terminal.blank(); terminal.note('Edit the listed files to change settings. Use sphinx config --json for every effective field.'); return 0;
+    terminal.blank(); terminal.note('Set the machine-wide call limit with sphinx config --max-model-calls <1-100>. Edit the listed files for other settings. Use sphinx config --json for every effective field.'); return 0;
   }
   if (command === 'check') return checkCommand(values);
   if (['pending', 'status'].includes(command)) return statusCommand(command, values);

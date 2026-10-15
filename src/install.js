@@ -154,13 +154,22 @@ async function executable(name, env) {
   return false;
 }
 
-async function prepareAgents({ agents, paths, env, cliPath, manifest }) {
+async function detectedAgents({ paths, env, manifest }) {
   const integrationHome = name => name === 'pi'
     ? piIntegrationHome(paths, env)
     : ['cursor', 'opencode'].includes(name) ? lifecycleHome(name, paths, env) : paths[`${name}Home`];
+  return (await Promise.all(AGENTS.map(async name =>
+    (await executable(name, env) || await exists(integrationHome(name)) || manifest.agents[name]) ? name : null))).filter(Boolean);
+}
+
+export async function detectAgents({ env = process.env } = {}) {
+  const { paths, manifest } = await manifestFor(env);
+  return detectedAgents({ paths, env, manifest });
+}
+
+async function prepareAgents({ agents, paths, env, cliPath, manifest }) {
   const selected = agents === 'auto'
-    ? (await Promise.all(AGENTS.map(async name =>
-      (await executable(name, env) || await exists(integrationHome(name)) || manifest.agents[name]) ? name : null))).filter(Boolean)
+    ? await detectedAgents({ paths, env, manifest })
     : agents === 'none' ? [] : Array.isArray(agents) ? agents : agents.split(',').map(x => x.trim());
   if ((!selected.length && agents !== 'auto' && agents !== 'none') || selected.some(name => !AGENTS.includes(name))) throw new Error('--agents must be auto, none, or a comma-separated list of codex, claude, pi, cursor, opencode.');
   const result = [];
@@ -191,6 +200,11 @@ async function prepareAgents({ agents, paths, env, cliPath, manifest }) {
     result.push({ name, file, document, originalDocument: structuredClone(document), handler, hooks, mcp, previous, emptyEvents, existed: previous?.existed ?? await exists(file) });
   }
   return result;
+}
+
+export async function installedAgents({ env = process.env } = {}) {
+  const { manifest } = await manifestFor(env);
+  return AGENTS.filter(name => manifest.agents[name]);
 }
 
 export async function install({ config, agents = 'auto', repo = false, cwd = process.cwd(), env = process.env, cliPath }) {
@@ -252,7 +266,6 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
         await writeJson(paths.install, manifest);
       } catch (error) { await plan.rollback(); throw error; }
       messages.push(plan.name === 'pi' ? 'Pi extension installed with native human questionnaire dialogs.' : `${plan.name === 'cursor' ? 'Cursor lifecycle hooks' : 'OpenCode lifecycle plugin'} installed with automatic Sphinx terminal questionnaires.`);
-      warnings.push(...plan.warnings);
       continue;
     }
     const { name, file, document, handler, hooks, mcp, previous: prior, existed, emptyEvents } = plan;
@@ -266,18 +279,16 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
     manifest.agents[name] = { file, handler, hooks, existed, emptyEvents, mcp: mcp.record };
     await writeJson(paths.install, manifest);
     messages.push(`${name === 'codex' ? 'Codex' : 'Claude Code'} native questionnaire hooks and Sphinx MCP server installed.`);
-    if (name === 'codex') warnings.push('Codex requires review and trust: restart or open a new session, run /hooks, and trust the Sphinx hooks. Confirm the sphinx server is connected in /mcp. Sphinx does not change hook trust.');
-    else warnings.push('Restart Claude Code to load the Sphinx MCP server and questionnaire hooks. Confirm sphinx is connected in /mcp.');
   }
   if (!agentPlans.length && agents === 'auto') warnings.push('No supported coding agent was detected. Install one, then rerun sphinx install; Git hooks are ready.');
   if (!repo) {
     try {
+      await git(['rev-parse', '--git-dir'], cwd, env);
       const effective = await git(['config', '--path', '--get', 'core.hooksPath'], cwd, env, [0, 1]);
-      if (effective !== entry.hookDir) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
+      if (!Object.values(manifest.installs).some(installed => installed.hookDir === effective)) warnings.push('This repository overrides core.hooksPath. Run sphinx install --repo here to chain that hook setup.');
     } catch {}
-    warnings.push('Repositories with local or conditional core.hooksPath overrides need sphinx install --repo. Run sphinx doctor in a repository to check coverage.');
   }
-  return { messages, warnings };
+  return { messages, warnings, agents: agentPlans.map(plan => plan.name) };
 }
 
 export async function uninstall({ env = process.env, cwd = process.cwd(), repo = false } = {}) {

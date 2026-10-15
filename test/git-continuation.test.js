@@ -1,0 +1,232 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn, execFile } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+import { install } from '../src/install.js';
+import { DEFAULT_CONFIG, saveConfig } from '../src/config.js';
+
+const exec = promisify(execFile);
+const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
+const json = async file => JSON.parse(await readFile(file, 'utf8'));
+const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
+  const base = await mkdtemp(path.join(tmpdir(), "sphinx waiting git ' "));
+  const repo = path.join(base, 'repo'), remote = path.join(base, 'remote.git'), home = path.join(base, 'home');
+  const state = path.join(base, 'fixture-state');
+  await Promise.all([repo, home, state].map(directory => mkdir(directory)));
+  const env = { ...process.env, HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, '.sphinx'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', SPHINX_TEST_STATE: state, CI: '1' };
+  for (const key of Object.keys(env)) if (/^(?:GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|CONFIG(?:_|$))|SPHINX_(?:INSTALL_ID|EVALUATOR|HOOK_DEPTH)$|CODEX_THREAD_ID$|PI_SESSION_ID$|OPENROUTER_API_KEY$|OPENAI_API_KEY$|ANTHROPIC_API_KEY$)/.test(key) && !['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'].includes(key)) delete env[key];
+  const children = new Set();
+  t.after(async () => {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    await Promise.all([...children].map(child => child.finished));
+    await rm(base, { recursive: true, force: true });
+  });
+  const git = async (...args) => (await exec('git', args, { cwd: repo, env, maxBuffer: 1024 * 1024 })).stdout.trimEnd();
+  const bare = async (...args) => git('--git-dir', remote, ...args);
+  const setup = (...args) => git('-c', 'core.hooksPath=/dev/null', ...args);
+  await setup('init', '-q', '-b', 'main');
+  await setup('config', 'user.name', 'Sphinx fixture'); await setup('config', 'user.email', 'fixture@example.invalid');
+  await setup('init', '--bare', '-q', remote);
+  await setup('remote', 'add', 'origin', remote);
+  await writeFile(path.join(repo, 'a.txt'), 'base a\n'); await writeFile(path.join(repo, 'b.txt'), 'base b\n');
+  await setup('add', '.'); await setup('commit', '-qm', 'base');
+  const baseHead = await git('rev-parse', 'HEAD');
+  const config = { ...structuredClone(DEFAULT_CONFIG), events, branches: ['main', 'master'], backgroundPreparation: false };
+  await saveConfig(config, env);
+  for (const event of events) {
+    const script = `#!/bin/sh\nprintf '%s\\n' ${quote(event)} >> "$SPHINX_TEST_STATE/old-hooks"\n${event === 'pre-push' ? 'cat > "$SPHINX_TEST_STATE/original-input"\n' : ''}${oldHook}\n`;
+    await writeFile(path.join(repo, '.git', 'hooks', event), script, { mode: 0o755 });
+  }
+  const validator = path.join(base, 'validate-index.mjs');
+  await writeFile(validator, `import { revalidateSnapshot } from ${JSON.stringify(modulePath('git'))};
+import { readFile } from 'node:fs/promises';
+const {snapshot,config}=JSON.parse(await readFile(process.argv[2],'utf8'));
+process.stdout.write(JSON.stringify({valid:await revalidateSnapshot(snapshot,config),index:process.env.GIT_INDEX_FILE??null}));
+`);
+  const launcher = path.join(base, 'hook-launcher.mjs');
+  await writeFile(launcher, `import { dispatchHook } from ${JSON.stringify(modulePath('install'))};
+import { runGitGate } from ${JSON.stringify(modulePath('git-gate'))};
+import { readFile,writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+if(process.argv[2]!=='hook')process.exit(0);
+const state=process.env.SPHINX_TEST_STATE,controller=new AbortController();
+process.on('SIGINT',()=>controller.abort(new Error('fixture interrupted')));
+process.on('SIGTERM',()=>controller.abort(new Error('fixture terminated')));
+const read=async(file,fallback)=>{try{return JSON.parse(await readFile(file,'utf8'));}catch(e){if(e.code==='ENOENT')return fallback;throw e;}};
+const event=process.argv[4];let input='';
+if(event==='pre-push')for await(const chunk of process.stdin)input+=chunk;
+const sessions=new Map();let count=0;
+const store={
+  approved:async(snapshot)=>!!(await read(join(state,snapshot.id+'.approval'),null)),
+  ensure:async(snapshot,config)=>{const session={id:snapshot.id,snapshot,config,route:{tier:'small'}};sessions.set(snapshot.id,session);return session;}
+};
+const present=async({request,env,signal})=>{
+  const session=sessions.get(request.id),number=count++,file=join(state,'ready-'+number+'.json');
+  const payload={request,snapshot:session.snapshot,config:session.config,pid:process.pid,index:env.GIT_INDEX_FILE??null};
+  const candidate=join(state,'candidate-'+number+'.json');await writeFile(candidate,JSON.stringify(payload));
+  if(event==='pre-commit'){
+    const result=await promisify(execFile)(process.execPath,[${JSON.stringify(validator)},candidate],{cwd:request.repoRoot,env});
+    payload.externalValidation=JSON.parse(result.stdout);
+  }
+  await writeFile(file,JSON.stringify(payload));
+  while(true){signal?.throwIfAborted();const decision=await read(join(state,request.id+'.decision'),null);if(decision)return decision;await delay(10,undefined,{signal});}
+};
+try{process.exitCode=await dispatchHook({event,args:process.argv.slice(5),input,gate:args=>runGitGate({...args,store,present,signal:controller.signal})});}
+catch(error){process.stderr.write(error.message+'\\n');process.exitCode=1;}
+`);
+  await install({ cwd: repo, env, cliPath: launcher, agents: 'none', repo: true });
+  const start = (...args) => {
+    const child = spawn('git', args, { cwd: repo, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child); let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+    child.finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr })); });
+    return child;
+  };
+  const ready = async (child, number = 0) => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try { return await json(path.join(state, `ready-${number}.json`)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (child.exitCode !== null || child.signalCode !== null) assert.fail(`Git exited before questionnaire: ${JSON.stringify(await child.finished)}`);
+      await delay(10);
+    }
+    assert.fail('Git did not reach the fixture questionnaire');
+  };
+  const release = async (checkpoint, { status = 'passed', approve = status === 'passed' } = {}) => {
+    if (approve) await writeFile(path.join(state, `${checkpoint.request.id}.approval`), JSON.stringify({ id: checkpoint.request.id }));
+    await writeFile(path.join(state, `${checkpoint.request.id}.decision`), JSON.stringify({ status }));
+  };
+  const pending = async () => readdir(path.join(env.SPHINX_HOME, 'presentations')).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+  const oldCalls = async () => (await readFile(path.join(state, 'old-hooks'), 'utf8')).trim().split('\n');
+  return { base, repo, remote, env, state, config, baseHead, git, bare, setup, start, ready, release, pending, oldCalls };
+}
+
+test('the original push waits, preserves hook input, and continues exactly once after approval', { timeout: 15000 }, async t => {
+  const f = await fixture(t), child = f.start('push', 'origin', 'main');
+  const checkpoint = await f.ready(child);
+  assert.equal(child.exitCode, null); assert.equal(checkpoint.request.delivery, 'hook');
+  assert.equal(checkpoint.snapshot.head, f.baseHead);
+  await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/main'));
+  assert.deepEqual(await f.oldCalls(), ['pre-push']);
+  assert.match(await readFile(path.join(f.state, 'original-input'), 'utf8'), new RegExp(`refs/heads/main ${f.baseHead} refs/heads/main 0+`));
+  // Working-tree edits are outside the exact commit this original push selected.
+  await writeFile(path.join(f.repo, 'a.txt'), 'unstaged while answering\n');
+  await f.release(checkpoint);
+  const result = await child.finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(await f.bare('rev-parse', 'refs/heads/main'), f.baseHead);
+  assert.deepEqual(await f.oldCalls(), ['pre-push']);
+  assert.deepEqual(await f.pending(), []);
+});
+
+test('pause, cancellation, and a false terminal success cannot authorize a push or leave forms queued', { timeout: 30000 }, async t => {
+  for (const mode of ['pause', 'cancel', 'false-success']) await t.test(mode, async t => {
+    const f = await fixture(t), child = f.start('push', 'origin', 'main');
+    const checkpoint = await f.ready(child);
+    if (mode === 'cancel') process.kill(checkpoint.pid, 'SIGINT');
+    else await f.release(checkpoint, { status: mode === 'pause' ? 'pending' : 'passed', approve: false });
+    const result = await child.finished;
+    assert.notEqual(result.code, 0); await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/main'));
+    assert.deepEqual(await f.pending(), []);
+    assert.deepEqual(await f.oldCalls(), ['pre-push']);
+  });
+});
+
+test('source and effective policy changes while answering invalidate the original push', { timeout: 30000 }, async t => {
+  for (const mode of ['source', 'policy', 'context']) await t.test(mode, async t => {
+    const f = await fixture(t), child = f.start('push', 'origin', 'main');
+    const checkpoint = await f.ready(child);
+    if (mode === 'source') { await writeFile(path.join(f.repo, 'a.txt'), 'new commit\n'); await f.setup('add', 'a.txt'); await f.setup('commit', '-qm', 'new while waiting'); }
+    else if (mode === 'policy') await writeFile(path.join(f.repo, '.sphinxconfig'), JSON.stringify({ level: 'thorough' }));
+    else await writeFile(path.join(f.repo, '.sphinxcontext.md'), 'Updated project expectations.\n');
+    await f.release(checkpoint);
+    const result = await child.finished;
+    assert.notEqual(result.code, 0); assert.match(result.stderr, /changed while Git was waiting/);
+    await assert.rejects(f.bare('rev-parse', '--verify', 'refs/heads/main'));
+    assert.deepEqual(await f.pending(), []);
+  });
+});
+
+test('one push waits for every protected destination before any ref is sent', { timeout: 15000 }, async t => {
+  const f = await fixture(t); await f.setup('branch', 'master');
+  const child = f.start('push', 'origin', 'main', 'master');
+  const first = await f.ready(child); await f.release(first);
+  const second = await f.ready(child, 1);
+  assert.notEqual(first.request.id, second.request.id);
+  assert.deepEqual(new Set([first.snapshot.target.ref, second.snapshot.target.ref]), new Set(['refs/heads/main', 'refs/heads/master']));
+  assert.equal(child.exitCode, null);
+  assert.equal(await f.bare('for-each-ref', '--format=%(refname)', 'refs/heads'), '');
+  await f.release(second);
+  const result = await child.finished; assert.equal(result.code, 0, result.stderr);
+  assert.equal(await f.bare('rev-parse', 'main'), f.baseHead); assert.equal(await f.bare('rev-parse', 'master'), f.baseHead);
+  assert.deepEqual(await f.oldCalls(), ['pre-push']); assert.deepEqual(await f.pending(), []);
+});
+
+test('an existing hook rejection prevents the questionnaire and original push', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { oldHook: 'exit 19' });
+  const result = await f.start('push', 'origin', 'main').finished;
+  assert.notEqual(result.code, 0); assert.deepEqual(await f.oldCalls(), ['pre-push']);
+  await assert.rejects(readFile(path.join(f.state, 'ready-0.json')), { code: 'ENOENT' });
+  await assert.rejects(f.bare('rev-parse', '--verify', 'main'));
+});
+
+test('a remote advance while the original force push waits is rejected by Git instead of replayed', { timeout: 15000 }, async t => {
+  const f = await fixture(t); await f.setup('push', '-q', 'origin', 'main');
+  await writeFile(path.join(f.repo, 'a.txt'), 'local replacement\n'); await f.setup('add', '.'); await f.setup('commit', '-qm', 'local replacement');
+  const child = f.start('push', '--force', 'origin', 'main');
+  const checkpoint = await f.ready(child);
+  // An independent destination update happens after its old oid was advertised.
+  const newer = (await exec('git', ['--git-dir', f.remote, 'commit-tree', `${f.baseHead}^{tree}`, '-p', f.baseHead, '-m', 'remote advance'], { env: { ...f.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' } })).stdout.trim();
+  await f.bare('update-ref', 'refs/heads/main', newer, f.baseHead);
+  await f.release(checkpoint);
+  const result = await child.finished;
+  assert.notEqual(result.code, 0); assert.equal(await f.bare('rev-parse', 'main'), newer);
+  assert.deepEqual(await f.oldCalls(), ['pre-push']);
+});
+
+test('commit -a and --only continue with the exact temporary index passed into the human process', { timeout: 30000 }, async t => {
+  for (const mode of ['all', 'only']) await t.test(mode, async t => {
+    const f = await fixture(t, { events: ['pre-commit'] });
+    await writeFile(path.join(f.repo, 'a.txt'), 'changed a\n'); await writeFile(path.join(f.repo, 'b.txt'), 'changed b\n');
+    if (mode === 'only') await f.setup('add', 'b.txt');
+    const child = f.start('commit', ...(mode === 'all' ? ['-a'] : ['--only', 'a.txt']), '-m', 'original commit');
+    const checkpoint = await f.ready(child);
+    assert.equal(child.exitCode, null); assert.equal(await f.git('rev-parse', 'HEAD'), f.baseHead);
+    assert.equal(path.isAbsolute(checkpoint.index), true);
+    assert.equal(checkpoint.externalValidation.index, checkpoint.index);
+    assert.equal(checkpoint.externalValidation.valid, true, 'The separate human process validates Git\'s temporary index');
+    assert.deepEqual(checkpoint.snapshot.files, mode === 'all' ? ['a.txt', 'b.txt'] : ['a.txt']);
+    await f.release(checkpoint);
+    const result = await child.finished; assert.equal(result.code, 0, result.stderr);
+    assert.equal(await f.git('show', 'HEAD:a.txt'), 'changed a');
+    assert.equal(await f.git('show', 'HEAD:b.txt'), mode === 'all' ? 'changed b' : 'base b');
+    if (mode === 'only') assert.equal(await f.git('show', ':b.txt'), 'changed b');
+    assert.deepEqual(await f.oldCalls(), ['pre-commit']); assert.deepEqual(await f.pending(), []);
+  });
+});
+
+test('staging another change while a commit waits invalidates its approval; an unstaged edit does not', { timeout: 30000 }, async t => {
+  for (const staged of [false, true]) await t.test(staged ? 'staged' : 'unstaged', async t => {
+    const f = await fixture(t, { events: ['pre-commit'] });
+    await writeFile(path.join(f.repo, 'a.txt'), 'approved staged content\n'); await f.setup('add', 'a.txt');
+    const child = f.start('commit', '-m', 'original commit');
+    const checkpoint = await f.ready(child);
+    await writeFile(path.join(f.repo, 'a.txt'), 'changed while answering\n');
+    if (staged) await f.setup('add', 'a.txt');
+    await f.release(checkpoint);
+    const result = await child.finished;
+    if (staged) { assert.notEqual(result.code, 0); assert.equal(await f.git('rev-parse', 'HEAD'), f.baseHead); }
+    else { assert.equal(result.code, 0, result.stderr); assert.equal(await f.git('show', 'HEAD:a.txt'), 'approved staged content'); }
+    assert.deepEqual(await f.pending(), []);
+  });
+});

@@ -6,12 +6,20 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 for (const agent of ['codex', 'claude']) {
-  test(`${agent} SessionStart delegates input directly to native forms, never the coding model`, async () => {
+  test(`${agent} SessionStart distinguishes waiting Git from fallback forms without asking the coding model to interview`, async () => {
     const result = await agentHook({ agent, input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'compact' }), env: {} });
     assert.equal(result.exitCode, 0);
     assert.equal(result.output.hookSpecificOutput.hookEventName, 'SessionStart');
     const context = result.output.hookSpecificOutput.additionalContext;
-    assert.match(context, /opens the native Sphinx questionnaire automatically/);
+    assert.match(context, /keeps the original Git operation waiting/);
+    assert.match(context, /that same operation continues automatically/);
+    assert.match(context, /Do not start a duplicate Git operation while it waits/);
+    assert.match(context, /MCP hook offers a native questionnaire after Git exits/);
+    assert.match(context, /fallback forms do not resume an exited Git process/);
+    assert.match(context, /verify that the original Git operation has exited with a Sphinx blocking failure before retrying/);
+    assert.match(context, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+    assert.match(context, /waits up to 25 minutes, but the host may cancel the shell sooner/);
+    assert.match(context, /supported yielding or background execution; do not terminate or duplicate/);
     assert.match(context, /Only the outcome is returned to you/);
     assert.match(context, /Do not relay questions through chat/);
     assert.match(context, /Never answer on the human's behalf/);

@@ -13,11 +13,14 @@ const parentContext = {
   CLAUDE_SESSION_ID: 'parent-session', CLAUDECODE: '1', SPHINX_CLAUDE_SESSION: 'claude-parent',
   PI_SESSION_ID: 'pi-parent', PI_SESSION_FILE: '/private/parent-conversation.jsonl', PI_PROVIDER: 'parent-provider', PI_MODEL: 'parent-model',
   SPHINX_OPENCODE_SESSION: 'opencode-parent', SPHINX_CURSOR_SESSION: 'cursor-parent',
+  GIT_DIR: '/private/checkout/.git', GIT_WORK_TREE: '/private/checkout', GIT_COMMON_DIR: '/private/checkout/.git',
+  GIT_INDEX_FILE: '/private/checkout/.git/next-index', GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: '/private/hooks', SPHINX_WAITING_GIT: '1',
 };
 const snapshot = {
   id: 'snapshot-123', repoRoot: '/private/checkout', target: { url: 'https://private.example/repo.git' },
   files: ['src/orders.js', '.env'], evidencePaths: ['src/orders.js'], omitted: ['.env'],
-  evidence: 'diff --git a/src/orders.js b/src/orders.js\n+if (processed.has(id)) return prior;\n+processed.set(id, result);',
+  evidence: 'diff --git a/src/orders.js b/src/orders.js\n--- a/src/orders.js\n+++ b/src/orders.js\n@@ -0,0 +1,2 @@\n+if (processed.has(id)) return prior;\n+processed.set(id, result);',
 };
 const question = {
   id: 'q1', concept: 'Retry idempotency',
@@ -49,7 +52,7 @@ function fakeWorkspace(data = snapshot) {
 }
 const nativeResponse = (assessment, capture = () => {}) => async invocation => {
   await invocation.beforeCall?.(); capture(invocation);
-  const final = invocation.messages.some(message => message.role === 'tool');
+  const final = invocation.messages.some(message => message.role === 'tool' || message.content?.includes('Initial diff observations (untrusted DATA;'));
   const calls = final ? [{ id: 'finish', name: 'finish_review', arguments: { assessment, summary: 'Request ids are checked before producing a result.', evidenceIds: ['e1'] } }] : [{ id: 'read', name: 'read_diff', arguments: { path: 'src/orders.js' } }];
   return { calls, message: { role: 'assistant', content: null, tool_calls: calls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) } };
 };
@@ -62,7 +65,7 @@ async function fixture(t, response, options = {}) {
     calls.push(invocation);
     let value = typeof response === 'function' ? await response(invocation) : response;
     if (invocation.input.startsWith('Continue the investigative review.')) {
-      if (!invocation.input.includes('Workspace observation')) value = toolAction;
+      if (!invocation.input.includes('Workspace observation') && !invocation.input.includes('Initial diff observations (untrusted DATA;')) value = toolAction;
       else if (value?.questions) value = finishAction(value);
     }
     if (value?.exitCode !== undefined) return value;
@@ -82,7 +85,7 @@ test('Codex starts fresh, disables hooks and tools, preserves auth location, and
   const { evaluator, calls, directory } = await fixture(t, { questions: [question] });
   const assessment = await evaluator.generateAssessment(snapshot, { ...config, model: 'chosen-model' });
   assert.deepEqual(assessment.questions, [question]);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1, 'The supplied diff can support a self-contained assessment without a planning call');
   assert.equal(assessment.review.evidence[0].result.text, snapshot.evidence);
   const call = calls[0];
   assert.equal(call.command, 'codex');
@@ -109,7 +112,7 @@ test('Codex starts fresh, disables hooks and tools, preserves auth location, and
 test('Claude uses safe mode with no tools or MCP and parses the structured output envelope', async t => {
   const { evaluator, calls } = await fixture(t, { questions: [question] });
   assert.deepEqual((await evaluator.generateAssessment(snapshot, { ...config, provider: 'claude', effort: 'low' })).questions, [question]);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1);
   const call = calls[0];
   assert.equal(call.command, 'claude');
   for (const flag of ['--print', '--safe-mode', '--no-session-persistence', '--strict-mcp-config', '--disable-slash-commands']) assert.ok(call.args.includes(flag));

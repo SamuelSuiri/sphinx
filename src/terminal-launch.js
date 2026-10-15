@@ -14,7 +14,10 @@ const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const ID = /^[a-f0-9]{64}$/;
 const TOKEN = /^[a-f0-9-]{36}$/;
 const STARTUP_MS = 30000;
-const FORWARDED_ENV = ['PATH', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
+const FORWARDED_ENV = ['PATH', 'HOME', 'SPHINX_USER_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'SSL_CERT_FILE', 'NODE_EXTRA_CA_CERTS'];
+const GIT_CONTEXT = ['GIT_INDEX_FILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'];
+const gitContext = env => Object.fromEntries(GIT_CONTEXT.filter(key => typeof env[key] === 'string' && path.isAbsolute(env[key]) && !env[key].includes('\0')).map(key => [key, env[key]]));
+const withoutGitContext = env => Object.fromEntries(Object.entries(env).filter(([key]) => !GIT_CONTEXT.includes(key) && key !== 'GIT_CONFIG' && !key.startsWith('GIT_CONFIG_') && key !== 'SPHINX_WAITING_GIT'));
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const live = pid => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
 const fileFor = (id, env) => {
@@ -23,10 +26,12 @@ const fileFor = (id, env) => {
 };
 
 /** One-shot local IPC keeps provider credentials out of argv and launch files. */
-export async function createTerminalEnvironmentBridge(env, token) {
+export async function createTerminalEnvironmentBridge(env, token, { operationGitEnv } = {}) {
   const values = Object.fromEntries(FORWARDED_ENV.filter(key => typeof env[key] === 'string').map(key => [key, env[key]]));
+  if (operationGitEnv) Object.assign(values, gitContext(operationGitEnv));
   const directory = await mkdtemp(path.join(tmpdir(), 'sphinx-term-'));
-  await chmod(directory, 0o700);
+  try { await chmod(directory, 0o700); }
+  catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
   const socketPath = path.join(directory, 'env.sock');
   let timer, closed = false;
   const clients = new Set();
@@ -52,9 +57,12 @@ export async function createTerminalEnvironmentBridge(env, token) {
     await new Promise(resolve => { try { server.close(() => resolve()); } catch { resolve(); } });
     await rm(directory, { recursive: true, force: true });
   };
-  try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); }); }
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+    await chmod(socketPath, 0o600);
+  }
   catch (error) { await close(); throw error; }
-  await chmod(socketPath, 0o600); server.unref();
+  server.unref();
   timer = setTimeout(() => { close().catch(() => {}); }, STARTUP_MS + 5000); timer.unref();
   return { socketPath, close };
 }
@@ -73,7 +81,7 @@ export async function readTerminalEnvironment(socketPath, token) {
       try {
         const values = JSON.parse(input);
         if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error();
-        resolve(Object.fromEntries(FORWARDED_ENV.filter(key => typeof values[key] === 'string').map(key => [key, values[key]])));
+        resolve({ ...Object.fromEntries(FORWARDED_ENV.filter(key => typeof values[key] === 'string').map(key => [key, values[key]])), ...gitContext(values) });
       } catch { reject(new Error('Invalid terminal environment response.')); }
     });
   });
@@ -108,7 +116,7 @@ export async function terminalCommand({ recordFile, token, home, platform = proc
   return null;
 }
 
-async function spawnTerminal(command, { env = process.env, spawnImpl = spawn } = {}) {
+export async function spawnTerminal(command, { env = process.env, spawnImpl = spawn } = {}) {
   return new Promise(resolve => {
     let child, finished = false, timer;
     const finish = started => { if (finished) return; finished = true; clearTimeout(timer); if (started) child?.unref(); resolve(started); };
@@ -154,25 +162,63 @@ export async function checkpointTerminalStatus({ id, env = process.env, isAlive 
   return { status, presentationToken: record.presentationToken, token: record.token, finishedAt: record.finishedAt, createdAt: record.createdAt };
 }
 
+/** Native dialogs and dedicated terminals reserve the same exact checkpoint. */
+export async function claimCheckpointDialog({ request, env = process.env, pid = process.pid, isAlive = live } = {}) {
+  if (!request || !ID.test(request.id) || !TOKEN.test(request.token) || !path.isAbsolute(request.repoRoot) || request.repoRoot.includes('\0') || !Number.isInteger(pid) || pid <= 0) throw new Error('Invalid native checkpoint reservation.');
+  if (env.SPHINX_EVALUATOR === '1') return { status: 'busy', id: request.id };
+  const file = fileFor(request.id, env), home = getPaths(env).home;
+  const result = await lock(file, async () => {
+    const current = await checkpointTerminalStatus({ id: request.id, env, isAlive });
+    if (['starting', 'running'].includes(current?.status)) return { status: 'busy', id: request.id };
+    const token = randomUUID(), at = Date.now();
+    await writeJson(file, { version: 1, id: request.id, token, presentationToken: request.token, repoRoot: request.repoRoot, home, kind: 'native', status: 'running', pid, createdAt: at, updatedAt: at });
+    return { status: 'claimed', id: request.id, token };
+  });
+  return result.status === 'busy' ? { status: 'busy', id: request.id } : result;
+}
+
+/** Only the reservation owner can release a native dialog or report completion.
+ * This status wakes waiters; the Git gate still requires its own valid receipt.
+ */
+export async function finishCheckpointDialog({ id, token, status, env = process.env } = {}) {
+  if (!ID.test(id) || !TOKEN.test(token) || !['passed', 'pending'].includes(status)) throw new Error('Invalid native checkpoint completion.');
+  const file = fileFor(id, env), deadline = Date.now() + 20000;
+  let result;
+  do {
+    result = await lock(file, async () => {
+      const current = await readJson(file, null);
+      if (current?.version !== 1 || current.id !== id || current.token !== token || current.kind !== 'native' || current.status !== 'running') return { status: 'ignored', id };
+      const at = Date.now();
+      await writeJson(file, { ...current, status, updatedAt: at, finishedAt: at });
+      return { status, id };
+    });
+    if (result.status === 'busy') await delay(50);
+  } while (result.status === 'busy' && Date.now() < deadline);
+  return result.status === 'busy' ? { status: 'busy', id } : result;
+}
+
 /** One window per exact assessment; only a new Git attempt retries a failed launch. */
-export async function launchCheckpointTerminal({ request, env = process.env, platform = process.platform, cliPath = CLI, isAlive = live, launch = spawnTerminal, findExecutable = executable, environmentBridge = createTerminalEnvironmentBridge } = {}) {
+export async function launchCheckpointTerminal({ request, env = process.env, platform = process.platform, cliPath = CLI, isAlive = live, launch = spawnTerminal, findExecutable = executable, environmentBridge = createTerminalEnvironmentBridge, signal } = {}) {
+  signal?.throwIfAborted();
   if (env.SPHINX_EVALUATOR === '1') return { status: 'skipped' };
   if (!request || !ID.test(request.id) || !TOKEN.test(request.token) || !path.isAbsolute(request.repoRoot) || request.repoRoot.includes('\0') || !path.isAbsolute(cliPath)) throw new Error('Invalid queued checkpoint terminal request.');
   const file = fileFor(request.id, env), home = getPaths(env).home;
   return lock(file, async () => {
+    signal?.throwIfAborted();
     const previous = await checkpointTerminalStatus({ id: request.id, env, isAlive });
     if (['starting', 'running'].includes(previous?.status)) return { status: 'already-open', id: request.id };
     if (previous?.status === 'passed' && request.createdAt <= previous.finishedAt) return { status: 'passed', id: request.id };
     if (previous?.presentationToken === request.token) return { status: 'suppressed', id: request.id };
-    const record = { version: 1, id: request.id, token: randomUUID(), presentationToken: request.token, repoRoot: request.repoRoot, home, cliPath, status: 'starting', createdAt: Date.now(), updatedAt: Date.now() };
+    const record = { version: 1, id: request.id, token: randomUUID(), presentationToken: request.token, repoRoot: request.repoRoot, home, cliPath, kind: 'terminal', waitingGit: request.delivery === 'hook', status: 'starting', createdAt: Date.now(), updatedAt: Date.now() };
     await writeJson(file, record);
     let bridge;
     let started = false;
     try {
       const command = await terminalCommand({ recordFile: file, token: record.token, home, platform, env, findExecutable });
-      if (command && environmentBridge) { bridge = await environmentBridge(env, record.token); record.envSocket = bridge.socketPath; }
+      if (command && environmentBridge) { bridge = await environmentBridge(env, record.token, { ...(record.waitingGit ? { operationGitEnv: gitContext(env) } : {}) }); record.envSocket = bridge.socketPath; }
       await writeJson(file, record);
-      if (command) started = await launch(command, { env });
+      signal?.throwIfAborted();
+      if (command) started = await launch(command, { env: withoutGitContext(env) });
     } catch { /* Static status only; launcher errors can contain environment data. */ }
     // The worker may already have started while the terminal launcher exits.
     const current = await readJson(file, null);
@@ -199,7 +245,7 @@ export async function runCheckpointTerminal({ recordFile, token, env = process.e
   const id = path.basename(recordFile || '', '.json');
   if (!ID.test(id) || !TOKEN.test(token) || path.resolve(recordFile) !== fileFor(id, env)) throw new Error('Invalid checkpoint terminal worker.');
   const record = await readJson(recordFile, null);
-  if (!record || record.version !== 1 || record.token !== token || record.id !== id || record.home !== home || !path.isAbsolute(record.repoRoot) || !path.isAbsolute(record.cliPath) || record.status !== 'starting') return { status: 'ignored', code: 1 };
+  if (!record || record.version !== 1 || record.kind === 'native' || record.token !== token || record.id !== id || record.home !== home || typeof record.repoRoot !== 'string' || !path.isAbsolute(record.repoRoot) || typeof record.cliPath !== 'string' || !path.isAbsolute(record.cliPath) || record.status !== 'starting') return { status: 'ignored', code: 1 };
   const running = { ...record, status: 'running', pid, updatedAt: Date.now() };
   let claimed;
   const claimDeadline = Date.now() + 20000;
@@ -226,7 +272,7 @@ export async function runCheckpointTerminal({ recordFile, token, env = process.e
   let childWrite = Promise.resolve();
   const code = await new Promise(resolve => {
     let child;
-    try { child = spawnImpl(process.execPath, [record.cliPath, 'check', '--id', id], { cwd: record.repoRoot, env: { ...env, ...providerEnv, SPHINX_HOME: home }, stdio: 'inherit' }); }
+    try { child = spawnImpl(process.execPath, [record.cliPath, 'check', '--id', id], { cwd: record.repoRoot, env: { ...withoutGitContext(env), ...providerEnv, SPHINX_HOME: home, ...(record.waitingGit ? { SPHINX_WAITING_GIT: '1' } : {}) }, stdio: 'inherit' }); }
     catch { resolve(1); return; }
     child.once('error', () => resolve(1));
     child.once('exit', code => resolve(code ?? 1));

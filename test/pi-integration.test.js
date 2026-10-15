@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { getPaths, DEFAULT_CONFIG } from '../src/config.js';
 import { runNativeCheckpoint } from '../src/native-check.js';
-import { registerPiIntegration, elicitPiForm, preparePiIntegration, removePiIntegration, piIntegrationStatus } from '../src/pi-integration.js';
+import { registerPiIntegration, elicitPiForm, preparePiIntegration, removePiIntegration, piIntegrationStatus, PI_GUIDANCE } from '../src/pi-integration.js';
 
 function host(options = {}) {
   const handlers = new Map(), notifications = [], selections = [], inputs = [];
@@ -41,10 +41,44 @@ test('Pi dialog answers go straight to Sphinx; only fixed outcome text enters th
   assert.equal(received.supportsForm, true);
   assert.equal(h.selections[0][0], 'QUESTION_PRIVATE');
   assert.match(h.inputs[0][0], /QUESTION_PRIVATE/);
-  assert.match(result.content.at(-1).text, /passed.*Retry the original Git/s);
+  assert.match(result.content.at(-1).text, /fallback checkpoint passed/);
+  assert.match(result.content.at(-1).text, /does not resume an exited Git process/);
+  assert.match(result.content.at(-1).text, /Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure/);
+  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
   assert.deepEqual(result.structuredContent, h.event.structuredContent);
   assert.equal(result.isError, undefined, 'The hook never rewrites the original failed Git status');
   assert.doesNotMatch(JSON.stringify([result, h.notifications]), /QUESTION_PRIVATE|HUMAN_PRIVATE|FEEDBACK_PRIVATE|RUBRIC_PRIVATE/);
+});
+
+test('a passed Pi fallback preserves successful advisory tool output and warns against replay', async () => {
+  const h = host({ runCheckpoint: async () => ({ status: 'passed' }) });
+  const event = { ...h.event, content: [{ type: 'text', text: 'Git push succeeded in advisory mode.' }], structuredContent: { exitCode: 0 }, isError: false };
+  const result = await h.run(event);
+  assert.deepEqual(result.content[0], event.content[0]);
+  assert.deepEqual(result.structuredContent, { exitCode: 0 });
+  assert.equal(result.isError, undefined);
+  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+  assert.deepEqual(h.selections, []);
+});
+
+test('Pi adds waiting and timeout guidance without replacing prompt sections or starting an interview', () => {
+  const h = host({ runCheckpoint: () => { assert.fail('Guidance must not start a checkpoint'); } });
+  const event = { systemPromptOptions: { promptGuidelines: ['Keep existing guidance.'], sections: { custom: 'Unrelated section' } } };
+  assert.equal(h.handlers.get('before_agent_start')(event), undefined);
+  h.handlers.get('before_agent_start')(event);
+  assert.deepEqual(event.systemPromptOptions.promptGuidelines, ['Keep existing guidance.', ...PI_GUIDANCE]);
+  assert.deepEqual(event.systemPromptOptions.sections, { custom: 'Unrelated section' });
+  assert.match(PI_GUIDANCE.join('\n'), /waits up to 25 minutes, but the host may cancel the shell sooner/);
+  assert.match(PI_GUIDANCE.join('\n'), /supported yielding or background execution; do not terminate or duplicate/);
+  assert.deepEqual(h.selections, []);
+});
+
+test('Pi reports an existing questionnaire without suggesting another interview', async () => {
+  const h = host({ runCheckpoint: async () => ({ status: 'busy' }) });
+  const result = await h.run();
+  assert.match(result.content.at(-1).text, /questionnaire is already open.*Wait for the human/);
+  assert.doesNotMatch(result.content.at(-1).text, /sphinx check|retry/);
+  assert.deepEqual(h.selections, []);
 });
 
 test('no queued work is silent, non-shell tools are ignored, and unsupported UI never elicits', async () => {
@@ -130,6 +164,7 @@ test('native controller keeps wrong answers in Pi dialogs until a transfer quest
     listRequests: async () => claimed ? [] : [{ id, repoRoot: '/repository' }],
     claimRequest: async () => { claimed = true; return true; },
     readConfig: async () => structuredClone(DEFAULT_CONFIG), revalidate: async () => true,
+    reserveDialog: async () => ({ status: 'claimed', id, token: 'test-only' }), releaseDialog: async () => {},
   }) });
   const result = await h.run();
   assert.equal(grading.length, 2);

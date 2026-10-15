@@ -2,6 +2,7 @@ import { loadConfig, policyHash } from './config.js';
 import { revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { listPresentations, claimPresentation } from './presentations.js';
+import { claimCheckpointDialog, finishCheckpointDialog } from './terminal-launch.js';
 
 const LEARN_REQUEST = 'I do not know. Explain this concept and give me a different scenario to apply it to.';
 const ACTIONS = ['answer', 'learn', 'dispute', 'pause'];
@@ -66,6 +67,7 @@ export async function runNativeCheckpoint({
   cwd, host, hookEvent, hostSession, env = process.env, elicit, supportsForm = false, signal,
   store: providedStore, listRequests = listPresentations, claimRequest = claimPresentation,
   readConfig = loadConfig, revalidate = revalidateSnapshot,
+  reserveDialog = claimCheckpointDialog, releaseDialog = finishCheckpointDialog,
 } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return summary('not-required');
   const checkpoints = [];
@@ -99,13 +101,17 @@ export async function runNativeCheckpoint({
   const store = providedStore || createSessionStore({ env, validate });
 
   for (const request of claimed) {
-    let state;
+    let state, reservation;
+    let reservationStatus = 'pending';
     try {
       signal?.throwIfAborted();
       const session = await store.read(request.id);
       if (session.id !== request.id || session.snapshot.repoRoot !== request.repoRoot) throw new Error('The request does not match its assessment.');
       const config = await readConfig(session.snapshot.repoRoot, env);
       await validate(session.snapshot, config);
+      reservation = await reserveDialog({ request, env });
+      signal?.throwIfAborted();
+      if (reservation?.status !== 'claimed') return summary('busy', checkpoints);
       state = await store.start(request.id, config, { signal });
       signal?.throwIfAborted();
       let notice;
@@ -137,6 +143,7 @@ export async function runNativeCheckpoint({
       }
       // A receipt is reported only while its exact source and current policy still match.
       await validate((await store.read(request.id)).snapshot, config);
+      reservationStatus = 'passed';
       checkpoints.push(checkpointSummary(request.id, state, 'passed'));
     } catch {
       // Reading usage is safe, but no evaluator error, question, answer, or feedback crosses the tool boundary.
@@ -145,6 +152,12 @@ export async function runNativeCheckpoint({
         checkpoints.push(checkpointSummary(request.id, state, signal?.aborted ? 'pending' : 'error'));
       }
       return summary(signal?.aborted ? 'pending' : 'error', checkpoints);
+    } finally {
+      if (reservation?.status === 'claimed') {
+        // Release even when cancelled. The waiting Git hook independently checks
+        // its receipt and snapshot; this record only tells it the dialog ended.
+        await releaseDialog({ id: request.id, token: reservation.token, status: reservationStatus, env });
+      }
     }
   }
   return summary(checkpoints.length ? 'passed' : 'not-required', checkpoints);

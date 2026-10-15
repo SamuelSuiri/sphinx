@@ -10,6 +10,12 @@ test('Cursor SessionStart uses documented context/env fields and never installs 
   assert.deepEqual(output.env, { SPHINX_CURSOR_SESSION: 'conversation-123' });
   assert.match(output.additional_context, /own terminal/);
   assert.match(output.additional_context, /Never run the interview/);
+  assert.match(output.additional_context, /keeps the original Git operation waiting/);
+  assert.match(output.additional_context, /that same operation continues automatically/);
+  assert.match(output.additional_context, /handles fallback or advisory requests only/);
+  assert.match(output.additional_context, /verify that the original Git operation has exited with a Sphinx blocking failure before retrying/);
+  assert.match(output.additional_context, /waits up to 25 minutes, but the host may cancel the shell sooner/);
+  assert.match(output.additional_context, /supported yielding or background execution; do not terminate or duplicate/);
   assert.deepEqual(await cursorAgentHook({ input: { hook_event_name: 'sessionStart' }, env: { SPHINX_EVALUATOR: '1' } }), {});
 });
 
@@ -54,6 +60,10 @@ test('terminal handoff consumes only Git-created requests once, without reading 
   const options = { cwd: '/repo', host: 'opencode', hostSession: 'ses_123', env: {}, listRequests: async () => requests, claimRequest: async request => { if (seen.has(request.token)) return false; seen.add(request.token); return true; }, launch: async ({ request }) => { launched.push(request.id); return { status: 'opened' }; }, waitForResult: async () => 'passed' };
   const notice = await terminalHandoff(options);
   assert.match(notice, /completed directly in its terminal window/);
+  assert.match(notice, /fallback understanding check/);
+  assert.match(notice, /does not resume an exited Git process/);
+  assert.match(notice, /Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure/);
+  assert.match(notice, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
   assert.deepEqual(launched, [requests[0].id, requests[1].id]);
   assert.doesNotMatch(notice, /NEVER SEND|aaaaa|bbbbb/);
   assert.equal(await terminalHandoff(options), null);
@@ -71,6 +81,7 @@ test('a terminal that fails after launch gives the human a manual fallback rathe
     assert.equal(claimed, 1);
     assert.match(notice, /remains pending/);
     assert.match(notice, /human can run `sphinx check` in their own terminal/);
+    assert.match(notice, /Never duplicate a waiting operation/);
     assert.doesNotMatch(notice, /still open|completed directly/);
   }
 });

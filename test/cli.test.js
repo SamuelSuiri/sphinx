@@ -45,7 +45,7 @@ async function fixture(t, { background = false } = {}) {
   const bare = path.join(base, 'remote.git');
   const bin = path.join(base, 'bin');
   for (const dir of [home, repo, bin]) await mkdir(dir);
-  const env = { ...process.env, HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, 'sphinx'),
+  const env = { ...process.env, CI: '1', HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, 'sphinx'),
     GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1',
     PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPHINX_TEST_LOG: path.join(base, 'model-calls.jsonl'),
   };
@@ -160,6 +160,87 @@ test('CLI keeps a failed evaluator pending and enforces the checkpoint on retry'
   assert.equal(learned.progress.completed, 0);
 });
 
+test('CLI explicitly retries a failed review without erasing prior usage or resetting active questions', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
+  const failed = f.run(process.execPath, [CLI, 'check', '--json'], { env: { ...f.env, SPHINX_TEST_FAILURE: '1' } });
+  assert.equal(failed.status, 1);
+  const before = f.cliJson('pending')[0];
+  assert.equal(before.usage.calls, 1);
+  const noId = f.run(process.execPath, [CLI, 'check', '--retry-review', '--json']);
+  assert.equal(noId.status, 1); assert.match(noId.stderr, /requires --id/);
+  const retried = f.cliJson('check', '--id', before.id, '--retry-review');
+  assert.equal(retried.status, 'active');
+  assert.equal(retried.usage.limit, before.usage.calls + before.usage.limit);
+  assert.ok(retried.usage.calls > before.usage.calls);
+  const calls = (await f.calls()).length;
+  const active = f.run(process.execPath, [CLI, 'check', '--id', before.id, '--retry-review', '--json']);
+  assert.equal(active.status, 1);
+  assert.equal((await f.calls()).length, calls);
+  assert.deepEqual(f.cliJson('pending')[0].usage, retried.usage);
+});
+
+test('interactive CLI stays open after review failure until the human pauses or retries', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
+  const id = f.cliJson('pending')[0].id;
+  const marker = path.join(f.base, 'fail-review');
+  await writeFile(marker, 'fail');
+  const provider = PROVIDER.replace("  const data = JSON.parse", `  if (process.env.SPHINX_TEST_BAD_REVIEW_FILE && fs.existsSync(process.env.SPHINX_TEST_BAD_REVIEW_FILE)) {
+    process.stdout.write(JSON.stringify({type:'result',subtype:'success',structured_output:{}}));
+    return;
+  }
+  const data = JSON.parse`);
+  await writeFile(path.join(f.base, 'bin', 'claude'), provider, { mode: 0o755 });
+  const launch = () => {
+    // Exercise the actual CLI/readline wiring with controlled pipe input. No GUI
+    // or real terminal is needed; TERM=dumb keeps this synthetic TTY unstyled.
+    const script = `Object.defineProperty(process.stdin,'isTTY',{value:true});
+      const {main}=await import(${JSON.stringify(new URL('../src/cli.js', import.meta.url).href)});
+      try { process.exitCode=await main(['check','--id',${JSON.stringify(id)}]); }
+      catch(error) { console.error(error.message); process.exitCode=error.exitCode||1; }`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: f.repo, env: { ...f.env, TERM: 'dumb', NO_COLOR: '1', SPHINX_WAITING_GIT: '1', SPHINX_TEST_BAD_REVIEW_FILE: marker }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    child.stderr.on('data', data => { output += data; });
+    const done = new Promise(resolve => child.once('close', code => resolve(code)));
+    t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
+    const waitFor = async text => {
+      const deadline = Date.now() + 8000;
+      while (!output.includes(text) && child.exitCode === null && Date.now() < deadline) await delay(20);
+      assert.ok(output.includes(text), `Missing ${text}:\n${output}`);
+    };
+    return { child, done, waitFor, output: () => output };
+  };
+  const paused = launch();
+  await paused.waitFor('Choose [2]:');
+  const before = f.cliJson('pending')[0].usage;
+  assert.equal(paused.child.exitCode, null);
+  await delay(80);
+  assert.deepEqual(f.cliJson('pending')[0].usage, before, 'waiting at the prompt cannot spend calls');
+  paused.child.stdin.write('\n');
+  assert.equal(await paused.done, 1);
+  assert.match(paused.output(), /Progress saved/);
+  const resumed = launch();
+  await resumed.waitFor('Choose [2]:');
+  assert.match(resumed.output(), /original Git operation is waiting/);
+  await rm(marker);
+  resumed.child.stdin.write('1\n');
+  await resumed.waitFor('Your answer:');
+  resumed.child.stdin.write('No. The existing ID is rejected before insertion.\n');
+  assert.equal(await resumed.done, 0);
+  assert.match(resumed.output(), /Understanding check complete/);
+  const record = JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'sessions', `${id}.json`), 'utf8'));
+  assert.equal(record.status, 'passed');
+  assert.equal(record.reviewRetries, undefined);
+  assert.ok(record.calls > before.calls);
+  assert.equal(record.callLimit, undefined, 'ordinary interactive retries never extend the allowance');
+});
+
 test('CLI pre-commit gate assesses staged content without waiting for terminal input', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none', '--events', 'pre-commit');
@@ -225,7 +306,7 @@ test('canonical repository policy controls actual destination pushes through exi
 
 test('each public CLI command provides contextual help without setup or model calls', { timeout: 30000 }, async t => {
   const f = await fixture(t);
-  const commands = ['install', 'init', 'auth', 'check', 'pending', 'answer', 'explain', 'dispute', 'status', 'config', 'doctor', 'uninstall'];
+  const commands = ['install', 'activate', 'init', 'auth', 'check', 'pending', 'answer', 'explain', 'dispute', 'status', 'config', 'doctor', 'uninstall'];
   const generalHelp = f.cli('--help');
   for (const command of commands) {
     const optionHelp = f.cli(command, '--help');
@@ -241,6 +322,52 @@ test('each public CLI command provides contextual help without setup or model ca
   assert.match(f.cli('install', '--help'), /--allow-paid/);
   await assert.rejects(stat(path.join(f.repo, '.sphinxconfig')), { code: 'ENOENT' });
   await assert.rejects(stat(path.join(f.env.SPHINX_HOME, 'config.json')), { code: 'ENOENT' });
+  assert.deepEqual(await f.calls(), []);
+});
+
+test('scripted installation defers client launch and activate checks configured selections', async t => {
+  const f = await fixture(t);
+  const output = f.cli('install', '--yes', '--provider', 'claude', '--agents', 'claude');
+  assert.match(output, /sphinx activate --agents claude/);
+  assert.doesNotMatch(output, /Restart Claude Code|Codex hook trust/);
+  await assert.rejects(stat(path.join(f.env.SPHINX_HOME, 'activations')), { code: 'ENOENT' });
+  const manifest = await readFile(path.join(f.env.SPHINX_HOME, 'install.json'), 'utf8');
+  for (const selection of ['codex', 'claude,codex', 'claude,claude', 'none']) {
+    const rejected = f.run(process.execPath, [CLI, 'activate', '--agents', selection]);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /not installed|--agents must/);
+  }
+  assert.equal(await readFile(path.join(f.env.SPHINX_HOME, 'install.json'), 'utf8'), manifest);
+  assert.deepEqual(await f.calls(), []);
+});
+
+test('explicit activation in headless environments reports fallback without changing installation or calling a model', async t => {
+  const f = await fixture(t);
+  const env = { ...f.env, CI: '1', FORCE_COLOR: '1' };
+  const installed = f.run(process.execPath, [CLI, 'install', '--yes', '--launch', '--provider', 'claude', '--agents', 'claude'], { env });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.match(installed.stdout, /No local desktop/);
+  const manifest = await readFile(path.join(f.env.SPHINX_HOME, 'install.json'), 'utf8');
+  const activated = f.run(process.execPath, [CLI, 'activate', '--json'], { env });
+  assert.equal(activated.status, 1);
+  assert.equal(/\u001b\[/u.test(activated.stdout), false);
+  const { results } = JSON.parse(activated.stdout);
+  assert.deepEqual(results.map(item => item.agent), ['claude']);
+  assert.equal(results[0].status, 'unavailable');
+  assert.match(results[0].detail, /No local desktop/);
+  assert.equal(await readFile(path.join(f.env.SPHINX_HOME, 'install.json'), 'utf8'), manifest);
+  await assert.rejects(stat(path.join(f.env.SPHINX_HOME, 'activations')), { code: 'ENOENT' });
+  assert.deepEqual(await f.calls(), []);
+});
+
+test('contradictory launch flags and repository-only launches fail before installation', async t => {
+  const f = await fixture(t);
+  for (const args of [['--launch', '--no-launch'], ['--repo', '--launch']]) {
+    const result = f.run(process.execPath, [CLI, 'install', '--yes', ...args]);
+    assert.equal(result.status, 1);
+  }
+  await assert.rejects(stat(path.join(f.env.SPHINX_HOME, 'install.json')), { code: 'ENOENT' });
+  assert.notEqual(f.run('git', ['config', '--global', '--get', 'core.hooksPath']).status, 0);
   assert.deepEqual(await f.calls(), []);
 });
 

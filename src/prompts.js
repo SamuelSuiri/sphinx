@@ -1,10 +1,12 @@
 import { parseRoute, questionLimit } from './routing.js';
+import { reviewerTurnLimit } from './reviewer-limits.js';
 
 export const routeText = route => `${route.provider}${route.model ? `:${route.model}` : ''}`;
 export const splitList = value => String(value).split(',').map(item => item.trim()).filter(Boolean);
 export const questionCapsText = level => ['small', 'medium', 'large'].map(tier => `${tier} ${questionLimit(level, tier)}`).join(', ');
+export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${reviewerTurnLimit(tier, config.agentMaxTurns)}`).join(', ');
 
-export function createPrompts({ ask, ui }) {
+export function createPrompts({ ask, ui, select }) {
   async function choose({ title, description, choices, current }) {
     ui.section(title); if (description) ui.paragraph(description);
     const selected = Math.max(0, choices.findIndex(choice => choice.value === current));
@@ -27,18 +29,48 @@ export function createPrompts({ ask, ui }) {
       try { validate(value); return value; } catch (error) { ui.warning(error.message); }
     }
   }
-  return { choose, text };
+  async function multiselect(options) {
+    if (select) return select(options);
+    // Accessible line-input fallback for dumb terminals and redirected output.
+    const { title, description, choices, current = [] } = options;
+    const selected = new Set(current.filter(value => choices.some(choice => choice.value === value)));
+    ui.section(title); if (description) ui.paragraph(description);
+    ui.note('Toggle numbers or names separated by commas. all selects every agent; none clears the list. Enter confirms.');
+    for (;;) {
+      ui.blank();
+      const all = selected.size === choices.length, partial = selected.size > 0;
+      ui.rows([
+        [`1. [${all ? 'x' : partial ? '-' : ' '}] All supported agents`, 'Select or clear every agent.'],
+        ...choices.map((choice, index) => [`${index + 2}. [${selected.has(choice.value) ? 'x' : ' '}] ${choice.label}`, choice.description]),
+      ]);
+      const answer = (await ask('\nToggle selection (Enter to confirm): ')).trim().toLowerCase();
+      if (!answer) return choices.filter(choice => selected.has(choice.value)).map(choice => choice.value);
+      if (answer === 'all') { choices.forEach(choice => selected.add(choice.value)); continue; }
+      if (answer === 'none') { selected.clear(); continue; }
+      const toggles = answer.split(/[\s,]+/u).filter(Boolean).map(value => {
+        if (/^\d+$/.test(value)) return Number(value) - 1;
+        const index = choices.findIndex(choice => choice.value.toLowerCase() === value);
+        return index === -1 ? -1 : index + 1;
+      });
+      if (toggles.some(index => index < 0 || index > choices.length)) { ui.warning('Choose numbers from the list, agent names, all, or none.'); continue; }
+      for (const index of new Set(toggles)) {
+        if (index === 0) { if (selected.size === choices.length) selected.clear(); else choices.forEach(choice => selected.add(choice.value)); }
+        else { const value = choices[index - 1].value; if (selected.has(value)) selected.delete(value); else selected.add(value); }
+      }
+    }
+  }
+  return { choose, text, multiselect };
 }
 
 const lists = value => { if (!splitList(value).length) throw new Error('Enter at least one comma-separated value.'); if (/\s/.test(splitList(value).join(''))) throw new Error('Use commas between patterns; patterns cannot contain spaces.'); };
 
-export async function askPolicy(config, initial, prompts) {
+export async function askPolicy(config, initial, prompts, { scope = 'repository' } = {}) {
   const values = { ...initial };
   if (values.events === undefined) {
     const original = config.events.join(',');
     const current = config.events.includes('pre-push') && config.events.includes('pre-commit') ? 'pre-push,pre-commit' : original;
     const selected = await prompts.choose({
-    title: 'When should Sphinx run?', description: 'Git decides deterministically when a checkpoint is needed. Hooks make no model calls.', current,
+    title: 'When should Sphinx run?', description: 'Git decides deterministically when a checkpoint is needed. The Git gate makes no model calls.', current,
     choices: [
       { value: 'pre-push', label: 'Before pushing', description: 'Check commits when they leave your machine for a matching destination branch.' },
       { value: 'pre-commit', label: 'Before committing', description: 'Check staged changes on a matching local branch. More frequent checkpoints.' },
@@ -48,22 +80,28 @@ export async function askPolicy(config, initial, prompts) {
     });
     values.events = selected === current ? original : selected;
   }
-  if (values.branches === undefined) values.branches = await prompts.text({ title: 'Which branches?', description: 'Pushes match the destination branch, not your checkout. A feature:main push matches main. Commit checks match the current local branch. Use comma-separated names or patterns, such as main,release/*. An empty inherited list matches no branches.', current: config.branches.join(','), validate: value => { if (value || config.branches.length) lists(value); } });
-  if (values.remotes === undefined) values.remotes = await prompts.text({ title: 'Which remotes?', description: 'Limit push checkpoints by remote name. Use * for every remote, or names such as origin,upstream. This does not affect commit checks. An empty inherited list matches no remotes.', current: config.remotes.join(','), validate: value => { if (value || config.remotes.length) lists(value); } });
+  const branchScope = scope === 'global'
+    ? 'By default, Sphinx runs on pushes to the destination branch names below. Each repository can override these machine-wide defaults by setting branches in .sphinxconfig to its own production branch name.'
+    : 'Choose the destination branches that should trigger push checks in this repository. These override your machine-wide defaults and are saved as branches in .sphinxconfig. Use this project\'s production branch name.';
+  const remoteScope = scope === 'global'
+    ? 'By default, push checks apply to the remote names below. These are machine-wide defaults; each repository can override remotes in .sphinxconfig.'
+    : 'Choose which remotes should trigger push checks in this repository. These override your machine-wide defaults and are saved as remotes in .sphinxconfig.';
+  if (values.branches === undefined) values.branches = await prompts.text({ title: 'Which branches?', description: `${branchScope} Use comma-separated names or patterns, such as main,release/*. Commit checks match the current local branch. An empty list matches no branches.`, current: config.branches.join(','), validate: value => { if (value || config.branches.length) lists(value); } });
+  if (values.remotes === undefined) values.remotes = await prompts.text({ title: 'Which remotes?', description: `${remoteScope} Use * for every remote, or names such as origin,upstream. This does not affect commit checks. An empty list matches no remotes.`, current: config.remotes.join(','), validate: value => { if (value || config.remotes.length) lists(value); } });
   if (values.level === undefined) values.level = await prompts.choose({ title: 'How much understanding should the check cover?', description: 'Question caps depend on change size and depth. The evaluator can ask fewer, without filler. Model selection is separate.', current: config.level, choices: [
     { value: 'relaxed', label: 'Relaxed', description: `Caps: ${questionCapsText('relaxed')}. Behavior and the most consequential edge case.` },
     { value: 'standard', label: 'Standard', description: `Caps: ${questionCapsText('standard')}. Behavior, failures, and system interactions.` },
     { value: 'thorough', label: 'Thorough', description: `Caps: ${questionCapsText('thorough')}. Also consider rollout, rollback, and compatibility.` },
   ] });
   if (values.mode === undefined) values.mode = await prompts.choose({ title: 'What happens at a checkpoint?', current: config.mode, choices: [
-    { value: 'block', label: 'Pause until complete', description: 'Stop the Git operation. Complete the understanding check, then retry.' },
+    { value: 'block', label: 'Pause until complete', description: 'The Git operation will only go through after you answer the understanding questions correctly.' },
     { value: 'advisory', label: 'Remind and continue', description: 'Record a pending check and allow the Git operation to proceed.' },
   ] });
   return values;
 }
 
-export async function askInstall(config, initial, prompts) {
-  let values = await askPolicy(config, initial, prompts);
+export async function askInstall(config, initial, prompts, { detectedAgents = [] } = {}) {
+  let values = await askPolicy(config, initial, prompts, { scope: 'global' });
   const explicitRoute = ['provider', 'model', 'small', 'medium', 'large'].some(key => initial[key] !== undefined);
   if (!explicitRoute) {
     const choice = await prompts.choose({ title: 'Who should evaluate your understanding?', description: 'A separate evaluator receives filtered code evidence without your coding conversation. Sphinx collects your answers directly in native forms or the terminal.', current: 'keep', choices: [
@@ -79,16 +117,15 @@ export async function askInstall(config, initial, prompts) {
       }
     } else if (choice !== 'keep') values.provider = choice;
   }
-  if (values.agents === undefined) values.agents = await prompts.choose({ title: 'Connect your coding agents', description: 'Hooks open a native questionnaire or a dedicated Sphinx terminal automatically. You answer directly; your coding model receives only the outcome. Existing integrations are preserved.', current: 'auto', choices: [
-    { value: 'auto', label: 'Detect installed agents', description: 'Connect available Codex, Claude Code, Pi, Cursor, and OpenCode installations.' },
-    { value: 'codex,claude,pi,cursor,opencode', label: 'All supported agents', description: 'Configure all five clients, including ones you plan to install later.' },
-    { value: 'codex,claude', label: 'Codex and Claude Code', description: 'Configure both agents, including ones you plan to install later.' },
-    { value: 'codex', label: 'Codex only', description: 'Add Codex instructions. Review and trust the hook in /hooks after setup.' },
-    { value: 'claude', label: 'Claude Code only', description: 'Add Claude Code instructions. Start a new session after setup.' },
-    { value: 'pi', label: 'Pi only', description: 'Show questions directly in Pi dialogs. Run /reload after setup.' },
-    { value: 'cursor', label: 'Cursor only', description: 'Open a dedicated Sphinx terminal from local Cursor sessions. Start a new session after setup.' },
-    { value: 'opencode', label: 'OpenCode only', description: 'Open a dedicated Sphinx terminal from OpenCode 1.x. Restart OpenCode after setup.' },
-    { value: 'none', label: 'Git and terminal only', description: 'Do not add agent integrations. Use sphinx check in your terminal.' },
-  ] });
+  if (values.agents === undefined) {
+    const selected = await prompts.multiselect({ title: 'Connect your coding agents', description: 'Detected agents are preselected. Choose any combination, or clear all to skip agent setup. Previously connected agents remain installed.', current: detectedAgents, choices: [
+      { value: 'codex', label: 'Codex', description: 'Native forms. Review and trust Sphinx hooks in /hooks.' },
+      { value: 'claude', label: 'Claude Code', description: 'Native questionnaire forms.' },
+      { value: 'pi', label: 'Pi', description: 'Native questionnaire dialogs.' },
+      { value: 'cursor', label: 'Cursor', description: 'A Sphinx terminal for answers from local Agent sessions.' },
+      { value: 'opencode', label: 'OpenCode', description: 'A Sphinx terminal for answers. Requires OpenCode 1.x.' },
+    ] });
+    values.agents = selected.length ? selected.join(',') : 'none';
+  }
   return values;
 }

@@ -135,12 +135,14 @@ export function parseModelJSON(value, label = 'Evaluator') {
 
 function childEnvironment(env) {
   const result = { ...env, SPHINX_EVALUATOR: '1', NO_COLOR: '1' };
-  // Keep authentication and PATH, but never pass parent conversation identifiers.
+  // Keep authentication and PATH, but never pass parent conversation identifiers
+  // or a waiting Git operation's directory/index into an isolated CLI reviewer.
   for (const key of Object.keys(result)) {
     if (/^CODEX_(?:THREAD|SESSION|TURN|PARENT)(?:_|$)/u.test(key)
       || /^CLAUDE_(?:SESSION|PARENT)(?:_|$)/u.test(key)
       || /^PI_(?:SESSION(?:_|$)|PROVIDER$|MODEL$)/u.test(key)
       || /^SPHINX_(?:CLAUDE|CURSOR|OPENCODE)_SESSION$/u.test(key)
+      || key.startsWith('GIT_') || key === 'SPHINX_WAITING_GIT'
       || key === 'CLAUDECODE') delete result[key];
   }
   return result;

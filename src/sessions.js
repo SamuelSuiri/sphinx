@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
-import { getPaths, readJson, writeJson, policyHash } from './config.js';
+import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
 import { selectRoute, evaluatorConfig, questionLimit } from './routing.js';
 import { generateAssessment, gradeAnswer } from './evaluator.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -44,13 +44,38 @@ async function withLock(id, env, operation, { signal, deadline = 0 } = {}) {
 function validReceipt(session, config) {
   return session?.status === 'passed' && session.policy === policyHash(config) && Date.parse(session.expiresAt) > Date.now();
 }
+function callLimit(session) {
+  const limit = session.callLimit ?? session.config.maxModelCalls;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('The assessment call limit is invalid.');
+  return limit;
+}
+const retryHint = session => `Run sphinx check --id ${session.id} --retry-review to explicitly authorize a fresh review allowance; prior usage will be retained.`;
+function withRecoveryMessage(error, message) {
+  // Preserve only the transport's sanitized diagnostic metadata. A provider
+  // payload or request must never leak through a nested cause in CLI output.
+  const failure = new Error(message);
+  failure.name = error.name || 'Error';
+  for (const key of ['code', 'status', 'errorType']) if (error[key] !== undefined) failure[key] = error[key];
+  return failure;
+}
+function reviewFailure(error, session, signal) {
+  if (signal?.aborted || error?.name === 'AbortError') return error;
+  const remaining = callLimit(session) - session.calls - questionLimit(session.config.level, session.route.tier);
+  if (['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code) && remaining >= 2) {
+    const totalRemaining = callLimit(session) - session.calls;
+    return withRecoveryMessage(error, `${error.message} ${totalRemaining} model calls remain in the existing assessment allowance (${session.calls}/${callLimit(session)} used). When ready, retry within that allowance: sphinx check --id ${session.id}.`);
+  }
+  if (error?.code !== 'REVIEWER_BUDGET' && remaining >= 2) return error;
+  return withRecoveryMessage(error, `${error.message} ${retryHint(session)}`);
+}
 export function publicSession(session) {
   const q = session.questions[session.index];
   return {
     id: session.id, status: session.status, event: session.snapshot.event,
     target: session.snapshot.target.ref, route: session.route,
     progress: { completed: session.index, total: session.questions.length },
-    usage: { calls: session.calls, limit: session.config.maxModelCalls },
+    usage: { calls: session.calls, limit: callLimit(session) },
+    ...(session.reviewRetries?.length ? { reviewAttempts: session.reviewRetries.length + 1 } : {}),
     ...(session.preparation ? { preparation: { status: session.preparation.status, ...(session.review ? { toolCalls: session.review.toolCalls, compactions: session.review.compactions } : {}) } } : {}),
     ...(q && session.status !== 'passed' ? { question: { id: q.id, concept: q.concept, prompt: q.prompt, choices: q.choices } } : {}),
     ...(session.lastFeedback ? { feedback: session.lastFeedback } : {}),
@@ -61,6 +86,33 @@ export function publicSession(session) {
 export function createSessionStore({ env = process.env, generate = generateAssessment, grade = gradeAnswer, validate = async () => {} } = {}) {
   const read = id => readJson(sessionFile(id, env));
   const save = session => writeJson(sessionFile(session.id, env), session);
+  async function syncCallLimit(session, config) {
+    // A terminal may have been opened before a global ceiling edit. Reload it
+    // under the assessment lock, including immediately before each model call.
+    // Injected/in-memory settings remain usable when no global file exists.
+    const global = await readJson(getPaths(env).config, undefined);
+    if (global !== undefined && (!global || typeof global !== 'object' || Array.isArray(global))) throw new Error('Global Sphinx configuration must be a JSON object.');
+    const configuredLimit = global === undefined ? config.maxModelCalls : Object.hasOwn(global, 'maxModelCalls') ? global.maxModelCalls : DEFAULT_CONFIG.maxModelCalls;
+    if (!Number.isSafeInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 100) throw new Error('maxModelCalls must be an integer between 1 and 100.');
+    if (session.config.maxModelCalls === configuredLimit) return;
+    const at = now(), previousLimit = callLimit(session);
+    session.budgetChanges = [...(session.budgetChanges || []), { at, calls: session.calls, previousConfiguredLimit: session.config.maxModelCalls, configuredLimit, previousLimit, limit: configuredLimit }];
+    session.config = { ...session.config, maxModelCalls: configuredLimit };
+    session.callLimit = configuredLimit;
+    session.updatedAt = at;
+    await save(session);
+  }
+  async function refreshBudget(id, config, { signal } = {}) {
+    return withLock(id, env, async () => {
+      signal?.throwIfAborted();
+      const session = await read(id);
+      if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Start a fresh check.');
+      await validate(session.snapshot, config);
+      signal?.throwIfAborted();
+      await syncCallLimit(session, config);
+      return publicSession(session);
+    }, { signal });
+  }
   async function limitPendingQuestions(session, config) {
     if (session.status === 'passed' || !session.questions.length) return;
     // Older checkpoints used depth alone. Keep completed work and the current
@@ -72,8 +124,10 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     session.updatedAt = now();
     await save(session);
   }
-  async function budget(session) {
-    if (session.calls >= session.config.maxModelCalls) throw new Error(`Assessment call limit (${session.config.maxModelCalls}) reached. No additional model request was made. Increase maxModelCalls in your global config if needed and start a new check.`);
+  async function budget(session, reserve = 0) {
+    await syncCallLimit(session, session.config);
+    if (reserve && session.calls >= callLimit(session) - reserve) throw new Error(`Assessment call limit (${callLimit(session)}) leaves no investigation calls after reserving ${reserve} for grading. No additional model request was made.`);
+    if (session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.${session.questions.length ? '' : ` ${retryHint(session)}`}`);
     session.calls += 1;
     session.updatedAt = now();
     await save(session); // Failed requests also consume the local attempt budget.
@@ -98,6 +152,31 @@ export function createSessionStore({ env = process.env, generate = generateAsses
   async function approved(snapshot, config) {
     return validReceipt(await readJson(sessionFile(snapshot.id, env), null),config);
   }
+  async function retryReview(id, config, { signal } = {}) {
+    return withLock(id, env, async () => {
+      signal?.throwIfAborted();
+      const session = await read(id);
+      if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Retry your push or start a fresh check.');
+      await validate(session.snapshot, config);
+      signal?.throwIfAborted();
+      await syncCallLimit(session, config);
+      if (session.status !== 'pending' || session.questions.length || session.preparation?.status !== 'failed') throw new Error('Only a failed review with no questions can be restarted. Active questions and completed checks are preserved.');
+      const reserve = questionLimit(config.level, session.route.tier);
+      if (config.maxModelCalls < reserve + 2) throw new Error(`A fresh review needs at least 2 investigation calls and ${reserve} reserved grading call(s). The configured allowance of ${config.maxModelCalls} cannot fit this review. No model request was made.`);
+      // A recovery menu may predate a global ceiling increase. An explicit
+      // one-attempt extension must never lower that newly adopted ceiling.
+      const previousLimit = callLimit(session), limit = Math.max(previousLimit, session.calls + config.maxModelCalls);
+      if (!Number.isSafeInteger(limit)) throw new Error('The assessment call limit cannot be extended further.');
+      const at = now();
+      session.reviewRetries = [...(session.reviewRetries || []), { at, calls: session.calls, previousLimit, limit }];
+      session.callLimit = limit;
+      session.preparation = { status: 'pending', authorizedAt: at };
+      session.updatedAt = at;
+      signal?.throwIfAborted();
+      await save(session);
+      return publicSession(session);
+    }, { signal });
+  }
   async function prepare(id, config, {signal, wait = false} = {}) {
     return withLock(id,env,async () => {
       signal?.throwIfAborted();
@@ -105,13 +184,19 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Retry your push or start a fresh check.');
       await validate(session.snapshot, config);
       signal?.throwIfAborted();
+      await syncCallLimit(session, config);
       if (validReceipt(session,config)) return publicSession(session);
       await limitPendingQuestions(session, config);
       signal?.throwIfAborted();
       if (!session.questions.length) {
         const reserve = questionLimit(config.level, session.route.tier);
-        const maxReviewerCalls = Math.min(config.agentMaxTurns, session.config.maxModelCalls - session.calls - reserve);
-        if (maxReviewerCalls < 1) throw new Error(`Assessment call limit leaves no room for investigation and ${reserve} grading call(s). Increase maxModelCalls in your global config and start a new check.`);
+        const maxReviewerCalls = Math.min(config.agentMaxTurns, callLimit(session) - session.calls - reserve);
+        if (maxReviewerCalls < 2) {
+          session.preparation = { status: 'failed', completedAt: now() };
+          session.updatedAt = now();
+          await save(session);
+          throw new Error(`Assessment call limit (${callLimit(session)}) leaves ${Math.max(0, maxReviewerCalls)} investigation call(s); review needs at least 2, plus ${reserve} reserved grading call(s). No model request was made. ${retryHint(session)}`);
+        }
         session.preparation = { status: 'running', startedAt: now() };
         await save(session);
         let requests = 0;
@@ -119,7 +204,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           signal?.throwIfAborted();
           if (requests >= maxReviewerCalls) throw new Error('Reviewer call limit reached. The check remains pending.');
           await validate(session.snapshot, config);
-          await budget(session);
+          await budget(session, reserve);
           requests++;
           signal?.throwIfAborted();
         };
@@ -138,7 +223,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         } catch (error) {
           session.preparation = { status: 'failed', completedAt: now() };
           await save(session);
-          throw error;
+          throw reviewFailure(error, session, signal);
         }
       }
       return publicSession(session);
@@ -154,6 +239,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Start a fresh check.');
       await validate(session.snapshot,config);
       signal?.throwIfAborted();
+      await syncCallLimit(session, config);
       if (validReceipt(session,config)) return publicSession(session);
       if (session.status !== 'active') throw new Error('Start this assessment with sphinx check first.');
       await limitPendingQuestions(session, config);
@@ -164,7 +250,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         error.code = 'SPHINX_STALE_QUESTION';
         throw error;
       }
-      if (session.calls >= session.config.maxModelCalls) throw new Error(`Assessment call limit (${session.config.maxModelCalls}) reached. No additional model request was made.`);
+      if (session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.`);
       const beforeCall = async () => { signal?.throwIfAborted(); await budget(session); signal?.throwIfAborted(); };
       const result = await grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env});
       signal?.throwIfAborted();
@@ -201,5 +287,5 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     }
     return records.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   }
-  return {ensure,approved,prepare,start,answer,pending,read,public:publicSession};
+  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,public:publicSession};
 }

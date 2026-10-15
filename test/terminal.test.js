@@ -103,6 +103,40 @@ test('accepting onboarding defaults preserves existing per-tier models and rever
   assert.deepEqual(current.models.large, { provider: 'codex', model: 'custom-model' });
 });
 
+test('agent checkboxes accept arbitrary combinations, preselect detection, and skip when flags are explicit', async () => {
+  const initial = { provider: 'claude', events: 'pre-push', branches: 'main', remotes: '*', level: 'standard', mode: 'block' };
+  let selections = 0;
+  const output = capture();
+  const prompts = createPrompts({ ui: output.ui, ask: () => assert.fail('other choices were supplied'), select: async options => {
+    selections++;
+    assert.equal(options.title, 'Connect your coding agents');
+    assert.deepEqual(options.current, ['claude', 'pi']);
+    assert.deepEqual(options.choices.map(choice => choice.value), ['codex', 'claude', 'pi', 'cursor', 'opencode']);
+    return ['pi', 'cursor', 'opencode'];
+  } });
+  const result = await askInstall(DEFAULT_CONFIG, initial, prompts, { detectedAgents: ['claude', 'pi'] });
+  assert.equal(result.agents, 'pi,cursor,opencode');
+  assert.doesNotThrow(() => applyInstallOptions(DEFAULT_CONFIG, result));
+  for (const agents of ['auto', 'none', 'codex,pi']) assert.equal((await askInstall(DEFAULT_CONFIG, { ...initial, agents }, prompts)).agents, agents);
+  assert.equal(selections, 1);
+  const cleared = await askInstall(DEFAULT_CONFIG, initial, { multiselect: async () => [] });
+  assert.equal(cleared.agents, 'none');
+});
+
+test('checkbox line fallback toggles any agents and all without accepting partially invalid input', async () => {
+  const choices = ['codex', 'claude', 'pi', 'cursor', 'opencode'].map(value => ({ value, label: value, description: '' }));
+  const output = capture({ width: 40 });
+  const answers = ['codex,invalid', '1', '6', ''];
+  const selected = await createPrompts({ ui: output.ui, ask: async () => answers.shift() }).multiselect({ title: 'Agents', choices, current: ['codex'] });
+  assert.deepEqual(selected, ['codex', 'claude', 'pi', 'cursor']);
+  assert.match(output.text(), /1\. \[-\] All supported agents/);
+  assert.match(output.text(), /1\. \[x\] All supported agents/);
+  assert.match(output.text(), /Choose numbers/);
+  assert.ok(output.text().split('\n').every(line => stripAnsi(line).length <= 40));
+  const none = ['all', 'none', ''];
+  assert.deepEqual(await createPrompts({ ui: output.ui, ask: async () => none.shift() }).multiselect({ title: 'Agents', choices }), []);
+});
+
 test('onboarding keeps intentionally empty branches and remotes on Enter', async () => {
   const current = { ...structuredClone(DEFAULT_CONFIG), branches: [], remotes: [], events: [] };
   const output = capture();
