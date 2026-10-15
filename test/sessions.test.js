@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import fsPromises, { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, writeJson } from '../src/config.js';
@@ -54,6 +55,38 @@ test('a misconception produces a new scenario and only a later correct answer co
   assert.equal((await store.answer(snapshot.id,'Yes, both attempts insert.',config)).status,'passed');
 });
 
+test('answer-bearing concept and acceptance metadata stay private through public questions and transfer grading', async t => {
+  const concept = 'PRIVATE_CONCEPT_ANSWER: yes, every retry repeats the unconditional insert.';
+  const acceptance = { prediction: 'PRIVATE_ACCEPTANCE_PREDICTION: A retry can insert another row.', causalReason: 'PRIVATE_ACCEPTANCE_CAUSE: The insert runs again without a duplicate check.' };
+  const original = { ...q, concept, acceptance };
+  const followUp = { ...original, id: 'after-timeout', prompt: 'After an insertion times out, could a new request insert again? Explain why.',
+    acceptance: { prediction: 'PRIVATE_ACCEPTANCE_TRANSFER: Another row can be inserted after the timeout.', causalReason: 'PRIVATE_ACCEPTANCE_CAUSE: The first insert can finish before the new request repeats it.' } };
+  const graded = [];
+  const { store, config } = await fixture(t, {
+    generate: async () => ({ questions: [original] }),
+    grade: async request => {
+      graded.push(request.question);
+      return graded.length === 1
+        ? { verdict: 'incorrect', feedback: 'Consider what happens on the next request.', followUp }
+        : { verdict: 'correct', feedback: 'Correct.', followUp: null };
+    },
+  });
+  await store.ensure(snapshot, config);
+  const first = await store.start(snapshot.id, config);
+  assert.deepEqual(first.question, { id: original.id, prompt: original.prompt, choices: original.choices });
+  assert.equal((await store.read(snapshot.id)).questions[0].concept, concept);
+  assert.deepEqual((await store.read(snapshot.id)).questions[0].acceptance, acceptance);
+  const next = await store.answer(snapshot.id, 'No.', config);
+  assert.equal(next.question.id, followUp.id);
+  assert.equal((await store.read(snapshot.id)).questions[0].concept, concept);
+  assert.deepEqual((await store.read(snapshot.id)).questions[0].acceptance, followUp.acceptance);
+  const pending = (await store.pending(snapshot.repoRoot)).map(store.public);
+  assert.doesNotMatch(JSON.stringify([first, next, pending]), /PRIVATE_CONCEPT_ANSWER|PRIVATE_ACCEPTANCE|"concept"|"acceptance"/);
+  assert.equal((await store.answer(snapshot.id, 'Yes, every retry inserts again.', config)).status, 'passed');
+  assert.deepEqual(graded.map(question => question.concept), [concept, concept]);
+  assert.deepEqual(graded.map(question => question.acceptance), [acceptance, followUp.acceptance]);
+});
+
 test('ambiguous grading does not produce a receipt',async t=>{
   const {store,config}=await fixture(t,{grade:async()=>({verdict:'ambiguous',feedback:'The schema is missing.',followUp:null})});
   await store.ensure(snapshot,config);await store.start(snapshot.id,config);
@@ -67,6 +100,38 @@ test('learning and dispute requests cannot award a pass',async t=>{
   await assert.rejects(store.answer(snapshot.id,'Teach me.',config,{learn:true}),/cannot complete/);
   await assert.rejects(store.answer(snapshot.id,'The premise is wrong.',config,{dispute:true}),/cannot complete/);
   assert.equal(await store.approved(snapshot,config),false);
+});
+
+test('cancellation during receipt persistence rolls back progress and cannot release another Git process', async t => {
+  for (const timing of ['before rename', 'after rename']) await t.test(timing, async t => {
+    const controller = new AbortController();
+    const { store, env, config } = await fixture(t);
+    await store.ensure(snapshot, config);
+    await store.start(snapshot.id, config);
+    const file = sessionFile(snapshot.id, env), originalRename = fsPromises.rename;
+    let intercepted = false;
+    t.mock.method(fsPromises, 'rename', async (from, to) => {
+      const pending = to === file ? JSON.parse(await fsPromises.readFile(from, 'utf8')) : null;
+      if (pending?.status !== 'passed') return originalRename(from, to);
+      intercepted = true;
+      if (timing === 'before rename') controller.abort();
+      await originalRename(from, to);
+      if (timing === 'after rename') controller.abort();
+      assert.equal(await store.approved(snapshot, config), false, 'an in-flight receipt must not release another Git process');
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    await assert.rejects(store.answer(snapshot.id, 'Yes: each request inserts.', config, { signal: controller.signal }), /abort/i);
+    assert.equal(intercepted, true);
+    const saved = await store.read(snapshot.id);
+    assert.equal(saved.status, 'active');
+    assert.equal(saved.index, 0);
+    assert.equal(saved.expiresAt, null);
+    assert.equal(saved.attempts.length, 0);
+    assert.equal(saved.calls, 2, 'the already incurred grading call remains counted');
+    assert.equal(await store.approved(snapshot, config), false);
+    assert.deepEqual((await fsPromises.readdir(path.dirname(file))).filter(name => name.endsWith('.tmp')), []);
+  });
 });
 
 test('failed generation consumes a call and a budget limit prevents further calls',async t=>{
@@ -218,7 +283,7 @@ test('legacy small checkpoints keep the current question and trim extras without
   await legacyQuestions(store,env,config);
   const state=await store.start(snapshot.id,config);
   assert.deepEqual(state.progress,{completed:0,total:1});
-  assert.deepEqual(state.question,{id:q.id,concept:q.concept,prompt:q.prompt,choices:q.choices});
+  assert.deepEqual(state.question,{id:q.id,prompt:q.prompt,choices:q.choices});
   assert.equal(state.usage.calls,2);
   assert.equal(state.status,'active');
   assert.equal(await store.approved(snapshot,config),false);

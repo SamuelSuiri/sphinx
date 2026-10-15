@@ -1,0 +1,99 @@
+{
+  "source": "First finish_review inputs from V14 synthetic fixture evaluation, 2026-10-15. No real checkpoint data.",
+  "fixtures": [
+    {
+      "case": "cosmetic",
+      "arguments": {
+        "assessment": {
+          "questions": [
+            {
+              "id": "q-selector-scope",
+              "concept": "descendant selector scope of the new card-only padding rule",
+              "prompt": "The change adds a rule scoped to buttons inside a card. If a button with class \"button\" were placed directly inside the toolbar <nav class=\"toolbar\">, would its vertical padding change from the new rule? Answer briefly with the reason.",
+              "choices": [],
+              "expectedAnswer": "No. The new selector is `.card .button`, a descendant selector that only matches a .button element with a .card ancestor. The toolbar nav has no .card ancestor, so that button keeps the 4px block padding from the existing `.button` rule, and its 12px inline padding is also unchanged.",
+              "rationale": "Causal claims: (1) the added rule `.card .button { padding-block: 8px; }` requires a .card ancestor; (2) the toolbar nav in index.html has class \"toolbar\" and no card ancestor; (3) the base `.button` rule supplies padding-block 4px and padding-inline 12px, which apply to toolbar buttons. Acceptable equivalents: 'the selector does not match because there is no .card ancestor' or 'only descendants of .card are affected'. Evidence: styles.css diff adds the single rule (e1), styles.css head content shows both rules (e4), index.html shows the toolbar nav outside the card article and the card button inside it (e3). Click behavior is not affected since this is CSS-only.",
+              "evidence": [
+                {
+                  "path": "styles.css",
+                  "reason": "Diff adds `.card .button { padding-block: 8px; }` next to the existing `.button` rule with padding-block 4px and padding-inline 12px."
+                },
+                {
+                  "path": "index.html",
+                  "reason": "Toolbar button sits under <nav class=\"toolbar\"> with no .card ancestor; card button sits inside <article class=\"card\">."
+                }
+              ]
+            }
+          ],
+          "summary": "The diff adds one CSS rule scoped by the descendant selector `.card .button`, which overrides vertical padding only for buttons inside a card. Toolbar buttons that share the `.button` class keep their original padding because they lack a .card ancestor. The change is CSS-only and does not alter click handlers."
+        },
+        "evidenceIds": [
+          "e1",
+          "e3",
+          "e4"
+        ]
+      }
+    },
+    {
+      "case": "retry",
+      "arguments": {
+        "assessment": {
+          "questions": [
+            {
+              "id": "retry-after-throw",
+              "concept": "once marks id before operation runs, so a throwing operation is not retried",
+              "prompt": "With this change, run(\"job-1\", op) is called once and op throws. The process stays up and run(\"job-1\", op) is called again with a working op. Does the second op run? Give a short reason.",
+              "choices": [],
+              "expectedAnswer": "No. The second call is skipped and returns undefined, because once() adds the id to the seen Set before calling operation(), so the failed attempt already marked the id as seen and the exception propagates without removing it.",
+              "rationale": "lib/once.js: `if (seen.has(id)) return; seen.add(id); return operation();` shows the id is recorded before operation() is invoked and never removed on throw. worker.js: `run = (id, operation) => once(id, operation)` delegates directly, so run inherits this behavior. Acceptable equivalents: 'no, the id is already in seen so it is skipped silently'; 'no retry because the failure still leaves the id marked'. Key causal claim: seen.add precedes operation() with no try/catch or rollback. Not acceptable: claiming the retry runs, or attributing the skip to a timeout or to cross-process state.",
+              "evidence": [
+                {
+                  "path": "lib/once.js",
+                  "reason": "seen.add(id) happens before return operation(); no rollback on throw"
+                },
+                {
+                  "path": "worker.js",
+                  "reason": "run delegates to once(id, operation), so the same dedupe applies to all callers"
+                }
+              ]
+            }
+          ],
+          "summary": "The change routes worker.run through a module-level once() dedupe. Each id runs at most once per process; the id is recorded before the operation runs, so a throwing operation is not retried and a duplicate call returns undefined silently. The seen Set is in-memory and per process, consistent with the project context."
+        },
+        "evidenceIds": [
+          "e1",
+          "e3",
+          "e4"
+        ]
+      }
+    },
+    {
+      "case": "config",
+      "arguments": {
+        "assessment": {
+          "questions": [
+            {
+              "id": "env-override-wins",
+              "concept": "environment override precedence after a default change",
+              "prompt": "After this change, a process runs with BATCH_SIZE=5 set in its environment. What value does batchSize(env) return, and why does the new default of 20 not affect that result?",
+              "choices": [],
+              "expectedAnswer": "It returns 5. The loader uses env.BATCH_SIZE ?? defaults.batchSize, so a defined environment value takes precedence over the checked-in default; changing defaults.json from 10 to 20 only affects the case where BATCH_SIZE is unset.",
+              "rationale": "Causal claims: loader.js line 2 evaluates Number(env.BATCH_SIZE ?? defaults.batchSize), so a defined BATCH_SIZE short-circuits the default. The diff in defaults.json changes only the fallback value (10 to 20). Acceptable equivalents: 'env var wins over default', '5 is returned', 'the default only applies when the variable is unset or nullish'. Evidence: defaults.json diff (e1) and loader.js (e4). The README change (default 10 to 20) is documentation consistent with the loader's fallback and does not alter precedence.",
+              "evidence": [
+                {
+                  "path": "loader.js",
+                  "reason": "batchSize(env) returns Number(env.BATCH_SIZE ?? defaults.batchSize), establishing that env overrides the default."
+                },
+                {
+                  "path": "defaults.json",
+                  "reason": "Diff changes batchSize from 10 to 20, which is only the fallback used when BATCH_SIZE is unset."
+                }
+              ]
+            }
+          ],
+          "summary": "The change raises the checked-in default batchSize from 10 to 20 in defaults.json and updates README.md to match. loader.js resolves batchSize as Number(env.BATCH_SIZE ?? defaults.batchSize), so the new default only applies when BATCH_SIZE is not defined; any defined BATCH_SIZE value still overrides it. One question asks about this precedence boundary."
+        }
+      }
+    }
+  ]
+}

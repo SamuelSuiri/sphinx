@@ -24,7 +24,7 @@ import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
-const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls'];
+const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'max-output-tokens'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
@@ -109,6 +109,11 @@ function parseModelCalls(value) {
   return Number(value);
 }
 
+function parseOutputTokens(value) {
+  if (!/^\d+$/u.test(String(value)) || Number(value) < 512 || Number(value) > 16384) throw new Error('--max-output-tokens must be a whole number from 512 to 16384.');
+  return Number(value);
+}
+
 export function applyInstallOptions(current, values) {
   const config = structuredClone(current);
   if (values.preset !== undefined) {
@@ -119,8 +124,10 @@ export function applyInstallOptions(current, values) {
     for (const tier of ['small', 'medium', 'large']) config.models[tier] = parseRoute(selected[tier]);
     config.provider = config.models.small.provider;
     config.model = config.models.small.model;
+    if (selected['max-output-tokens'] !== undefined) config.maxOutputTokens = parseOutputTokens(selected['max-output-tokens']);
   }
   if (values['max-model-calls'] !== undefined) config.maxModelCalls = parseModelCalls(values['max-model-calls']);
+  if (values['max-output-tokens'] !== undefined) config.maxOutputTokens = parseOutputTokens(values['max-output-tokens']);
   for (const key of ['provider', 'model', 'level', 'mode']) if (values[key] !== undefined) config[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) config[key] = splitList(values[key]);
   if (values.provider !== undefined || values.model !== undefined) {
@@ -160,7 +167,7 @@ function printConfiguration(terminal, config, { routes = true } = {}) {
     terminal.section('Evaluator routes');
     terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
     terminal.blank(); terminal.note(`Up to ${config.maxModelCalls} model calls per assessment, including failed requests. Completion lasts ${config.receiptHours} hours unless code, destination, or policy changes.`);
-    terminal.note(`Each review attempt is capped at ${reviewCapsText(config)} calls, within that total. The total also covers grading and learning follow-ups.`);
+    terminal.note(`Normal audited review caps: ${reviewCapsText(config)} calls. One repair window may use up to 3 more within agentMaxTurns and the same total allowance. Grading and audited learning questions share that total.`);
   }
 }
 
@@ -416,7 +423,7 @@ export async function main(argv) {
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' },
-    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
   if (values.version) { if (values.json) json({ version: '0.1.0' }); else console.log('0.1.0'); return 0; }
@@ -465,14 +472,15 @@ export async function main(argv) {
       if (values.json) { json(result); return 0; }
       const terminal = ui();
       if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${maxModelCalls} model calls per assessment (previously ${previousMaxModelCalls}).`);
-      if (MODEL_FLAGS.some(key => key !== 'max-model-calls' && values[key] !== undefined)) {
+      if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. The assessment call limit remains ${maxModelCalls}.`);
+      if (MODEL_FLAGS.some(key => !['max-model-calls', 'max-output-tokens'].includes(key) && values[key] !== undefined)) {
         terminal.success('Saved machine-wide evaluator settings.');
         terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
         terminal.note('Changing evaluator routes applies to fresh checkpoints. Existing checkpoints remain bound to their original assessment policy.');
       }
       terminal.note(result.path);
       terminal.paragraph(`The total allowance is ${maxModelCalls} model calls for review, compaction, grading, learning follow-ups, and failed requests. Saving configuration makes no model request.`);
-      terminal.note(`Per-review caps remain ${reviewCapsText(config)} calls, within the total allowance.`);
+      terminal.note(`Normal audited review caps: ${reviewCapsText(config)} calls; one bounded repair window remains within agentMaxTurns and the total allowance.`);
       return 0;
     }
     const repo = await git.repository(process.cwd()).catch(() => null), config = await loadConfig(repo?.root);

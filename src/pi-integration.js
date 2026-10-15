@@ -12,9 +12,9 @@ const ACTIONS = new Map([
 ]);
 const checkpoint = async options => (await import('./native-check.js')).runNativeCheckpoint(options);
 export const PI_GUIDANCE = [
-  'Sphinx Git hooks open a separate human terminal for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback or advisory checks; they do not resume an exited process.',
+  'Sphinx Git hooks serve a local browser questionnaire for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback or advisory checks; they do not resume an exited process.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
-  'Never answer for the human, relay the questionnaire through chat, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful or advisory operations.',
+  'Never answer for the human, relay the questionnaire through chat, open or automate its local browser URL, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful or advisory operations.',
 ];
 
 function outcomeText(status) {
@@ -41,7 +41,7 @@ export async function elicitPiForm(ctx, form, signal) {
   return response === undefined ? { action: 'cancel' } : { action: 'accept', content: { action, response } };
 }
 
-/** Pi 1.2+ fallback dialogs. Waiting Git hooks own their terminal presentation. */
+/** Pi 1.2+ fallback dialogs. Waiting Git hooks own their browser presentation. */
 export function registerPiIntegration(pi, { home, env = process.env, runCheckpoint = checkpoint } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return;
   const environment = { ...env, ...(home ? { SPHINX_HOME: home } : {}) };
@@ -175,5 +175,5 @@ export async function piIntegrationStatus(paths, { record, cliPath, env = proces
   catch { return { installed: Boolean(record), healthy: false, file, detail: 'Pi extension was replaced or is unreadable.' }; }
   const healthy = Boolean(record && current && hash(current.text) === record.sha256
     && record.modulePath === MODULE_PATH && (!cliPath || record.cliPath === cliPath));
-  return { installed: Boolean(record), healthy, file, detail: healthy ? 'Sphinx fallback native dialogs are installed; Pi must load the extension. Blocking Git hooks open their own terminal and wait.' : 'Sphinx Pi extension is missing, edited, or points to an older installation.' };
+  return { installed: Boolean(record), healthy, file, detail: healthy ? 'Sphinx fallback native dialogs are installed; Pi must load the extension. Blocking Git hooks use a local browser page and wait; they do not open a terminal window.' : 'Sphinx Pi extension is missing, edited, or points to an older installation.' };
 }

@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cursorAgentHook, cursorCheckpointIds, terminalHandoff, registerOpenCodeIntegration, TERMINAL_GUIDANCE } from '../src/lifecycle-integrations.js';
+import { browserHandoff, cursorAgentHook, cursorCheckpointIds, terminalHandoff, registerOpenCodeIntegration, TERMINAL_GUIDANCE } from '../src/lifecycle-integrations.js';
 
 test('Cursor SessionStart uses documented context/env fields and never installs a model questionnaire', async () => {
   const output = await cursorAgentHook({ input: { hook_event_name: 'sessionStart', session_id: 'conversation-123' }, env: {} });
   assert.equal(output.additional_context, TERMINAL_GUIDANCE);
   assert.deepEqual(output.env, { SPHINX_CURSOR_SESSION: 'conversation-123' });
   assert.match(output.additional_context, /own terminal/);
+  assert.match(output.additional_context, /browser/);
   assert.match(output.additional_context, /Never run the interview/);
   assert.match(output.additional_context, /keeps the original Git operation waiting/);
   assert.match(output.additional_context, /that same operation continues automatically/);
@@ -17,6 +18,70 @@ test('Cursor SessionStart uses documented context/env fields and never installs 
   assert.match(output.additional_context, /waits up to 25 minutes, but the host may cancel the shell sooner/);
   assert.match(output.additional_context, /supported yielding or background execution; do not terminate or duplicate/);
   assert.deepEqual(await cursorAgentHook({ input: { hook_event_name: 'sessionStart' }, env: { SPHINX_EVALUATOR: '1' } }), {});
+});
+
+test('browser handoff reuses one page, returns status only, and always closes its listener', async () => {
+  const requests = [{ token: 'one', id: 'a'.repeat(64), repoRoot: '/repo' }, { token: 'two', id: 'b'.repeat(64), repoRoot: '/repo' }];
+  const presented = [], claimed = []; let created = 0, closed = 0;
+  const options = { cwd: '/repo', host: 'opencode', env: {}, listRequests: async () => requests,
+    claimRequest: async request => { claimed.push(request.id); return true; },
+    createInterview: () => { created++; return { present: async ({ request }) => { presented.push(request.id); return { status: 'passed', feedback: 'PRIVATE HUMAN ANSWER' }; }, close: async () => { closed++; } }; },
+  };
+  const result = await browserHandoff(options);
+  assert.equal(created, 1); assert.equal(closed, 1);
+  assert.deepEqual(presented, requests.map(request => request.id)); assert.deepEqual(claimed, presented);
+  assert.match(result, /2 Sphinx checkpoint\(s\) completed directly in the human’s browser/);
+  assert.match(result, /Never duplicate a waiting operation/); assert.doesNotMatch(result, /PRIVATE|aaaaa|bbbbb/);
+  assert.equal(await browserHandoff({ ...options, env: { SPHINX_EVALUATOR: '1' }, listRequests: () => assert.fail('must skip') }), null);
+});
+
+test('browser fallback preserves unavailable work and consumes a paused presentation without reopening it', async () => {
+  for (const status of ['unavailable', 'pending']) {
+    let claimed = 0, closed = 0;
+    const result = await browserHandoff({ env: {}, listRequests: async () => [{ id: 'a'.repeat(64), token: 'one', repoRoot: '/repo' }],
+      claimRequest: async () => { claimed++; return true; },
+      createInterview: () => ({ present: async () => ({ status }), close: async () => { closed++; } }),
+    });
+    assert.equal(claimed, status === 'pending' ? 1 : 0); assert.equal(closed, 1);
+    assert.match(result, status === 'pending' ? /paused or incomplete/ : /own terminal/);
+  }
+});
+
+test('pausing a browser fallback consumes the listed batch so unrelated tools do not open its next checkpoint', async () => {
+  const requests = [{ id: 'a'.repeat(64), token: 'one', repoRoot: '/repo' }, { id: 'b'.repeat(64), token: 'two', repoRoot: '/repo' }];
+  let queued = [...requests], created = 0, closed = 0;
+  const presented = [], claimed = [];
+  const options = { env: {}, listRequests: async () => [...queued],
+    claimRequest: async request => { claimed.push(request.token); queued = queued.filter(item => item.token !== request.token); return true; },
+    createInterview: () => { created++; return {
+      present: async ({ request }) => { presented.push(request.token); return { status: 'pending' }; },
+      close: async () => { closed++; },
+    }; },
+  };
+  assert.match(await browserHandoff(options), /paused or incomplete/);
+  assert.deepEqual(presented, ['one']);
+  assert.deepEqual(claimed, ['one', 'two']); assert.deepEqual(queued, []);
+  assert.equal(await browserHandoff(options), null);
+  assert.deepEqual(presented, ['one']); assert.equal(created, 1); assert.equal(closed, 1);
+});
+
+test('an unavailable browser fallback preserves its whole batch for a later supported callback', async () => {
+  const requests = [{ id: 'a'.repeat(64), token: 'one', repoRoot: '/repo' }, { id: 'b'.repeat(64), token: 'two', repoRoot: '/repo' }];
+  let queued = [...requests], status = 'unavailable', closed = 0;
+  const presented = [], claimed = [];
+  const options = { env: {}, listRequests: async () => [...queued],
+    claimRequest: async request => { claimed.push(request.token); queued = queued.filter(item => item.token !== request.token); return true; },
+    createInterview: () => ({
+      present: async ({ request }) => { presented.push(request.token); return { status }; },
+      close: async () => { closed++; },
+    }),
+  };
+  assert.match(await browserHandoff(options), /could not start a local browser questionnaire/);
+  assert.deepEqual(queued, requests); assert.deepEqual(claimed, []); assert.deepEqual(presented, ['one']);
+  status = 'passed';
+  assert.match(await browserHandoff(options), /2 Sphinx checkpoint\(s\) completed/);
+  assert.deepEqual(presented, ['one', 'one', 'two']);
+  assert.deepEqual(claimed, ['one', 'two']); assert.deepEqual(queued, []); assert.equal(closed, 2);
 });
 
 test('Cursor post-tool hooks send only routing fields to queue inspection and handle failures safely', async () => {

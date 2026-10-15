@@ -265,7 +265,7 @@ export async function install({ config, agents = 'auto', repo = false, cwd = pro
         manifest.agents[plan.name] = plan.record;
         await writeJson(paths.install, manifest);
       } catch (error) { await plan.rollback(); throw error; }
-      messages.push(plan.name === 'pi' ? 'Pi extension installed with native human questionnaire dialogs.' : `${plan.name === 'cursor' ? 'Cursor lifecycle hooks' : 'OpenCode lifecycle plugin'} installed with automatic Sphinx terminal questionnaires.`);
+      messages.push(plan.name === 'pi' ? 'Pi extension installed with native human questionnaire dialogs.' : `${plan.name === 'cursor' ? 'Cursor lifecycle hooks' : 'OpenCode lifecycle plugin'} installed with local browser questionnaires; no automatic terminal popup.`);
       continue;
     }
     const { name, file, document, handler, hooks, mcp, previous: prior, existed, emptyEvents } = plan;
@@ -420,7 +420,7 @@ export async function doctor({ env = process.env, cwd = process.cwd() } = {}) {
         ? `Not selected. Optional: sphinx install --agents ${name}.`
         : !result.healthy ? `Integration is missing or changed. Run sphinx install --agents ${name}.`
           : name === 'pi' ? `${result.file}; native human dialogs configured. Run /reload in Pi; dialog support is required.`
-            : `${result.file}; automatic Sphinx terminal questionnaires configured for supported desktops. Human answers stay in that terminal; headless sessions use a manual fallback${name === 'cursor' ? '; local sessions only, not cloud agents' : '; OpenCode 1.x plugin'}.` });
+            : `${result.file}; local browser questionnaires configured. macOS opens the page in the background; other environments show its local URL. Human answers stay in the questionnaire; terminal checks are explicit${name === 'cursor' ? '; local sessions only, not cloud agents' : '; OpenCode 1.x plugin'}.` });
       continue;
     }
     let present = false;

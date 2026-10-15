@@ -80,6 +80,25 @@ test('native forms complete each concept while tool results contain only status 
   assert.equal((await f.run({ elicit: async () => assert.fail('A claimed request must not reopen') })).status, 'not-required');
 });
 
+test('native forms ignore answer-bearing concept metadata even from an older public-state adapter', async t => {
+  const concept = 'PRIVATE_CONCEPT_ANSWER: yes, retries repeat the unconditional insertion.';
+  const f = await fixture(t, { questions: [{ ...q, concept }] });
+  const start = f.store.start;
+  f.store.start = async (...args) => {
+    const state = await start(...args);
+    return { ...state, question: { ...state.question, concept } };
+  };
+  const result = await f.run({ elicit: async form => {
+    assert.match(form.message, /Could retrying after a timeout/);
+    assert.doesNotMatch(JSON.stringify(form), /PRIVATE_CONCEPT_ANSWER|undefined|ANSWER_KEY_PRIVATE|RUBRIC_PRIVATE/);
+    return answer('Yes, another request repeats the insertion.');
+  } });
+  assert.equal(result.status, 'passed');
+  assert.equal(f.graded[0].question.concept, concept);
+  assert.equal((await f.store.read(f.snapshot.id)).questions[0].concept, concept);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_CONCEPT_ANSWER/);
+});
+
 test('wrong answers and learning/dispute requests stay in the native learning loop', async t => {
   const f = await fixture(t, { grade: async (request, count) => count < 4
     ? { verdict: request.dispute ? 'ambiguous' : 'incorrect', feedback: `PRIVATE_FEEDBACK_${count}`, followUp: { ...q, id: `transfer-${count}`, prompt: `Different scenario ${count}: can a retry duplicate this operation?` } }

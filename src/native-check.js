@@ -15,7 +15,7 @@ function formFor(state, notice, repoRoot) {
     `Destination: ${state.target}`,
     ...(notice ? [`\n${notice}`] : []),
     ...(state.feedback ? [`\nPrevious feedback:\n${state.feedback}`] : []),
-    `\n${question.concept}\n${question.prompt}`,
+    `\n${question.prompt}`,
     ...(question.choices?.length ? [`\nOptions:\n${question.choices.map(choice => `- ${choice}`).join('\n')}`] : []),
     '\nAnswer with a prediction and a short reason. Choose learn for an explanation and a new scenario, dispute to challenge the question, or pause to stop without approval.',
   ];

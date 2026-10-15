@@ -1,4 +1,4 @@
-// Reviewed against the linked provider documentation on 2026-10-14.
+// Reviewed against the linked provider documentation on 2026-10-15.
 // These are explicit starting models, not automatic fallbacks. Existing saved
 // routes are never migrated when this list changes. Prices are reference rates
 // per million tokens; provider routing and future prices may differ.
@@ -26,19 +26,20 @@ export const REVIEWER_PRESETS = Object.freeze([
     sources: ['https://code.claude.com/docs/en/model-config'],
   },
   {
-    id: 'openrouter-value', label: 'OpenRouter · Qwen coding models (paid)',
-    description: 'Qwen3 Coder Next for small/medium changes; Qwen3 Coder for large changes. Reference input/output prices per 1M tokens: $0.12/$0.80 and from $0.22/$1.80. Rates vary by endpoint. Requires an OpenRouter key and credits; uses API credits, not your coding-agent allowance.',
+    id: 'openrouter-value', label: 'OpenRouter · Haiku 5.5 (experimental, paid)',
+    description: 'Lower-cost option: Haiku 5.5 for every change size, with an 8,192-token output ceiling including reasoning. Tests found false rejections of sufficient answers; see eval/RESULTS.md. Reference input/output prices per 1M tokens start at $0.10/$0.50 below 100k input tokens; higher context tiers cost more. Uses OpenRouter API credits, not your coding-agent allowance.',
     models: {
-      small: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
-      medium: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
-      large: { provider: 'openrouter', model: 'qwen/qwen3-coder' },
+      small: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
+      medium: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
+      large: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
     },
+    maxOutputTokens: 8192,
     allowPaid: true,
-    sources: ['https://openrouter.ai/qwen/qwen3-coder-next', 'https://openrouter.ai/qwen/qwen3-coder'],
+    sources: ['https://openrouter.ai/anthropic/claude-haiku-5.5', 'https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5/endpoints'],
   },
   {
-    id: 'openrouter-deepseek', label: 'OpenRouter · DeepSeek V3.2 (paid)',
-    description: 'DeepSeek V3.2 for every change size. A compatible tool/structured-output endpoint lists $0.26 input / $0.38 output per 1M tokens; routing and rates vary. Requires an OpenRouter key and credits; billed separately from your coding agent.',
+    id: 'openrouter-deepseek', label: 'OpenRouter · DeepSeek V3.2 (experimental, paid)',
+    description: 'An open-weight alternative for every change size. Synthetic tests found question-quality and grading failures; see eval/RESULTS.md. Requires an OpenRouter key and credits; billed separately from your coding agent.',
     models: {
       small: { provider: 'openrouter', model: 'deepseek/deepseek-v3.2' },
       medium: { provider: 'openrouter', model: 'deepseek/deepseek-v3.2' },
@@ -72,6 +73,7 @@ export function presetOptions(id) {
   if (!preset) throw new Error(`Unknown reviewer preset ${id}. Choose ${REVIEWER_PRESETS.map(item => item.id).join(', ')}.`);
   return {
     ...Object.fromEntries(Object.entries(preset.models).map(([tier, route]) => [tier, `${route.provider}:${route.model}`])),
+    ...(preset.maxOutputTokens ? { 'max-output-tokens': preset.maxOutputTokens } : {}),
     ...(preset.allowPaid ? { 'allow-paid': true } : {}),
   };
 }

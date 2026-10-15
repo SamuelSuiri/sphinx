@@ -1,0 +1,38 @@
+# Reviewer evaluation
+
+The [measured results](RESULTS.md) record the synthetic live runs, failed comparisons, manual quality findings and reported costs.
+
+Run the deterministic baseline:
+
+```sh
+npm run eval -- --out /tmp/sphinx-eval-baseline.json
+```
+
+It creates five temporary, committed Git repositories, verifies their curated facts, and runs Sphinx's real Pi reviewer, immutable workspace, evidence validation and grading pipeline with scripted model responses. It also runs existing missing-evidence, native compaction and explicit recovery regressions. This tests the harness and fixtures; it does not measure model quality. Temporary repositories and their isolated Sphinx homes are removed afterward. No real pending checkpoint or receipt is read or created.
+
+`npm test` and `npm run check` preload a test-only network guard into Node and its spawned children. It rejects outbound fetch/HTTP/socket connections while permitting loopback and local IPC fixtures, preventing a partial model mock from silently reaching a real provider. Explicit live evaluations use the separate `npm run eval -- --live` entry point. The guard is not an OS sandbox for arbitrary non-Node executables.
+
+The cases cover scoped card styling versus unchanged toolbar controls, process-local retry deduplication including a failure-handling bug, tenant authorization, environment override precedence, and retry behavior across twelve changed handlers. Each includes committed secret files excluded by built-in rules and `.sphinxignore`, plus dirty working-tree content. Distinct canaries and excluded paths are checked in memory against every outbound model payload and retained evidence.
+
+Run a bounded live probe:
+
+```sh
+npm run eval -- --live --case cosmetic --model openrouter/free \
+  --max-calls 20 --max-cost 0.10 --out /tmp/sphinx-eval-cosmetic.json
+```
+
+Without `--model`, live mode uses the configured global OpenRouter tier routes. Paid routes require `--allow-paid` for this invocation, even if the product config permits them. The saved OpenRouter key or `OPENROUTER_API_KEY` is passed only in memory into the isolated fixture environment. Credentials and raw HTTP headers are never saved in reports. Use `--case retry,auth` to select cases, or `--probes generated` to focus on generated-question grading while iterating. Live requests pause for 1 second after a response by default; `--delay-ms` adjusts that interval. The first provider/authentication/transport failure stops the run and identifies probes that were not attempted. Failure telemetry includes the provider name, error type, a bounded credential-redacted message, and a valid numeric/date `Retry-After` value when returned.
+
+The run-wide request limit covers generation, Pi compaction, grading and failed requests; there are no automatic retries or route changes. `--max-cost` uses provider-reported USD cost, including failed responses when reported. A completed request can exceed the threshold; the next request is blocked. Missing cost telemetry also blocks the next request when this option is set. This is a stop condition, not a guaranteed billing cap.
+
+`--max-output-tokens 8192` can raise the per-request output allowance for a reasoning-heavy model in this evaluation only (allowed range: 512–16384). The report records this limit, including the model's reasoning allowance; it does not change saved product configuration. Transfer questions receive the production independent source audit too, and that extra request counts toward the same run-wide budget.
+
+Artifacts include generated questions and private rubrics **for synthetic fixtures only**, exact retained evidence, curated answer probes, model verdicts, transfer questions, request counts, workspace reads, compactions, token counts and reported cost. They also retain the latest in-memory reviewer checkpoint and last proposed assessment, including after rejection, plus live audit and grading prompt/result/error transcripts, including rejected structured responses. Environment/config objects, raw HTTP headers, and opaque thinking fields are excluded; the supplied key is redacted from every report string. Generated questions are tested with independently authored source-grounded answers and misconceptions. For recognized explicit numeric `BATCH_SIZE` assignments, probes adapt to the visible question using the fixture's executable precedence rule; they never read the model's answer key. Recognized forms now include `BATCH_SIZE=5` and “BATCH_SIZE is set to 5”; detected unsupported assignments are marked uncovered. The latter form was added after the frozen V20 failure, without another live run. Inspect the probe's input scenario before classifying a mismatch; natural-language coverage is not universal. Canonical questions additionally test unsupported premises, a contradictory answer key, and disputes. Both invalid-key probes require ambiguity rather than awarding completion for correcting an invalid question. The retry case checks that identifying the actual failure-handling bug counts as understanding. Generation includes the production fresh question audit, charged within the same run-wide limit.
+
+Concept coverage checks inspect the visible question, not private rubric text. Literal recall and missing causal/boundary prompts are flagged. These checks are explicit heuristics, not another model's opinion. Inspect flagged questions and rubrics before deciding whether a mismatch is a product bug or an incomplete fixture oracle. A passing fixture run is not a claim that arbitrary reviews are correct. The output report is refreshed after each case so a long run can be inspected before completion. For iteration, retain each report, change one behavior, rerun the same case and route, and compare the question, evidence, verdicts and total cost. `--json` prints the machine-readable report; a failed probe produces exit code 1, while `needs-review` is surfaced separately.
+
+The CSS fixture checks selector/markup facts without a browser render. Its question tests propagation to an unchanged surface, not numeric CSS recall. Its oracle therefore does not claim to verify computed layout or visual appearance.
+
+New questions carry private `acceptance.prediction` and `acceptance.causalReason` fields, separate from their fuller source-derived explanation. The curated fixtures author these minimum requirements independently, preserve the existing human answer probes, and still test contradictory full keys. Live reports retain the criteria so manual review can check both fairness and whether an essential asked behavior was omitted; matching a model's own criteria alone is not proof of a good assessment.
+
+[Known false negatives](fixtures/known-false-negatives.json) preserve the exact V18 styling and V20 authorization questions, criteria, sufficient answers, observed ambiguous verdicts and synthetic source definitions. These are unresolved regressions, not passing tests. To replay one, select its `source.caseId` from `CASES`, overlay the saved `source.definition`, and call `createFixture(fixture, config)`. Read immutable evidence with `createReviewWorkspace(snapshot, config, { env })` and `canonicalEvidence(snapshot, record.source.requiredPaths, workspace)`, then build a review bound to that new `snapshot.id` and call `evaluator.gradeAnswer({ snapshot, question: record.question, answer: record.answer, review, config, env, beforeCall: budget.beforeCall })`. Use the existing metered evaluator transport and an explicit live budget; do not reuse an old temporary snapshot ID, re-audit to an easier question, or replace the saved human answer. This replay is not part of the default deterministic command.

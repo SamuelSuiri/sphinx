@@ -45,19 +45,20 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
       if (state.status !== 'pending' || state.preparation?.status !== 'failed' || state.progress.total !== 0) throw error;
       await validate();
       signal?.throwIfAborted();
-      const reserve = questionLimit(config.level, state.route.tier), minimum = reserve + 2;
+      const reserve = questionLimit(config.level, state.route.tier);
+      const reviewMinimum = state.preparation.minimumReviewerCalls === 1 ? 1 : 2, minimum = reserve + reviewMinimum;
       const remaining = state.usage.limit - state.usage.calls;
       const choices = [];
       ui.warning(diagnostic(error, state));
       ui.note(`${state.usage.calls}/${state.usage.limit} model calls used. No questions or approval were recorded.`);
       if (retryable(error, before, state, minimum)) {
         if (remaining >= minimum) choices.push({
-          value: 'retry', label: 'Retry within the remaining allowance',
-          description: `${remaining} calls remain, including ${reserve} reserved for grading. Keep the same evaluator route and total limit.`,
+          value: 'retry', label: state.preparation.resumable ? 'Continue the saved review' : 'Retry within the remaining allowance',
+          description: `${remaining} calls remain, including ${reserve} reserved for grading. ${state.preparation.resumable ? 'Reuse the evidence and investigation already saved.' : 'Keep the same evaluator route and total limit.'}`,
         });
         else if (config.maxModelCalls >= minimum) choices.push({
           value: 'extend', label: `Allow up to ${config.maxModelCalls} more calls and retry`,
-          description: `${remaining} calls remain; review needs at least 2 plus ${reserve} reserved for grading. Keep all ${state.usage.calls} used calls counted and record this new allowance.`,
+          description: `${remaining} calls remain; review needs at least ${reviewMinimum} plus ${reserve} reserved for grading. Keep all ${state.usage.calls} used calls counted and record this new allowance.`,
         });
       }
       if (!choices.length) ui.note('Resolve the reported setup or evidence problem before resuming. Repeating this attempt is not offered here.');

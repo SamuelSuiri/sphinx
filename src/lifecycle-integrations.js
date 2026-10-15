@@ -4,6 +4,7 @@ import { lstat, readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/pro
 import { createHash, randomUUID } from 'node:crypto';
 import { listPresentations, claimPresentation } from './presentations.js';
 import { launchCheckpointTerminal, waitForCheckpointTerminal } from './terminal-launch.js';
+import { createBrowserInterview } from './browser-interview.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -15,13 +16,13 @@ const HERE = fileURLToPath(import.meta.url);
 export const TERMINAL_GUIDANCE = [
   'Sphinx checks the human\'s understanding at Git checkpoints selected by .sphinxconfig.',
   'Git alone decides when a checkpoint is required. Do not alter policy or bypass its hooks.',
-  'For a blocking checkpoint, the Git hook opens a separate Sphinx terminal and keeps the original Git operation waiting. After the human passes and Git verifies the exact change and policy, that same operation continues automatically. Never start a duplicate Git operation while it waits.',
+  'For a blocking checkpoint, the Git hook serves a local Sphinx browser questionnaire and keeps the original Git operation waiting. On macOS the page opens in the background without activating or minimizing your coding window. Other environments print the local URL. After the human passes and Git verifies the exact change and policy, that same operation continues automatically. Never start a duplicate Git operation while it waits.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
-  'After shell execution, this integration handles fallback or advisory requests only. It opens a Sphinx terminal for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',
-  'If automatic terminal opening is unavailable, the notice gives a manual fallback: the human runs `sphinx check` in their own terminal in the checked repository.',
+  'After shell execution, this integration handles fallback or advisory requests only. It presents a local browser questionnaire for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',
+  'If a local browser questionnaire is unavailable, the human can run `sphinx check` in their own terminal in the checked repository. No terminal window is opened automatically.',
   'Never run the interview or answer, explain, or dispute commands for the human. Do not relay questions or answers through chat, read private Sphinx session files or answer keys, or automate the questionnaire.',
   'Respect .sphinxignore and configured exclusions. The independent evaluator only sees permitted immutable Git evidence.',
-  'The human can learn, dispute, or pause inside the terminal questionnaire. After a fallback check passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.',
+  'The human can learn, dispute, or pause inside the questionnaire. Never open its local URL, submit browser responses, or automate it for the human. After a fallback check passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.',
 ].join('\n');
 
 export function lifecycleHome(name, paths, env = process.env) {
@@ -195,7 +196,34 @@ export function cursorCheckpointIds({ tool_output, error_message } = {}) {
   return [...ids];
 }
 
-export async function cursorAgentHook({ input = {}, env = process.env, handoff = terminalHandoff } = {}) {
+/** Browser handoff is the automatic fallback; terminal check remains explicit. */
+export async function browserHandoff({ cwd, host, hostSession, checkpointIds, env = process.env,
+  listRequests = listPresentations, claimRequest = claimPresentation, createInterview = createBrowserInterview,
+  output = line => process.stderr.write(`${line}\n`),
+} = {}) {
+  if (env.SPHINX_EVALUATOR === '1') return null;
+  const requests = await listRequests({ cwd, host, hostSession, checkpointIds, env });
+  if (!requests.length) return null;
+  const interview = createInterview({ env, output });
+  let passed = 0;
+  try {
+    for (const [index, request] of requests.entries()) {
+      const result = await interview.present({ request, env });
+      if (result.status === 'unavailable') return 'Sphinx could not start a local browser questionnaire. The human can run `sphinx check` in their own terminal. Do not answer for them or repeat a waiting Git operation.';
+      await claimRequest(request, { env });
+      if (result.status !== 'passed') {
+        // Pause applies to this whole listed attempt, including destinations
+        // not shown yet. New Git attempts have different tokens and stay queued.
+        for (const remaining of requests.slice(index + 1)) await claimRequest(remaining, { env });
+        return 'The Sphinx browser questionnaire is paused or incomplete. Progress is saved. Do not repeat Git or reopen the interview until the human asks; never duplicate a waiting operation.';
+      }
+      passed++;
+    }
+    return `${passed} Sphinx checkpoint(s) completed directly in the human’s browser. Verify the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.`;
+  } finally { await interview.close(); }
+}
+
+export async function cursorAgentHook({ input = {}, env = process.env, handoff = browserHandoff } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return {};
   const event = input.hook_event_name;
   if (event === 'sessionStart') return { additional_context: TERMINAL_GUIDANCE, ...(sessionId(input.session_id || input.conversation_id) ? { env: { SPHINX_CURSOR_SESSION: sessionId(input.session_id || input.conversation_id) } } : {}) };
@@ -207,7 +235,7 @@ export async function cursorAgentHook({ input = {}, env = process.env, handoff =
   } catch { return { additional_context: 'Sphinx could not inspect its checkpoint queue. The human can run sphinx doctor and sphinx check in their own terminal. Do not answer for them.' }; }
 }
 
-export function registerOpenCodeIntegration({ client, directory }, { home, env = process.env, handoff = terminalHandoff } = {}) {
+export function registerOpenCodeIntegration({ client, directory }, { home, env = process.env, handoff = browserHandoff } = {}) {
   const scopedEnv = { ...env, ...(home ? { SPHINX_HOME: home } : {}) };
   if (env.SPHINX_EVALUATOR === '1') return {};
   return {
@@ -223,7 +251,7 @@ export function registerOpenCodeIntegration({ client, directory }, { home, env =
       catch { notice = 'Sphinx could not inspect its checkpoint queue. Run sphinx doctor and sphinx check in your own terminal.'; }
       if (!notice) return;
       // Only a handoff notice reaches the coding agent; the questionnaire stays
-      // in the human's terminal. A Git checkpoint remains incomplete meanwhile.
+      // in the human's browser. A Git checkpoint remains incomplete meanwhile.
       if (typeof output.output === 'string') output.output += `\n\n${notice}`;
       try { await client?.tui?.showToast({ body: { title: 'Sphinx checkpoint', message: notice, variant: 'info', duration: 10000 } }); } catch { /* The tool output still carries the status when no TUI is attached. */ }
     },

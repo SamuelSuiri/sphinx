@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "scope": "Synthetic fixture questions and authored answers only. These are known failures, not passing model assertions.",
+  "cases": [
+    {
+      "id": "v18-cosmetic-sufficient-qualitative-answer",
+      "source": {
+        "caseId": "cosmetic",
+        "requiredPaths": [
+          "styles.css",
+          "index.html"
+        ],
+        "definition": {
+          "context": "A task application shares the button class between task-card actions and toolbar actions. This patch should change only card buttons, without changing toolbar controls or click behavior.",
+          "before": {
+            "styles.css": ".button { padding-block: 4px; padding-inline: 12px; }\n",
+            "index.html": "<main><nav class=\"toolbar\"><button class=\"button\">Refresh</button></nav><article class=\"card\"><button class=\"button\">Complete task</button></article></main>\n"
+          },
+          "after": {
+            "styles.css": ".button { padding-block: 4px; padding-inline: 12px; }\n.card .button { padding-block: 8px; }\n"
+          }
+        },
+        "definitionSha256": "50723ddddf259d210e5ce53f4c64bfdf4a0cbc7df6e656aafa0b897da3332085"
+      },
+      "question": {
+        "id": "card-button-padding-scope-qual",
+        "concept": "Scoped descendant selector overriding a shared class across two surfaces",
+        "prompt": "The styles.css diff adds a `.card .button` rule after the base `.button` rule, which sets padding on both axes. index.html has a `.button` inside `nav.toolbar` (Refresh) and a `.button` inside `article.card` (Complete task). For each button, predict whether its vertical padding and its horizontal padding change compared with before the patch, then briefly explain which selector and markup facts determine each outcome.",
+        "choices": [],
+        "evidence": [
+          {
+            "path": "styles.css",
+            "reason": "The diff adds a `.card .button` rule after the base `.button` rule and declares only the block-direction padding in the new rule, so overriding applies to one axis only."
+          },
+          {
+            "path": "index.html",
+            "reason": "Refresh is inside nav.toolbar, outside article.card, so the descendant selector cannot match it; Complete task is inside article.card, so it matches."
+          }
+        ],
+        "acceptance": {
+          "prediction": "Complete task's block-direction (vertical) padding changes while its inline-direction (horizontal) padding stays the same, and Refresh's padding changes on neither axis.",
+          "causalReason": "The .card .button rule matches only the button inside article.card and sets only block-direction padding, so it overrides the base .button value on that axis while the base rule still supplies inline padding."
+        },
+        "expectedAnswer": "Complete task (inside .card): its vertical padding changes, and its horizontal padding does not. The later .card .button rule matches it and has higher specificity than .button, so it wins for the block axis; that rule sets only padding-block, so the inline axis still comes from the base .button rule. Refresh (in nav.toolbar, outside .card): neither axis changes, because .card .button requires a .card ancestor and only the base .button rule matches it.",
+        "rationale": "Causal claims: (1) the new rule is scoped by the .card ancestor, so the toolbar button outside article.card does not match; (2) the descendant selector's higher specificity beats the base .button rule for padding-block where both apply; (3) padding-inline is unchanged because the new rule declares only padding-block, so the base rule still supplies it for the card button. The question asks for a qualitative per-axis prediction and cause, not exact values or specificity numbers. Evidence: the styles.css diff adds the .card .button rule after the base .button rule and sets only padding-block in the new rule; index.html places Refresh in nav.toolbar and Complete task inside article.card."
+      },
+      "answer": "Only buttons inside a card receive the new padding because the new selector requires a card ancestor. The toolbar button shares the button class but is outside a card, so its styling stays unchanged. The base button rule, horizontal padding, and click behavior remain unchanged.",
+      "expectedVerdict": "correct",
+      "observedVerdict": "ambiguous",
+      "observedFeedback": "The question, criteria, and sourceKey match the source: .card .button sets only padding-block, so Complete task's vertical padding changes while its horizontal padding stays from the base rule, and Refresh is unaffected. The answer correctly says the toolbar button and horizontal padding are unchanged and that the new selector needs a card ancestor. It never states that the vertical (block-direction) padding is what changes for Complete task, so the required per-axis prediction is missing. Please state which axis changes for the card button and why.",
+      "independentFinding": "New card padding together with unchanged horizontal padding communicates the vertical change. The answer also explains the card ancestor and unchanged toolbar boundary; requiring the literal word vertical is a false negative.",
+      "provenance": {
+        "run": "V18",
+        "artifact": "sphinx-eval-acceptance-haiku-v18.json",
+        "completedAt": "2026-10-15T23:22:29.682Z",
+        "model": "anthropic/claude-haiku-5.5",
+        "maxOutputTokens": 8192,
+        "sourceSha256": "9bbcff04e1281c1178ce44f14def6f2c7e26b739abd632489060009cf7b65eaf",
+        "note": "Exact legacy V16 candidate after the V18 minimum-criteria audit; not replaced with the later fresh V19 question."
+      }
+    },
+    {
+      "id": "v20-auth-sufficient-response-equivalence",
+      "source": {
+        "caseId": "auth",
+        "requiredPaths": [
+          "auth/document.js"
+        ],
+        "definition": {
+          "context": "A multi-tenant document service. A signed-in user may read only documents belonging to their tenant. Missing documents and denied documents share a 404 response.",
+          "before": {
+            "auth/document.js": "export function getDocument(user, id, documents) { if (!user) return { status: 401 }; const doc = documents.get(id); return doc ? { status: 200, body: doc.text } : { status: 404 }; }\n"
+          },
+          "after": {
+            "auth/document.js": "export function getDocument(user, id, documents) { if (!user) return { status: 401 }; const doc = documents.get(id); if (!doc || doc.tenantId !== user.tenantId) return { status: 404 }; return { status: 200, body: doc.text }; }\n"
+          }
+        },
+        "definitionSha256": "4ed2d01d0cf01d73223c0d35d52961e954818a6394605c1dd78cc0ad886da846"
+      },
+      "question": {
+        "id": "missing-vs-denied-indistinguishable",
+        "concept": "Missing vs. denied response equivalence",
+        "prompt": "Can a signed-in user tell a nonexistent document ID apart from an existing document owned by another tenant by the getDocument response? Answer yes or no and give a short reason.",
+        "choices": [],
+        "expectedAnswer": "No. Both produce the identical { status: 404 } object with no body, because the missing-document case (!doc) and the cross-tenant case (doc.tenantId !== user.tenantId) are combined in one condition and return the same value.",
+        "rationale": "The combined condition returns the same { status: 404 } for both cases, matching the project context that missing and denied documents share a 404. The 401 check runs before the lookup, so unauthenticated callers get 401 regardless of whether the ID exists; that boundary is not asked here.",
+        "evidence": [
+          {
+            "path": "auth/document.js",
+            "reason": "The combined `!doc || doc.tenantId !== user.tenantId` condition returns the same { status: 404 } for both cases."
+          }
+        ],
+        "acceptance": {
+          "prediction": "No, both cases return the same 404 response.",
+          "causalReason": "The single combined condition returns the same { status: 404 } for a missing doc and a tenant mismatch."
+        }
+      },
+      "answer": "A signed-in user can read only a document with the same tenantId. A different tenant gets 404 without document contents, just like a missing id. A caller without a user gets 401 before any document lookup or tenant comparison, because the missing-user guard returns first. Knowing an id or being authenticated is not enough to cross the tenant boundary.",
+      "expectedVerdict": "correct",
+      "observedVerdict": "ambiguous",
+      "observedFeedback": "The source supports the question and its criteria. The combined condition returns the same { status: 404 } for a missing document and a cross-tenant document, so the response does not distinguish them. The answer states that a different tenant gets 404 \"just like a missing id,\" which conveys the outcome, but it never gives an explicit yes or no and does not explain the causal mechanism: that one combined check (!doc || doc.tenantId !== user.tenantId) returns the same value for both cases. Please clarify whether the answer is no and why the single combined condition produces identical responses.",
+      "independentFinding": "A bodyless 404 for a different tenant just like a missing id communicates response equivalence and its causal basis. Naming one combined if statement or adding an explicit no is unnecessary.",
+      "provenance": {
+        "run": "V20",
+        "artifact": "sphinx-eval-live-remaining-haiku-v20.json",
+        "completedAt": "2026-10-15T23:34:17.636Z",
+        "model": "anthropic/claude-haiku-5.5",
+        "maxOutputTokens": 8192,
+        "assessmentContract": 3,
+        "sourceSha256": "d7d13eeafc213420d9f2d999c11a98751613e015eb5556a826920e98eb514661",
+        "note": "Freshly generated and source-audited question with minimum acceptance criteria; failure occurred on the current contract."
+      }
+    }
+  ]
+}

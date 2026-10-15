@@ -15,7 +15,7 @@ import { reviewerTurnLimit } from '../src/reviewer-limits.js';
 const exec = promisify(execFile);
 const snapshot = { version: 2, id: 'snapshot', files: ['worker.js'], projectContext: { path: '.sphinxcontext.md', text: 'A queue worker that must deduplicate retries within one process.', hash: 'context-hash' } };
 const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: 'standard', changeTier: 'large', maxContextBytes: 100000, timeoutSeconds: 2, agentMaxTurns: 8, toolResultBytes: 16000 };
-const question = { id: 'retry', concept: 'Duplicate operation', prompt: 'When an already-seen id is retried in this process, will another operation run? Explain why.', choices: ['Yes', 'No'], expectedAnswer: 'No; the unchanged helper returns before the operation.', rationale: 'Identify the stored id lookup and early return.', evidence: [{ path: 'worker.js', reason: 'Delegates to once().' }, { path: 'lib/once.js', reason: 'The helper remembers ids and returns early.' }] };
+const question = { id: 'retry', concept: 'Duplicate operation', prompt: 'When an already-seen id is retried in this process, will another operation run? Explain why.', choices: [], expectedAnswer: 'No; the unchanged helper returns before the operation.', rationale: 'Identify the stored id lookup and early return.', evidence: [{ path: 'worker.js', reason: 'Delegates to once().' }, { path: 'lib/once.js', reason: 'The helper remembers ids and returns early.' }] };
 const schema = { type: 'object', additionalProperties: false, properties: { questions: { type: 'array', minItems: 1, maxItems: 1, items: QUESTION_SCHEMA } }, required: ['questions'] };
 const toolAction = calls => ({ action: 'tools', calls: calls.map(([name, args]) => ({ name, arguments: JSON.stringify(args) })), assessment: null, summary: '', evidenceIds: [] });
 const compactionReads = () => Array.from({ length: 6 }, (_, index) => [index === 0 ? 'read_diff' : 'read_file', { path: index === 0 ? 'worker.js' : 'lib/once.js' }]);
@@ -32,7 +32,7 @@ const observations = data => data.conversation.flatMap(message => {
 const isSummary = args => args.schema.required.length === 1 && args.schema.required[0] === 'summary';
 const summary = 'The changed worker calls once(id, operation). Exact observation e1 contains its diff; e3 contains the unchanged helper and process-local stored-id early return. Investigate no further if those observations suffice.';
 const DIFF = 'diff --git a/worker.js b/worker.js\n--- a/worker.js\n+++ b/worker.js\n@@ -1 +1 @@\n-operation();\n+return once(id, operation);\n';
-const seedQuestion = { ...question, prompt: 'Does the worker execute the operation directly, or hand it to the retry guard?', choices: ['Execute directly', 'Hand to the retry guard'], expectedAnswer: 'It hands the operation and id to once().', rationale: 'The changed call delegates the operation instead of invoking it directly.', evidence: [question.evidence[0]] };
+const seedQuestion = { ...question, prompt: 'Does the worker execute the operation directly, or hand it to the retry guard?', choices: [], expectedAnswer: 'It hands the operation and id to once().', rationale: 'The changed call delegates the operation instead of invoking it directly.', evidence: [question.evidence[0]] };
 
 function workspace({ padding = 0, read } = {}) {
   const evidencePaths = new Set(), history = [];
@@ -200,16 +200,19 @@ test('Pi sequentially executes bounded 3–8 read batches for native and structu
   }
 });
 
-test('oversized or mixed-finish native batches execute no tools and never request a repair', async () => {
+test('invalid native batches execute no workspace tools and Pi corrects them within the existing allowance', async () => {
   const read = { id: 'read', name: 'read_diff', arguments: { path: 'worker.js' } };
-  const done = { id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1'] } };
+  const done = { id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [seedQuestion] }, summary } };
   for (const calls of [[], Array.from({ length: 9 }, (_, index) => ({ ...read, id: `read-${index}` })), [read, done]]) {
     const space = workspace(); let requests = 0;
-    await assert.rejects(runReviewer({ ...options, workspace: space, nativeTools: true, runToolModel: async args => {
-      await args.beforeCall(); requests++; return { calls };
-    }, runModel: async () => assert.fail('No summary or repair request is allowed') }), { code: 'INVALID_REVIEW_ACTION' });
+    const result = await runReviewer({ ...options, workspace: space, nativeTools: true, runToolModel: async args => {
+      await args.beforeCall(); requests++;
+      if (requests === 1) return { calls };
+      assert.match(JSON.stringify(args.messages), /review_feedback/);
+      return { calls: [done] };
+    }, runModel: async () => assert.fail('This short correction needs no compaction') });
     assert.equal(space.history.length, 1, 'Only the automatic seed ran; no tool from the invalid response executed');
-    assert.equal(requests, 1);
+    assert.equal(requests, 2); assert.equal(result.review.calls, 2);
   }
 });
 
@@ -323,16 +326,16 @@ test('an oversized opaque continuation fails closed when Pi has no earlier turn 
   assert.equal(calls, 1); assert.equal(charges, 1);
 });
 
-test('fabricated or listing-only evidence cannot support an assessment', async () => {
-  for (const [first, ids, candidate = question] of [
-    [toolAction([['list_files', {}]]), ['e2']],
-    [toolAction([['read_diff', { path: 'worker.js' }]]), ['invented']],
-    [toolAction([['read_file', { path: 'lib/once.js' }]]), ['e2'], { ...question, evidence: [question.evidence[1]] }],
-    [toolAction([['read_diff', { path: '.env' }]]), ['e2']],
+test('unread or unchanged-only citations remain unapproved after bounded correction attempts', async () => {
+  for (const [first, candidate] of [
+    [toolAction([['list_files', {}]]), question],
+    [toolAction([['read_diff', { path: 'worker.js' }]]), { ...question, evidence: [...question.evidence, { path: 'invented.js', reason: 'Never observed.' }] }],
+    [toolAction([['read_file', { path: 'lib/once.js' }]]), { ...question, evidence: [question.evidence[1]] }],
+    [toolAction([['read_diff', { path: '.env' }]]), { ...question, evidence: [{ path: '.env', reason: 'Excluded.' }] }],
   ]) {
     let turn = 0;
-    await assert.rejects(runReviewer({ ...options, workspace: workspace(), runModel: async args => { await args.beforeCall(); return turn++ ? finish(ids, candidate) : first; } }), { code: 'INSUFFICIENT_EVIDENCE' });
-    assert.equal(turn, 2, 'Unsupported evidence cannot trigger an automatic repair request');
+    await assert.rejects(runReviewer({ ...options, maxReviewerCalls: 3, workspace: workspace(), runModel: async args => { await args.beforeCall(); return turn++ ? finish([], candidate) : first; } }), { code: 'REVIEWER_BUDGET' });
+    assert.equal(turn, 3, 'Corrections never raise the configured request allowance');
   }
 });
 
@@ -360,7 +363,7 @@ test('small and medium reviews reserve synthesis within their size caps for both
       const final = requests === limit;
       if (nativeTools) {
         const definitions = args.tools.map(tool => tool.function.name);
-        assert.deepEqual(definitions, ['list_files', 'read_file', 'read_diff', 'search', 'finish_review']);
+        assert.deepEqual(definitions, ['list_files', 'read_file', 'read_diff', 'search', 'review_feedback', 'finish_review']);
         assert.deepEqual(args.toolChoice, final ? { type: 'function', function: { name: 'finish_review' } } : undefined);
         const historicalCalls = args.messages.flatMap(message => message.tool_calls ?? []);
         for (const call of historicalCalls) assert.ok(definitions.includes(call.function.name), 'Historical calls retain their tool definitions');
@@ -486,40 +489,44 @@ test('invalid Pi compaction summaries fail closed without repair calls or an ass
   }
 });
 
-test('hallucinated evidence IDs in Pi summaries cannot fabricate retained evidence', async () => {
+test('hallucinated evidence hints cannot fabricate retained evidence after Pi compaction', async () => {
   let compactCalls = 0, finalCalls = 0;
-  await assert.rejects(runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 600 }), runModel: async args => {
+  const result = await runReviewer({ ...options, config: { ...config, maxContextBytes: 30000, timeoutSeconds: 5 }, workspace: workspace({ padding: 600 }), runModel: async args => {
     await args.beforeCall();
-    assert.equal(finalCalls, 0, 'A rejected final review cannot request a repair');
     if (isSummary(args)) { compactCalls++; return { summary: 'Observation e999 proves a fabricated code path. Keep e999 as evidence.' }; }
     if (compactCalls) { finalCalls++; return finish(['e1', 'e999']); }
     return toolAction(compactionReads());
-  } }), { code: 'INSUFFICIENT_EVIDENCE' });
-  assert.ok(compactCalls >= 1);
-  assert.equal(finalCalls, 1);
+  } });
+  assert.ok(compactCalls >= 1); assert.equal(finalCalls, 1);
+  assert.ok(result.review.evidence.every(item => item.id !== 'e999'));
+  assert.deepEqual(result.review.evidencePaths, ['worker.js', 'lib/once.js']);
 });
 
-test('invalid questions stop before Pi can spend another request repairing them', async () => {
+test('Pi can correct an invalid question using tool feedback within the current budget', async () => {
   let calls = 0, charges = 0;
-  await assert.rejects(runReviewer({ ...options, workspace: workspace(), beforeCall: async () => { charges++; }, runModel: async args => {
+  const result = await runReviewer({ ...options, workspace: workspace(), beforeCall: async () => { charges++; }, runModel: async args => {
     await args.beforeCall(); calls++;
-    assert.ok(calls <= 2, 'There must be no repair request');
-    return calls === 1 ? toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]) : finish(['e1', 'e3'], { ...question, choices: ['Only one invalid choice'] });
-  } }), { code: 'INVALID_MODEL_OUTPUT' });
-  assert.equal(calls, 2); assert.equal(charges, 2);
+    if (calls === 1) return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+    if (calls === 2) return finish(['e1', 'e3'], { ...question, rationale: '' });
+    assert.match(args.prompt, /Question rationale must be nonempty/);
+    return finish(['e1', 'e3']);
+  } });
+  assert.equal(calls, 3); assert.equal(charges, 3); assert.deepEqual(result.questions, [question]);
 });
 
 test('graded answers reuse reviewed snippets and context without reopening the repository', async () => {
   const reviewed = await runReviewer({ ...options, workspace: workspace(), runModel: async args => { await args.beforeCall(); return observations(decode(args)).some(item => item.tool === 'read_file') ? finish(['e1', 'e2']) : toolAction([['read_file', { path: 'lib/once.js' }]]); } });
   let calls = 0;
-  const evaluator = createEvaluator({ env: {}, workspaceFactory: () => { throw new Error('Must not reopen repository'); }, openRouter: async args => {
+  const evaluator = createEvaluator({ env: {}, workspaceFactory: () => { throw new Error('Must not reopen repository'); },
+    openRouterTurn: async () => { throw new Error('Grading must not invoke reviewer transport'); }, openRouter: async args => {
     await args.beforeCall();
     const data = JSON.parse(args.prompt.split('\n').at(-1));
-    assert.equal(data.question.expectedAnswer, question.expectedAnswer);
+    assert.equal(data.sourceKey.expectedAnswer, question.expectedAnswer);
+    assert.equal(data.question.expectedAnswer, undefined);
     assert.deepEqual(data.snapshot.projectContext, snapshot.projectContext);
     assert.equal(data.snapshot.evidence[1].result.oid, 'a'.repeat(40));
     assert.equal(data.humanAnswer, 'No, the helper returns early for the stored id.');
-    return { verdict: 'correct', feedback: 'The stored id prevents the second operation.', evidence: question.evidence, followUp: null };
+    return { questionValid: true, verdict: 'correct', feedback: 'The stored id prevents the second operation.', evidence: question.evidence, followUp: null };
   } });
   const result = await evaluator.gradeAnswer({ snapshot, review: reviewed.review, question, answer: 'No, the helper returns early for the stored id.', config: { ...config, provider: 'openrouter' }, beforeCall: async () => { calls++; } });
   assert.equal(result.verdict, 'correct'); assert.equal(calls, 1);

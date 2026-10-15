@@ -10,14 +10,17 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test",
-    "check": "node --check bin/sphinx.js && node --test",
-    "start": "node bin/sphinx.js"
+    "test": "node scripts/run-suite.mjs",
+    "check": "node --check bin/sphinx.js && node scripts/run-suite.mjs",
+    "start": "node bin/sphinx.js",
+    "eval": "node eval/run.js"
   },
   "files": [
     "bin",
     "src",
     "docs",
+    "eval/RESULTS.md",
+    "eval/fixtures/known-false-negatives.json",
     "examples",
     ".sphinxconfig.example",
     ".sphinxignore.example",

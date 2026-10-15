@@ -31,7 +31,7 @@ async function withLock(id, env, operation, { signal, deadline = 0 } = {}) {
         await delay(Math.min(200, deadline - Date.now()), undefined, { signal });
         return withLock(id, env, operation, { signal, deadline });
       }
-      throw new Error('This assessment is already running. Wait for preparation to finish, then resume the check.');
+      throw Object.assign(new Error('This assessment is already running. Wait for preparation to finish, then resume the check.'), { code: 'SPHINX_SESSION_BUSY' });
     }
     await unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
     return withLock(id, env, operation, { signal, deadline });
@@ -49,6 +49,9 @@ function callLimit(session) {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('The assessment call limit is invalid.');
   return limit;
 }
+// A saved candidate can resume its independent audit directly. An investigation
+// without a candidate still needs synthesis plus audit, even with exact reads saved.
+const minimumReviewerCalls = session => session.reviewerCheckpoint?.pendingAssessment ? 1 : 2;
 const retryHint = session => `Run sphinx check --id ${session.id} --retry-review to explicitly authorize a fresh review allowance; prior usage will be retained.`;
 function withRecoveryMessage(error, message) {
   // Preserve only the transport's sanitized diagnostic metadata. A provider
@@ -56,16 +59,18 @@ function withRecoveryMessage(error, message) {
   const failure = new Error(message);
   failure.name = error.name || 'Error';
   for (const key of ['code', 'status', 'errorType']) if (error[key] !== undefined) failure[key] = error[key];
+  if (Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds >= 0 && error.retryAfterSeconds <= 86400) failure.retryAfterSeconds = error.retryAfterSeconds;
   return failure;
 }
 function reviewFailure(error, session, signal) {
   if (signal?.aborted || error?.name === 'AbortError') return error;
   const remaining = callLimit(session) - session.calls - questionLimit(session.config.level, session.route.tier);
-  if (['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code) && remaining >= 2) {
+  const minimum = minimumReviewerCalls(session);
+  if (['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code) && remaining >= minimum) {
     const totalRemaining = callLimit(session) - session.calls;
     return withRecoveryMessage(error, `${error.message} ${totalRemaining} model calls remain in the existing assessment allowance (${session.calls}/${callLimit(session)} used). When ready, retry within that allowance: sphinx check --id ${session.id}.`);
   }
-  if (error?.code !== 'REVIEWER_BUDGET' && remaining >= 2) return error;
+  if (error?.code !== 'REVIEWER_BUDGET' && remaining >= minimum) return error;
   return withRecoveryMessage(error, `${error.message} ${retryHint(session)}`);
 }
 export function publicSession(session) {
@@ -76,8 +81,9 @@ export function publicSession(session) {
     progress: { completed: session.index, total: session.questions.length },
     usage: { calls: session.calls, limit: callLimit(session) },
     ...(session.reviewRetries?.length ? { reviewAttempts: session.reviewRetries.length + 1 } : {}),
-    ...(session.preparation ? { preparation: { status: session.preparation.status, ...(session.review ? { toolCalls: session.review.toolCalls, compactions: session.review.compactions } : {}) } } : {}),
-    ...(q && session.status !== 'passed' ? { question: { id: q.id, concept: q.concept, prompt: q.prompt, choices: q.choices } } : {}),
+    ...(session.preparation ? { preparation: { status: session.preparation.status, ...(session.reviewerCheckpoint ? { resumable: true, minimumReviewerCalls: minimumReviewerCalls(session) } : {}), ...(session.review ? { toolCalls: session.review.toolCalls, compactions: session.review.compactions } : {}) } } : {}),
+    // Concept labels are evaluator metadata and may themselves reveal the answer.
+    ...(q && session.status !== 'passed' ? { question: { id: q.id, prompt: q.prompt, choices: q.choices } } : {}),
     ...(session.lastFeedback ? { feedback: session.lastFeedback } : {}),
     ...(session.status === 'passed' ? { expiresAt: session.expiresAt } : {}),
   };
@@ -85,7 +91,7 @@ export function publicSession(session) {
 
 export function createSessionStore({ env = process.env, generate = generateAssessment, grade = gradeAnswer, validate = async () => {} } = {}) {
   const read = id => readJson(sessionFile(id, env));
-  const save = session => writeJson(sessionFile(session.id, env), session);
+  const save = (session, options) => writeJson(sessionFile(session.id, env), session, options);
   async function syncCallLimit(session, config) {
     // A terminal may have been opened before a global ceiling edit. Reload it
     // under the assessment lock, including immediately before each model call.
@@ -150,7 +156,16 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     });
   }
   async function approved(snapshot, config) {
-    return validReceipt(await readJson(sessionFile(snapshot.id, env), null),config);
+    // A final answer is not committed until its writer releases the lock. In
+    // particular, never expose a receipt while cancellation is rolling it back.
+    // Reading under that same lock also prevents observing an old receipt inode
+    // across an entire write-and-rollback cycle.
+    try {
+      return await withLock(snapshot.id, env, async () => validReceipt(await readJson(sessionFile(snapshot.id, env), null), config));
+    } catch (error) {
+      if (error.code === 'SPHINX_SESSION_BUSY') return false;
+      throw error;
+    }
   }
   async function retryReview(id, config, { signal } = {}) {
     return withLock(id, env, async () => {
@@ -162,7 +177,8 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       await syncCallLimit(session, config);
       if (session.status !== 'pending' || session.questions.length || session.preparation?.status !== 'failed') throw new Error('Only a failed review with no questions can be restarted. Active questions and completed checks are preserved.');
       const reserve = questionLimit(config.level, session.route.tier);
-      if (config.maxModelCalls < reserve + 2) throw new Error(`A fresh review needs at least 2 investigation calls and ${reserve} reserved grading call(s). The configured allowance of ${config.maxModelCalls} cannot fit this review. No model request was made.`);
+      const minimum = minimumReviewerCalls(session);
+      if (config.maxModelCalls < reserve + minimum) throw new Error(`A ${minimum === 1 ? 'saved audit' : 'review'} needs at least ${minimum} investigation call(s) and ${reserve} reserved grading call(s). The configured allowance of ${config.maxModelCalls} cannot fit this review. No model request was made.`);
       // A recovery menu may predate a global ceiling increase. An explicit
       // one-attempt extension must never lower that newly adopted ceiling.
       const previousLimit = callLimit(session), limit = Math.max(previousLimit, session.calls + config.maxModelCalls);
@@ -191,11 +207,12 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       if (!session.questions.length) {
         const reserve = questionLimit(config.level, session.route.tier);
         const maxReviewerCalls = Math.min(config.agentMaxTurns, callLimit(session) - session.calls - reserve);
-        if (maxReviewerCalls < 2) {
+        const minimumCalls = minimumReviewerCalls(session);
+        if (maxReviewerCalls < minimumCalls) {
           session.preparation = { status: 'failed', completedAt: now() };
           session.updatedAt = now();
           await save(session);
-          throw new Error(`Assessment call limit (${callLimit(session)}) leaves ${Math.max(0, maxReviewerCalls)} investigation call(s); review needs at least 2, plus ${reserve} reserved grading call(s). No model request was made. ${retryHint(session)}`);
+          throw new Error(`Assessment call limit (${callLimit(session)}) leaves ${Math.max(0, maxReviewerCalls)} investigation call(s); review needs at least ${minimumCalls}, plus ${reserve} reserved grading call(s). No model request was made. ${retryHint(session)}`);
         }
         session.preparation = { status: 'running', startedAt: now() };
         await save(session);
@@ -208,8 +225,22 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           requests++;
           signal?.throwIfAborted();
         };
+        // Private, bounded Pi state shares the assessment lock and atomic write.
+        // It never crosses publicSession or becomes a completion receipt.
+        const reviewerCheckpoint = {
+          load: async () => structuredClone(session.reviewerCheckpoint ?? null),
+          save: async state => {
+            if (!state || state.version !== 1 || state.snapshotId !== session.snapshot.id
+              || Buffer.byteLength(JSON.stringify(state)) > 2 * 1024 * 1024) {
+              throw new Error('The reviewer checkpoint is invalid or exceeds its storage limit.');
+            }
+            session.reviewerCheckpoint = structuredClone(state);
+            session.updatedAt = now();
+            await save(session);
+          },
+        };
         try {
-          const result = await generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,env});
+          const result = await generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,env});
           signal?.throwIfAborted();
           if (!Array.isArray(result.questions) || !result.questions.length) throw new Error('Evaluator returned no grounded questions. The check remains pending.');
           if (result.questions.length > reserve) throw new Error('Evaluator exceeded the question limit. The check remains pending.');
@@ -217,6 +248,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           signal?.throwIfAborted();
           session.questions = result.questions;
           if (result.review) session.review = result.review;
+          delete session.reviewerCheckpoint;
           session.status = 'active';
           session.preparation = { status: 'ready', completedAt: now() };
           await save(session);
@@ -256,6 +288,9 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       signal?.throwIfAborted();
       if (!['correct','incorrect','ambiguous'].includes(result.verdict)) throw new Error('Evaluator returned an invalid verdict. The check remains pending.');
       if ((learn || dispute) && result.verdict === 'correct') throw new Error('A learning request or dispute cannot complete a concept. The check remains pending.');
+      // Capture after charging the grade: cancellation rolls back progress, not
+      // model usage, and leaves the same question available to the human.
+      const beforeAnswer = structuredClone(session);
       session.attempts.push({questionId:question.id,answer:text.trim(),verdict:result.verdict,feedback:result.feedback,at:now()});
       session.lastFeedback = result.feedback;
       if (result.verdict === 'correct') {
@@ -274,7 +309,19 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       }
       session.updatedAt = now();
       signal?.throwIfAborted();
-      await save(session);
+      try {
+        await save(session, { signal });
+        signal?.throwIfAborted();
+      } catch (error) {
+        try { await save(beforeAnswer); }
+        catch (rollbackError) {
+          // If storage cannot restore pending progress, remove the possible
+          // receipt before releasing the lock. Losing progress must fail closed.
+          await unlink(sessionFile(id, env)).catch(e => { if (e.code !== 'ENOENT') throw e; });
+          throw new AggregateError([error, rollbackError], 'Could not save this answer; no approval was retained.');
+        }
+        throw error;
+      }
       return {...publicSession(session), verdict:result.verdict};
     });
   }

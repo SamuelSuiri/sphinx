@@ -2,7 +2,7 @@
   "version": 1,
   "enabled": true,
   "provider": "openrouter",
-  "model": "qwen/qwen3-coder-next",
+  "model": "anthropic/claude-haiku-5.5",
   "level": "standard",
   "mode": "block",
   "events": [
@@ -20,7 +20,7 @@
   "timeoutSeconds": 180,
   "receiptHours": 24,
   "maxModelCalls": 20,
-  "maxOutputTokens": 4096,
+  "maxOutputTokens": 8192,
   "allowPaid": true,
   "agentMaxTurns": 8,
   "toolResultBytes": 16000,
@@ -29,15 +29,15 @@
   "models": {
     "small": {
       "provider": "openrouter",
-      "model": "qwen/qwen3-coder-next"
+      "model": "anthropic/claude-haiku-5.5"
     },
     "medium": {
       "provider": "openrouter",
-      "model": "qwen/qwen3-coder-next"
+      "model": "anthropic/claude-haiku-5.5"
     },
     "large": {
       "provider": "openrouter",
-      "model": "qwen/qwen3-coder"
+      "model": "anthropic/claude-haiku-5.5"
     }
   },
   "routing": {

@@ -70,8 +70,8 @@ export function activationGuidance(agent) {
   const steps = {
     codex: 'In Codex, open /hooks to review and trust the Sphinx hooks.',
     claude: 'Respond to any Claude setup or MCP permission prompts. Use /mcp to inspect Sphinx.',
-    pi: 'Sphinx questions appear directly as Pi dialogs when Git requires a checkpoint.',
-    opencode: 'When Git requires a checkpoint, Sphinx opens its questionnaire in a separate terminal.',
+    pi: 'Blocking Git checks use a local browser page. Pi dialogs handle fallback and advisory checkpoints.',
+    opencode: 'When Git requires a checkpoint, Sphinx serves a local browser questionnaire without moving your coding window.',
   };
   return `Sphinx · ${LABELS[agent]}\n${steps[agent]}\nStarting a fresh session in this repository. No prompt has been submitted.\n\n`;
 }

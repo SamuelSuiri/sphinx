@@ -73,7 +73,7 @@ test('missing authentication fails before a request and an isolated saved key is
 });
 
 test('HTTP errors remain actionable without exposing authentication or the provider response body', async () => {
-  for (const [status, message] of [[401, /sphinx auth/], [429, /will not switch to a paid model/], [400, /structured-output/], [402, /insufficient credits/], [503, /unavailable/], [502, /Request failed/]]) {
+  for (const [status, message] of [[401, /sphinx auth/], [429, /Provider or account rate limit.*will not switch models/], [400, /structured-output/], [402, /insufficient credits/], [503, /unavailable/], [502, /Request failed/]]) {
     let calls = 0;
     await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { calls++; return new Response(`server diagnostic ${apiKey}`, { status }); } }), error => {
       assert.match(error.message, message);
@@ -84,6 +84,73 @@ test('HTTP errors remain actionable without exposing authentication or the provi
   }
 });
 
+test('HTTP rate-limit and availability errors expose a bounded Retry-After delay without retrying', async () => {
+  for (const [status, header, seconds] of [[429, '60', 60], [503, ' 1 ', 1], [429, '86400', 86400], [503, '0', 0]]) {
+    let calls = 0, charges = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, beforeCall: async () => { charges++; }, fetchImpl: async () => {
+      calls++;
+      return new Response(`private provider response ${apiKey}`, { status, headers: { 'Retry-After': header } });
+    } }), error => {
+      assert.ok(error instanceof OpenRouterError); assert.equal(error.status, status);
+      assert.equal(error.retryAfterSeconds, seconds);
+      assert.match(error.message, seconds === 0 ? /retry delay has elapsed/ : new RegExp(`Wait at least ${seconds} second`));
+      assert.match(error.message, /did not retry or switch models/);
+      assert.ok(!JSON.stringify(error).includes(apiKey)); assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(calls, 1); assert.equal(charges, 1);
+  }
+});
+
+test('canonical HTTP-date Retry-After survives provider error envelopes with only numeric timing metadata', async t => {
+  const now = Date.UTC(2026, 9, 15, 22, 0, 0);
+  t.mock.method(Date, 'now', () => now);
+  for (const [data, delay] of [
+    [{ error: { code: 429, message: apiKey, metadata: { error_type: 'rate_limit_exceeded' } } }, 60],
+    [{ choices: [{ finish_reason: 'error', error: { code: 502, metadata: { error_type: 'provider_overloaded' } } }] }, 90],
+    [{ choices: [{ finish_reason: 'error' }] }, 30],
+  ]) {
+    let calls = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => {
+      calls++; return Response.json(data, { headers: { 'Retry-After': new Date(now + delay * 1000).toUTCString() } });
+    } }), error => {
+      assert.equal(error.retryAfterSeconds, delay);
+      assert.equal(error.code, 'OPENROUTER_PROVIDER_ERROR');
+      assert.match(error.message, new RegExp(`Wait at least ${delay} seconds`));
+      assert.doesNotMatch(error.message, /GMT|2026/);
+      assert.ok(!JSON.stringify(error).includes(apiKey));
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('malformed, unsafe, out-of-range, and body-only retry hints never enter error metadata or messages', async t => {
+  const now = Date.UTC(2026, 9, 15, 22, 0, 0);
+  t.mock.method(Date, 'now', () => now);
+  const data = { error: { code: 429, message: apiKey, retryAfterSeconds: 45, metadata: { retry_after: 45, raw: apiKey } } };
+  for (const header of [undefined, apiKey, `Bearer ${apiKey}`, '-1', '1.5', '1e3', 'Infinity', '86401', '9'.repeat(160), '60, 120', '2026-10-15', 'Thu, 32 Oct 2026 22:00:00 GMT', 'Fri, 15 Oct 2026 22:01:00 GMT', new Date(now + 86401_000).toUTCString()]) {
+    await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => Response.json(data, { status: 429, headers: header === undefined ? {} : { 'Retry-After': header } }) }), error => {
+      assert.equal(error.retryAfterSeconds, undefined);
+      assert.doesNotMatch(error.message, /Wait at least|retry delay has elapsed/);
+      assert.ok(!JSON.stringify(error).includes(apiKey)); assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+  }
+});
+
+test('retry headers do not suggest waiting as a remedy for authentication or invalid requests', async () => {
+  for (const response of [
+    () => Response.json({ error: { code: 401 } }, { status: 401, headers: { 'Retry-After': '60' } }),
+    () => Response.json({ error: { code: 500, metadata: { error_type: 'authentication' } } }, { headers: { 'Retry-After': '60' } }),
+    () => new Response(apiKey, { status: 400, headers: { 'Retry-After': '60' } }),
+  ]) await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => response() }), error => {
+    assert.equal(error.retryAfterSeconds, undefined);
+    assert.doesNotMatch(error.message, /Wait at least/);
+    return true;
+  });
+});
+
 test('network and timeout errors do not leak request credentials', async () => {
   for (const error of [new Error(`request failed with ${apiKey}`), new DOMException(`request ${apiKey}`, 'TimeoutError')]) {
     await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { throw error; } }), failure => {
@@ -92,6 +159,79 @@ test('network and timeout errors do not leak request credentials', async () => {
       return true;
     });
   }
+});
+
+test('a timeout after HTTP headers identifies the response-body timeout without retrying', async () => {
+  let calls = 0, charges = 0, keepAlive;
+  try {
+    await assert.rejects(callOpenRouter({ ...defaults, config: { ...defaults.config, timeoutSeconds: 0.02 },
+      beforeCall: async () => { charges++; }, fetchImpl: async (_url, init) => {
+        calls++;
+        return new Response(new ReadableStream({ start(controller) {
+          // Fetch can reject a timed-out body with a generic AbortError. The
+          // combined request signal, not that exception's text, identifies it.
+          init.signal.addEventListener('abort', () => controller.error(new DOMException(apiKey, 'AbortError')), { once: true });
+          keepAlive = setTimeout(() => controller.error(new Error('Test response unexpectedly stayed open')), 1000);
+        } }));
+      } }), error => {
+        assert.match(error.message, /timed out while reading the response body/);
+        assert.match(error.message, /did not retry or switch models/);
+        assert.doesNotMatch(error.message, /JSON|oversized/);
+        assert.ok(!error.message.includes(apiKey)); assert.equal(error.cause, undefined);
+        return true;
+      });
+  } finally { clearTimeout(keepAlive); }
+  assert.equal(calls, 1); assert.equal(charges, 1);
+});
+
+test('caller cancellation while reading a response preserves its exact abort reason', async () => {
+  const caller = new AbortController(), reason = new Error('Human paused the check.');
+  let calls = 0, charges = 0, timer;
+  try {
+    await assert.rejects(callOpenRouter({ ...defaults, signal: caller.signal,
+      beforeCall: async () => { charges++; }, fetchImpl: async (_url, init) => {
+        calls++;
+        return new Response(new ReadableStream({ start(controller) {
+          init.signal.addEventListener('abort', () => controller.error(new Error(apiKey)), { once: true });
+          timer = setTimeout(() => caller.abort(reason), 5);
+        } }));
+      } }), error => error === reason);
+  } finally { clearTimeout(timer); }
+  assert.equal(calls, 1); assert.equal(charges, 1);
+});
+
+test('interrupted, oversized, and malformed bodies have distinct sanitized diagnostics and no retries', async () => {
+  const cases = [
+    [() => new Response(new ReadableStream({ pull(controller) { controller.error(new Error(`private transport diagnostic ${apiKey}`)); } })), /response body was interrupted before it finished/],
+    [() => new Response('x'.repeat(1024 * 1024 + 1) + apiKey), /response exceeded the 1 MiB safety limit/],
+    [() => new Response(`{"private":"${apiKey}"`), /returned malformed response JSON/],
+  ];
+  for (const [response, expected] of cases) {
+    let calls = 0, charges = 0;
+    await assert.rejects(callOpenRouter({ ...defaults, beforeCall: async () => { charges++; }, fetchImpl: async () => { calls++; return response(); } }), error => {
+      assert.match(error.message, expected);
+      assert.match(error.message, /No completion was recorded; Sphinx did not retry or switch models/);
+      assert.ok(!error.message.includes(apiKey)); assert.ok(!JSON.stringify(error).includes(apiKey));
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.equal(calls, 1); assert.equal(charges, 1);
+  }
+});
+
+test('a failed HTTP response retains status advice and Retry-After when its body is interrupted', async () => {
+  let calls = 0, charges = 0;
+  await assert.rejects(callOpenRouter({ ...defaults, beforeCall: async () => { charges++; }, fetchImpl: async () => {
+    calls++;
+    return new Response(new ReadableStream({ pull(controller) { controller.error(new Error(apiKey)); } }), { status: 429, headers: { 'Retry-After': '12' } });
+  } }), error => {
+    assert.ok(error instanceof OpenRouterError); assert.equal(error.status, 429); assert.equal(error.retryAfterSeconds, 12);
+    assert.match(error.message, /HTTP 429: response body was interrupted/);
+    assert.match(error.message, /Provider or account rate limit reached/); assert.match(error.message, /Wait at least 12 seconds/);
+    assert.ok(!error.message.includes(apiKey)); assert.equal(error.cause, undefined);
+    return true;
+  });
+  assert.equal(calls, 1); assert.equal(charges, 1);
 });
 
 test('typed provider failures expose only known categories and numeric status, including HTTP error bodies', async () => {
@@ -143,7 +283,7 @@ test('truncated, refused, malformed, and provider-error responses never pass', a
     [() => success('This is not JSON'), /malformed assessment JSON/],
     [() => success(null), /no assessment text/],
     [() => Response.json({ error: { message: apiKey } }), /provider error/],
-    [() => new Response(`not valid json ${apiKey}`), /invalid.*JSON/],
+    [() => new Response(`not valid json ${apiKey}`), /malformed response JSON/],
     [() => Response.json({ choices: [] }), /no completed assessment choice/],
     [() => Response.json(null), /invalid|malformed|no assessment|did not finish/i],
   ];
@@ -217,7 +357,7 @@ test('oversized API bodies are rejected even if the provider ignores its output 
   await assert.rejects(callOpenRouter({
     ...defaults,
     fetchImpl: async () => success(JSON.stringify({ padding: 'x'.repeat(1024 * 1024 + 1) })),
-  }), /oversized/);
+  }), /exceeded the 1 MiB safety limit/);
 });
 
 const nativeTools = [{ type: 'function', function: { name: 'read_diff', description: 'Read an immutable diff.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } } }];
@@ -262,6 +402,58 @@ test('forced final synthesis preserves history schemas while selecting exactly o
   }
 });
 
+test('Anthropic investigative and final requests use auto while other models retain wire tool constraints', async () => {
+  const finishTool = { type: 'function', function: { name: 'finish_review', parameters: { type: 'object', properties: {}, additionalProperties: false } } };
+  const tools = [...nativeTools, finishTool];
+  const finishChoice = { type: 'function', function: { name: 'finish_review' } };
+  const finishCall = { id: 'finish-1', type: 'function', function: { name: 'finish_review', arguments: '{}' } };
+  for (const model of ['anthropic/claude-haiku-5.5', 'anthropic/claude-haiku-4.5', 'qwen/qwen3-coder-next', 'openrouter/free']) {
+    for (const final of [false, true]) {
+      let requests = 0, charges = 0;
+      const expected = final ? finishCall : nativeCall;
+      const result = await callOpenRouterTurn({ ...defaults, schema: undefined, config: { ...defaults.config, model, allowPaid: true },
+        messages: [{ role: 'user', content: 'Investigate the supplied immutable evidence.' }], tools, ...(final ? { toolChoice: finishChoice } : {}),
+        beforeCall: async () => { charges++; }, fetchImpl: async (_url, init) => {
+          requests++;
+          const body = JSON.parse(init.body);
+          assert.equal(body.model, model); assert.deepEqual(body.tools, tools);
+          assert.deepEqual(body.tool_choice, model.startsWith('anthropic/') ? 'auto' : final ? finishChoice : 'required');
+          assert.equal(body.provider.require_parameters, true);
+          assert.deepEqual(body.provider.max_price, model === 'openrouter/free' ? { prompt: 0, completion: 0, request: 0 } : undefined);
+          assert.equal(body.max_completion_tokens, defaults.config.maxOutputTokens);
+          assert.equal(body.models, undefined); assert.equal(body.reasoning, undefined);
+          return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [expected] } }] });
+        },
+      });
+      assert.equal(result.calls[0].name, expected.function.name);
+      assert.equal(requests, 1); assert.equal(charges, 1);
+    }
+  }
+});
+
+test('Anthropic auto selection never accepts text-only output or an unrelated final tool', async () => {
+  const finishTool = { type: 'function', function: { name: 'finish_review', parameters: { type: 'object', properties: {}, additionalProperties: false } } };
+  const finishChoice = { type: 'function', function: { name: 'finish_review' } };
+  const finishCall = { id: 'finish-1', type: 'function', function: { name: 'finish_review', arguments: '{}' } };
+  for (const [final, toolCalls] of [[false, []], [true, []], [true, [nativeCall]], [true, [finishCall, nativeCall]]]) {
+    let requests = 0, charges = 0;
+    await assert.rejects(callOpenRouterTurn({ ...defaults, schema: undefined, messages: [],
+      config: { ...defaults.config, model: 'anthropic/claude-haiku-5.5', allowPaid: true }, tools: [...nativeTools, finishTool],
+      ...(final ? { toolChoice: finishChoice } : {}), beforeCall: async () => { charges++; },
+      fetchImpl: async (_url, init) => {
+        requests++; assert.equal(JSON.parse(init.body).tool_choice, 'auto');
+        return Response.json({ choices: [{ finish_reason: toolCalls.length ? 'tool_calls' : 'stop', message: { content: apiKey, tool_calls: toolCalls } }] });
+      },
+    }), error => {
+      assert.equal(error.code, 'INVALID_REVIEW_ACTION');
+      assert.match(error.message, toolCalls.length ? /did not return the required reviewer tool.*No tools.*executed/ : /returned 0 reviewer tool calls/);
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(requests, 1); assert.equal(charges, 1);
+  }
+});
+
 test('invalid forced tools fail before any budget charge or request', async () => {
   let requests = 0, charges = 0;
   for (const toolChoice of ['none', {}, null, { type: 'function', function: { name: 'shell' } }, { type: 'function', function: { name: 'read_diff', extra: apiKey } }]) {
@@ -302,6 +494,8 @@ test('native batch failures distinguish zero calls from overflow without disclos
         return Response.json({ choices: [{ finish_reason, message: { content: apiKey, reasoning: apiKey, tool_calls } }], usage: { completion_tokens: 120, completion_tokens_details: { reasoning_tokens: 100 } } });
       },
     }), error => {
+      assert.equal(error.code, 'INVALID_REVIEW_ACTION');
+      assert.equal(error.recoverable, true);
       assert.match(error.message, new RegExp(`returned ${count} reviewer tool calls`));
       assert.ok(error.message.includes(`finish_reason: ${finish_reason}`));
       assert.match(error.message, /120 completion tokens, 100 reasoning tokens/);

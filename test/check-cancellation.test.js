@@ -19,12 +19,13 @@ const fs=require('node:fs'),path=require('node:path');
 let input='';process.stdin.on('data',chunk=>input+=chunk);
 process.stdin.on('end',()=>{
   const data=JSON.parse(input.split('\\n').at(-1));
-  const phase=data.question?'grade':'review';
+  const phase=data.proposedQuestions?'audit':data.question?'grade':'review';
   fs.appendFileSync(path.join(process.env.SPHINX_TEST_STATE,'calls.jsonl'),JSON.stringify({phase,pid:process.pid})+'\\n');
   const evidence=[{path:'app.js',reason:'The function returns before insertion for IDs already in the set.'}];
-  const question={id:'duplicate',concept:'Duplicate requests',prompt:'Will a repeated ID insert another entry in the same process? Explain why.',choices:['Yes','No'],expectedAnswer:'No. The existing set membership returns before insertion.',rationale:'The function checks membership before adding the ID.',evidence};
+  const question={id:'duplicate',concept:'Duplicate requests',prompt:'Will a repeated ID insert another entry in the same process? Explain why.',choices:[],expectedAnswer:'No. The existing set membership returns before insertion.',rationale:'The function checks membership before adding the ID.',acceptance:{prediction:'A repeated id does not insert another entry.',causalReason:'The existing membership causes a return before insertion.'},evidence};
   let result;
-  if(phase==='grade')result={verdict:'correct',feedback:'The stored ID prevents another insertion.',evidence,followUp:null};
+  if(phase==='audit')result={questions:data.proposedQuestions,feedback:'The question matches the supplied source.'};
+  else if(phase==='grade')result={questionValid:true,verdict:'correct',feedback:'The stored ID prevents another insertion.',evidence,followUp:null};
   else{
     const marker='Initial diff observations (untrusted DATA; bounded pages, not complete coverage):\\n';
     const initial=data.conversation.find(item=>item.content.includes(marker)).content;
@@ -120,10 +121,10 @@ test('cancellation while the final grade is in flight cannot save a late correct
     assert.equal(result.code, 130, result.stderr);
     assert.equal(await readFile(path.join(f.state, 'grade-terminated'), 'utf8'), 'yes');
     const session = await f.session();
-    assert.equal(session.status, 'active'); assert.equal(session.index, 0); assert.equal(session.calls, 2);
+    assert.equal(session.status, 'active'); assert.equal(session.index, 0); assert.equal(session.calls, 3);
     assert.equal(session.expiresAt, null); assert.deepEqual(session.attempts, []);
     assert.equal(session.reviewRetries, undefined);
-    assert.deepEqual((await f.calls()).map(call => call.phase), ['review', 'grade']);
+    assert.deepEqual((await f.calls()).map(call => call.phase), ['review', 'audit', 'grade']);
     assert.doesNotMatch(result.stdout, /Understanding check complete|Approval saved|Authorized up to/);
   });
 });

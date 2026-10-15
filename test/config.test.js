@@ -190,12 +190,14 @@ test('policy hashes ignore object-key ordering and change with assessment/spend/
   for (const changed of [{ ...original, level: 'relaxed' }, { ...original, exclude: ['private/**'] }, { ...original, allowPaid: true }, { ...original, model: 'another-model' }, { ...original, maxContextBytes: 50000 }]) assert.notEqual(policyHash(original), policyHash(changed));
 });
 
-test('changing the call ceiling preserves the historical ten-call policy identity', () => {
+test('assessment contract invalidates old caches while call-ceiling edits preserve current identity', () => {
   const legacy = { ...structuredClone(DEFAULT_CONFIG), maxModelCalls: 10 };
   // Compute the pre-upgrade representation independently of policyHash.
   const historicalHash = createHash('sha256').update(stableStringify(legacy)).digest('hex');
+  const currentHash = policyHash(legacy);
+  assert.notEqual(currentHash, historicalHash);
   for (const maxModelCalls of [1, 9, 10, 20, 100]) {
-    assert.equal(policyHash({ ...legacy, maxModelCalls }), historicalHash);
+    assert.equal(policyHash({ ...legacy, maxModelCalls }), currentHash);
   }
 });
 

@@ -101,6 +101,28 @@ test('an already exhausted review can explicitly recover without charging anothe
   assert.equal(f.authorizations(), 1);
 });
 
+test('only a saved pending audit offers a retry with one investigation call remaining', async t => {
+  for (const pendingAudit of [false, true]) {
+    const f = await fixture(t, { maxModelCalls: 4, generate: async (attempt, options) => {
+      if (attempt > 1) { await options.beforeCall(); return { questions: [question] }; }
+      await options.beforeCall(); await options.beforeCall();
+      await options.reviewerCheckpoint.save({ version: 1, snapshotId: snapshot.id, archive: [], entries: [], calls: 2, compactions: 0,
+        ...(pendingAudit ? { pendingAssessment: { assessment: { questions: [question] }, summary: 'The insert is unconditional.' } } : {}),
+      });
+      throw failure('Provider interrupted the investigation.');
+    } });
+    const result = await f.run(prompt => {
+      assert.deepEqual(prompt.choices.map(choice => choice.value), [pendingAudit ? 'retry' : 'extend', 'pause']);
+      return pendingAudit ? 'retry' : 'pause';
+    });
+    assert.equal(f.attempts(), pendingAudit ? 2 : 1);
+    assert.equal(f.authorizations(), 0);
+    assert.equal((await f.store.read(snapshot.id)).calls, pendingAudit ? 3 : 2);
+    assert.equal(result?.status ?? null, pendingAudit ? 'active' : null);
+    assert.equal(await f.store.approved(snapshot, f.config), false);
+  }
+});
+
 test('a medium review with 7 of 10 calls used reserves both grading calls before offering recovery', async t => {
   const f = await fixture(t, {
     change: { ...snapshot, stats: { additions: 200, deletions: 19, files: 7 } },

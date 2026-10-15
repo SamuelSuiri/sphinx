@@ -18,11 +18,12 @@ const fields = properties => ({ type: 'object', additionalProperties: false, pro
 const integer = (description, maximum, minimum = 0) => ({ type: 'integer', minimum, maximum, description });
 const revision = { type: 'string', enum: ['head', 'base'], description: 'Immutable staged/committed head, or the destination base before this change.' };
 const pathField = { type: 'string', description: 'Exact repository-relative path returned by list_files. No traversal or glob expansion.' };
+const prefixField = { type: 'string', description: 'Literal repository-relative path prefix. Omit, use an empty string, ".", or "./" for the repository root. Use "src/" for one directory. No traversal, glob, or regex expansion.' };
 const DESCRIPTORS = [
-  { name: 'list_files', description: 'List allowed files from the immutable source and base trees, including unchanged dependencies. No file contents are read.', inputSchema: fields({ prefix: pathField, revision: { type: 'string', enum: ['head', 'base', 'both'] }, changedOnly: { type: 'boolean' }, offset: integer('Zero-based file offset.', 10000000), limit: integer('Files per page; default 100.', 200, 1) }) },
+  { name: 'list_files', description: 'List allowed files from the immutable source and base trees, including unchanged dependencies. No file contents are read.', inputSchema: fields({ prefix: prefixField, revision: { type: 'string', enum: ['head', 'base', 'both'] }, changedOnly: { type: 'boolean' }, offset: integer('Zero-based file offset.', 10000000), limit: integer('Files per page; default 100.', 200, 1) }) },
   { name: 'read_file', description: 'Read a bounded page from one allowed immutable Git blob. Use nextOffset to continue a partial long line, or nextLine for a line boundary. Symlinks and submodules are not followed.', inputSchema: { ...fields({ path: pathField, revision, startLine: integer('One-based starting line; default 1. Cannot be combined with offset.', 100000000, 1), offset: integer('Zero-based UTF-8 byte offset returned by an earlier page.', MAX_SCAN_BYTES), limit: integer('Maximum lines; default 100.', 200, 1) }), required: ['path'] } },
   { name: 'read_diff', description: 'Read a paginated textual diff for one path between the exact base and head/index blobs. Includes additions, deletions, and mode changes. Binary content is not returned.', inputSchema: { ...fields({ path: pathField, offset: integer('Zero-based UTF-8 byte offset; default 0.', MAX_SCAN_BYTES), limit: integer('Maximum diff lines; default 100.', 200, 1) }), required: ['path'] } },
-  { name: 'search', description: 'Search literal single-line text in allowed immutable source files. offset/limit paginate candidate files, not matches. Large or binary files are reported as skipped; inspect large text with read_file. Truncated matching lines include their column range.', inputSchema: { ...fields({ query: { type: 'string', minLength: 1, maxLength: 256 }, paths: { type: 'array', items: pathField, maxItems: 100 }, prefix: pathField, revision, offset: integer('Zero-based candidate-file offset; default 0.', 10000000), limit: integer('Files to scan; default 20.', 25, 1) }), required: ['query'] } },
+  { name: 'search', description: 'Search literal single-line text in allowed immutable source files. offset/limit paginate candidate files, not matches. Large or binary files are reported as skipped; inspect large text with read_file. Truncated matching lines include their column range.', inputSchema: { ...fields({ query: { type: 'string', minLength: 1, maxLength: 256, description: 'Exact case-sensitive text to find, not a regular expression or glob.' }, paths: { type: 'array', items: pathField, maxItems: 100 }, prefix: prefixField, revision, offset: integer('Zero-based candidate-file offset; default 0.', 10000000), limit: integer('Files to scan; default 20.', 25, 1) }), required: ['query'] } },
 ];
 
 function gitOptions(env) {
@@ -309,6 +310,9 @@ export async function createReviewWorkspace(snapshot, config, { env = process.en
     get evidenceLog() { return structuredClone(log); },
     async execute(name, args = {}) {
       try {
+        // Root aliases are directory selectors only; exact file paths remain strict.
+        if ((name === 'list_files' || name === 'search') && args && typeof args === 'object' && !Array.isArray(args)
+          && (args.prefix === '.' || args.prefix === './')) args = { ...args, prefix: '' };
         validateArgs(name, args);
         await validate();
         const result = await handlers[name](args);

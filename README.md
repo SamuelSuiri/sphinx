@@ -4,7 +4,7 @@ Outsource your thinking, not your understanding.
 
 Sphinx adds an understanding checkpoint to agent-assisted development. Before a configured Git operation, it asks you to predict the consequences of your changes. If you miss a concept, it explains the relevant execution path and gives you a new scenario to apply it to.
 
-Install once for your machine. Git opens a dedicated Sphinx terminal for the questionnaire on supported desktops and waits. Once you pass, the same push or commit continues automatically, whether you started it yourself or through a coding agent. An independent reviewer investigates committed changes using read-only diff, file, and search tools. It receives your project's context without the conversation that produced the code. Background preparation gets questions ready before a push when the destination is known.
+Install once for your machine. Git provides a local browser questionnaire and waits. On macOS, the page opens in the background, leaving your coding-agent window in place. Once you pass, the same push or commit continues automatically, whether you started it yourself or through a coding agent. An independent reviewer investigates committed changes using read-only diff, file, and search tools. It receives your project's context without the conversation that produced the code. Background preparation gets questions ready before a push when the destination is known.
 
 ## Install
 
@@ -41,17 +41,17 @@ The independent reviewer runs in an embedded [Pi SDK](https://pi.dev/docs/latest
 
 The installer configures user-level Git hooks and adapters for detected coding clients, then opens the selected installed clients. Codex, Claude Code, Pi, and OpenCode start fresh CLI sessions; Cursor opens a new editor window. Activation supplies no prompt and makes no Sphinx model request. It does not restart existing client processes.
 
-Complete any trust or connection prompts in the opened client. **In Codex, open `/hooks` to review and trust the installed hooks.** Opening the client does not verify MCP connectivity or complete hook trust, and Sphinx does not bypass those reviews. The normal blocking flow uses a separate Sphinx terminal. Codex/Claude native forms and Pi extension dialogs handle fallback or advisory checkpoints; each client controls those dialogs' appearance.
+Complete any trust or connection prompts in the opened client. **In Codex, open `/hooks` to review and trust the installed hooks.** Opening the client does not verify MCP connectivity or complete hook trust, and Sphinx does not bypass those reviews. The normal blocking flow uses a local browser questionnaire, opened in the background on macOS. Codex/Claude native forms and Pi extension dialogs handle fallback or advisory checkpoints; each client controls those dialogs' appearance.
 
 In Cursor, start a new Agent conversation in the opened window. Activation flags known versions older than 1.7 for an update; newer versions still need the hook events used by Sphinx.
 
 | Development client | Checkpoint experience | Installed integration |
 | --- | --- | --- |
-| Codex | Sphinx terminal; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
-| Claude Code | Sphinx terminal; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
-| Pi 1.2+ | Sphinx terminal; native dialogs for fallback/advisory checks | Local Pi extension |
-| Cursor | Sphinx CLI opens automatically in a separate terminal | Local user hooks |
-| OpenCode 1.x | Sphinx CLI opens automatically in a separate terminal | Local OpenCode plugin |
+| Codex | Local browser questionnaire; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
+| Claude Code | Local browser questionnaire; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
+| Pi 1.2+ | Local browser questionnaire; native dialogs for fallback/advisory checks | Local Pi extension |
+| Cursor | Local browser questionnaire | Local user hooks |
+| OpenCode 1.x | Local browser questionnaire | Local OpenCode plugin |
 
 `--agents auto` detects clients by their executable, configuration directory, or existing Sphinx installation. Select a subset explicitly with `--agents codex,claude,pi,cursor,opencode`, or use `--agents none` for Git-only setup. These integrations are separate from the evaluator model routes.
 
@@ -83,9 +83,9 @@ sphinx install --repo
 
 Existing hooks run first, and their rejection is preserved. Sphinx chains all existing hook types, including those with streaming protocols. Reinstallation is idempotent. Agent settings are merged, not replaced. Remote machines, containers, and hosted coding agents need their own setup; this installation covers your local machine.
 
-The Git hook opens the Sphinx CLI for the exact checkpoint and waits for its result. You answer directly in that window; the development model receives only the Git result and status. It does not launch the interview or relay questions and answers. Native fallback dialogs in Pi require an interactive session or a dialog-capable RPC client.
+The Git hook serves a local browser questionnaire for the exact checkpoint and waits for its result. You answer directly on that page; the development model receives only the Git result and status. It does not launch the interview or relay questions and answers. Native fallback dialogs in Pi require an interactive session or a dialog-capable RPC client.
 
-Automatic terminal opening uses Terminal on macOS, or an installed terminal on Linux/WSL with a graphical desktop. macOS may request permission to control Terminal. SSH, CI, headless sessions, an unavailable terminal, or denied automation permission leave the checkpoint pending with a manual `sphinx check` fallback. Only one active window opens per assessment; unrelated tool calls do not reopen paused checks or failed launches. A new Git attempt can queue another presentation. Cursor's installed user hooks cover local sessions, not cloud agents. Other development tools can still use the generic Git gate and terminal check.
+On macOS, Sphinx opens the questionnaire in a background browser tab without activating Terminal or minimizing your coding window. Other environments print the loopback URL for you to open; a remote session needs access to that machine's loopback listener. CI does not start a questionnaire. One page handles all checkpoints in a Git operation, and unrelated tool calls do not reopen paused checks. Closing the tab leaves Git waiting until its deadline; Pause stops it and saves progress. `sphinx check` remains an explicit terminal alternative. A new Git attempt can queue another presentation. Cursor's installed user hooks cover local sessions, not cloud agents.
 
 ## Set up a repository
 
@@ -148,12 +148,12 @@ sphinx help check
 
 1. Git supplies the exact source and destination commits. Sphinx applies branch/event policy and filters paths before reading contents.
 2. If the exact change already passed, the operation continues. Otherwise the hook saves a pending checkpoint and keeps the original Git process waiting.
-3. The hook opens a separate Sphinx terminal for this checkpoint. You answer there directly; Git's stdin and the coding agent's shell are never used for questionnaire input.
-4. Sphinx reuses matching prepared questions, waits for an existing review, or starts a fresh reviewer. The reviewer reads relevant diffs and follows related source and tests before committing questions, private answer keys, and supporting evidence. Small changes get one question; larger changes have higher ceilings based on your chosen depth. You answer directly in the form.
-5. Correct answers clear concepts. An incorrect answer gets an explanation and replaces that concept's question with a different transfer scenario. Ambiguity or evaluator failure never creates a completion record.
+3. The hook serves a private questionnaire on loopback and prints its local URL. On macOS it opens the page in the background, without activating Terminal or minimizing the coding agent. You answer in the page; Git's stdin and the coding agent's shell are never used for questionnaire input.
+4. Sphinx reuses matching prepared questions, waits for an existing review, or starts a fresh reviewer. The reviewer reads relevant diffs and follows related source and tests before committing questions, private answer keys, and supporting evidence. A separate model request checks the questions against that evidence before displaying them. Small changes get one question; larger changes have higher ceilings based on your chosen depth. You answer directly in the form.
+5. Correct answers clear concepts. An incorrect answer gets an explanation and replaces that concept's question with a different transfer scenario. Every proposed replacement gets a fresh source audit before display, without the human answer or grading conversation. Grading costs one request; a proposed replacement adds one audit within the existing call limit. Ambiguity or evaluator failure never creates a completion record.
 6. Sphinx revalidates every original snapshot and completion record, then returns control to the same Git process. The push or commit continues automatically, without replaying its command. Completion is bound to the exact repository, commits/index, destination, ignore policy, project context, assessment policy, and expiry.
 
-Pausing, closing the questionnaire, cancellation, stale code/policy, or the 25-minute interview deadline stops the operation and saves progress. The coding client or remote connection may impose a shorter timeout. An operation that already exited cannot be resumed. When no separate human terminal is available, Git stops and the existing native/manual fallback can complete the check; only that fallback requires a new Git invocation afterward. Advisory operations already proceeded and must not be repeated.
+Pausing, cancellation, stale code/policy, or the 25-minute interview deadline stops the operation and saves progress. Closing or refreshing a browser tab does not submit an answer; the same local URL remains available while Git is waiting. The coding client or remote connection may impose a shorter timeout. An operation that already exited cannot be resumed. CI and unavailable presentation leave the check pending and stop Git. Native/manual fallback can complete the check, followed by a new Git invocation. Advisory operations already proceeded and must not be repeated.
 
 ## Background preparation and investigation
 
@@ -163,21 +163,21 @@ Preparation and the push check share the exact assessment ID, lock, questions, a
 
 The first push of a new repository or a branch without local remote-tracking history may need a cold review. Sphinx does not fetch or guess missing remote history during preparation. Explicit pushes to a different destination can also miss the prepared cache. Pre-commit checks review the exact staged snapshot on demand.
 
-The reviewer requests paginated diffs, bounded source ranges, file listings, and literal searches. It can inspect unchanged callers, dependencies, and tests at the same pinned revision. Sphinx enforces ignores and tool access locally; it never grants the reviewer an unrestricted shell or the developer's working files. Large patches are inspected incrementally rather than bundled into one prompt.
+Before the first model request, Sphinx supplies bounded diff pages and a filtered file inventory using local reads. The reviewer then requests missing diff pages, source ranges, file listings, and literal searches. It can inspect unchanged callers, dependencies, and tests at the same pinned revision. File names are navigation hints; only inspected source can support a question. Sphinx enforces ignores and tool access locally; it never grants the reviewer an unrestricted shell or the developer's working files. Large patches are inspected incrementally rather than bundled into one prompt.
 
-Pi owns the reviewer session, tool loop, and [native context compaction](https://pi.dev/docs/latest/compaction). Sphinx supplies the restricted Git tools, project context, and model transports. It also keeps a separate bounded archive of exact tool observations and their provenance. Pi can summarize older conversation history without replacing that evidence archive. Final questions must cite inspected evidence, and grading receives the relevant original observations, private rubric, and project context.
+Pi owns the reviewer session, tool loop, and [native context compaction](https://pi.dev/docs/latest/compaction). Sphinx supplies the restricted Git tools, project context, and model transports. It also keeps a separate bounded archive of exact tool observations and their provenance. Pi session entries, evidence, and an assessment awaiting its independent audit are saved privately under the checkpoint lock. Interrupted reviews resume from that state without repeating the investigation. The reviewer can recover archived observations after compaction with `read_evidence`. Pi can summarize older conversation history without replacing that evidence archive. Final questions must cite inspected evidence, and grading receives the relevant original observations, private rubric, and project context.
 
-The agent integration shares state with Git, so there is one assessment per change. Native forms and automatically opened CLI windows send your responses directly to Sphinx; the development model receives only completion status and the original Git result. It does not relay questions or answers. There is no extra development-model turn for each answer.
+The agent integration shares state with Git, so there is one assessment per change. The local questionnaire and native fallback forms send your responses directly to Sphinx; the development model receives only completion status and the original Git result. It does not relay questions or answers. There is no extra development-model turn for each answer.
 
 Each form lets you answer, learn the concept, dispute the premise, or pause. Pausing or dismissing keeps the assessment incomplete. It does not reopen on unrelated shell commands; retrying a blocked Git operation queues it again. For a paused advisory check, use `sphinx check` in your terminal instead of repeating an operation that already succeeded. The integration associates queued checks with the agent session, including when the shell uses `cd` or `git -C`.
 
-The automatic terminal flow also works for shell/GUI pushes outside supported coding agents. If a separate terminal cannot open, Sphinx leaves the checkpoint pending and stops Git. Native after-tool callbacks or `sphinx check` can then complete the fallback check, but cannot revive a Git process that already exited.
+The local questionnaire also works for shell/GUI pushes outside supported coding agents. Platforms without a reliable background browser opener print the local URL instead of taking focus. SSH users can forward the loopback port or use `sphinx check` explicitly. If presentation is unavailable, Sphinx leaves the checkpoint pending and stops Git. Native after-tool callbacks or `sphinx check` can then complete the fallback check, but cannot revive a Git process that already exited.
 
 Example question for a change introducing background jobs:
 
 > The worker commits the operation but crashes before acknowledging the job. After redelivery, can the operation happen twice? Give a short reason.
 
-The examiner assesses actual behavior. Finding a bug or correcting an unsupported premise can demonstrate understanding. It should not ask which file contains a class or whether you remember a function name.
+The examiner assesses actual behavior. Explaining a bug in the implementation can demonstrate understanding. An invalid question or answer key must be corrected before the concept can pass; disputes never award completion. It should not ask which file contains a class or whether you remember a function name.
 
 Interactive commands during a terminal check:
 
@@ -225,8 +225,8 @@ Sphinx chooses the tier and uses its saved model route. Depth sets how many conc
 | --- | --- | --- | --- |
 | `codex-economy` | `codex:gpt-6-luna` | `codex:gpt-6-luna` | Your Codex CLI account |
 | `claude-economy` | `claude:haiku` | `claude:haiku` | Your Claude CLI account |
-| `openrouter-value` | `openrouter:qwen/qwen3-coder-next` | `openrouter:qwen/qwen3-coder` | Paid OpenRouter credits |
-| `openrouter-deepseek` | `openrouter:deepseek/deepseek-v3.2` | `openrouter:deepseek/deepseek-v3.2` | Paid OpenRouter credits |
+| `openrouter-value` (experimental) | `openrouter:anthropic/claude-haiku-5.5` | `openrouter:anthropic/claude-haiku-5.5` | Paid OpenRouter credits |
+| `openrouter-deepseek` (experimental) | `openrouter:deepseek/deepseek-v3.2` | `openrouter:deepseek/deepseek-v3.2` | Paid OpenRouter credits |
 | `openrouter-free` | `openrouter:openrouter/free` | `openrouter:openrouter/free` | OpenRouter free availability and limits |
 
 Codex and Claude presets keep the economical model for all tiers; investigation effort and question count still scale with change size. The Claude `haiku` alias follows the available Haiku model. Neither preset automatically upgrades to a more expensive model. Model access and plan limits depend on your account; see [Codex models](https://learn.chatgpt.com/docs/models) and [Claude model configuration](https://code.claude.com/docs/en/model-config).
@@ -239,7 +239,9 @@ sphinx config --preset openrouter-value --allow-paid
 sphinx config --small claude:haiku --medium claude:haiku --large claude:sonnet
 ```
 
-The paid OpenRouter presets use open-weight models with published coding and tool-use capabilities. Reference prices checked **October 14, 2026**, per million input/output tokens: [Qwen3 Coder Next](https://openrouter.ai/qwen/qwen3-coder-next) is $0.12/$0.80; [Qwen3 Coder](https://openrouter.ai/qwen/qwen3-coder) has a $0.22/$1.80 endpoint and a $0.30/$1.00 endpoint. [DeepSeek V3.2](https://openrouter.ai/api/v1/models/deepseek/deepseek-v3.2/endpoints) has compatible tool/structured-output endpoints at $0.26/$0.38. Rates and availability vary by endpoint and over time. For scale, 30,000 input tokens plus 2,000 output tokens costs about $0.0052 at the Coder Next reference rates; a whole check includes multiple requests and repeated context. These recommendations have not been evaluated for Sphinx question quality.
+The paid value preset uses Haiku 5.5 with an 8,192-token output ceiling, including reasoning. Reference prices checked **October 15, 2026** start at $0.10 input / $0.50 output per million tokens below 100,000 input tokens; the listed higher context tier is $0.50/$2.50. Rates vary by endpoint and over time; see [Haiku endpoints](https://openrouter.ai/api/v1/models/anthropic/claude-haiku-5.5/endpoints). At the lower rates, 30,000 input plus 2,000 output tokens costs about $0.004; a whole check includes multiple requests and repeated context. Existing saved routes do not change automatically: apply the preset to opt in, and use `--max-output-tokens` to override its output ceiling. The assessment's call limit stays unchanged.
+
+The [evaluation results](eval/RESULTS.md) retain measured question quality, grading failures and corrections across Haiku, Qwen, DeepSeek and GLM. These synthetic cases are a limited development benchmark, not a reliability guarantee. Haiku's low-cost preset is experimental because it still rejected a sufficient qualitative answer in a focused test. DeepSeek remains an experimental open-weight preset; other OpenRouter models can be selected with explicit tier routes. Price and tool support alone do not establish question quality.
 
 Interactive setup labels paid choices before selection. Noninteractive commands require `--allow-paid` or an existing `allowPaid: true` setting to choose paid OpenRouter routes. Free routes send zero-price provider limits even when another route permits paid models. There are no automatic paid fallbacks or uncounted model requests. Automatic retries and cache warming are disabled. Free availability and account limits still apply; see [OpenRouter limits](https://openrouter.ai/docs/api_reference/limits).
 
@@ -247,11 +249,11 @@ OpenRouter requests require endpoint support for their tool and output parameter
 
 Other controls:
 
-- Investigation uses bounded model requests, including any compaction. The first request already includes filtered, bounded diff pages read from the immutable checkpoint. These local reads consume no model calls; a self-contained change can produce its questions on the first request. Each submitted answer, learning request, or dispute uses one further request.
-- Resume reuses questions and progress; approved changes reuse completion records. Listing status and pushing an already approved change consume no inference. A waiting Git operation can launch a review when no matching questions are prepared.
-- The default ceiling is 20 model calls per assessment, including background investigation, compaction, grading, and failed requests. Set your machine-wide ceiling with `sphinx config --max-model-calls 30` (1–100); this changes no model routes and makes no model request. Existing checks adopt an edited ceiling when resumed and before their next model request: 7/10 becomes 7/30, preserving questions, progress, and the seven used calls. Lowering the ceiling never erases usage; if it is below usage, further calls stop. The reviewer reserves enough calls for the initial questions to be graded. If review fails before producing questions, the interactive terminal stays open and offers a retry within the remaining allowance, or an explicit one-attempt extension when too few remain. Pause is the default. Setup, credential, stale-code, and deterministic evidence failures need to be resolved first. A Git operation that is still waiting can continue after the check succeeds, subject to its time limit. Outside the interactive flow, `sphinx check --id <id>` resumes within the existing allowance; `--retry-review` remains available for an explicit one-attempt extension. Active questionnaires cannot be reset this way.
-- Small reviews use at most 3 calls and medium reviews at most 5, including compaction and question generation. `agentMaxTurns` defaults to 8 and caps every tier, further limited by the remaining shared budget. The final review request requires question submission; it cannot spend that request on more reads. Evidence still must support every question. `timeoutSeconds` bounds the whole investigation. `maxContextBytes` caps serialized review context—prompts, tools, and schemas—at 100,000 bytes by default. Pi compacts earlier using an estimated context threshold; review context that still exceeds the cap is rejected before a model call. Transport metadata is outside this count. The cap does not apply to the whole Git diff. `toolResultBytes` is an upper bound for each page (16,000 by default); pages are reduced to reserve context room for bounded batches of reads.
-- Your configured `maxOutputTokens` applies to every tier, without an additional hidden size-based cap. OpenRouter enforces the requested output-token cap. Codex/Claude receive concise-output instructions and local timeout/output-byte limits; their CLI interfaces do not provide an equivalent hard Sphinx token cap.
+- Investigation uses bounded model requests, including any compaction. The first request already includes filtered, bounded diff pages read from the immutable checkpoint. These local reads consume no model calls; a self-contained change can propose questions on the first request. One independent audit request checks the whole proposed assessment before it is shown, within the same allowance. Each submitted answer, learning request, or dispute uses one further request, plus another independent audit whenever it proposes a replacement question.
+- Resume reuses the saved investigation, evidence, questions, and progress; approved changes reuse completion records. Listing status and pushing an already approved change consume no inference. A waiting Git operation can launch a review when no matching questions are prepared.
+- The default ceiling is 20 model calls per assessment, including background investigation, compaction, question auditing, grading, corrections, and failed requests. Set your machine-wide ceiling with `sphinx config --max-model-calls 30` (1–100); this changes no model routes and makes no model request. Existing checks adopt an edited ceiling when resumed and before their next model request: 7/10 becomes 7/30, preserving questions, progress, and the seven used calls. Lowering the ceiling never erases usage; if it is below usage, further calls stop. The reviewer reserves enough calls for the initial questions to be graded. If review fails before producing questions, the questionnaire offers continuation of saved work within the remaining allowance, or an explicit one-attempt extension when too few remain. Pause is the default. Setup, credential, stale-code, and deterministic evidence failures need to be resolved first. A Git operation that is still waiting can continue after the check succeeds, subject to its time limit. Outside the interactive flow, `sphinx check --id <id>` resumes within the existing allowance; `--retry-review` remains available for an explicit one-attempt extension. Active questionnaires cannot be reset this way.
+- Small reviews normally use at most 5 calls and medium reviews at most 7, including compaction, question generation, and the independent audit. One rejected finalization can open a repair window for missing evidence, correction, and another audit, adding at most 3 requests within the existing allowance. `agentMaxTurns` defaults to 8 and caps every tier and repair window, further limited by the remaining shared budget. This never increases the assessment’s authorized call ceiling. The final two requests reserve question submission and its audit. Recoverable tool or question-validation errors return feedback to Pi within the existing allowance; provider failures never switch routes or silently increase it. Evidence still must support every question. `timeoutSeconds` bounds the whole investigation. `maxContextBytes` caps serialized review context—prompts, tools, and schemas—at 100,000 bytes by default. Pi compacts earlier using an estimated context threshold; review context that still exceeds the cap is rejected before a model call. Transport metadata is outside this count. The cap does not apply to the whole Git diff. `toolResultBytes` is an upper bound for each page (16,000 by default); pages are reduced to reserve context room for bounded batches of reads.
+- Your configured `maxOutputTokens` applies to every tier, without an additional hidden size-based cap. Set it with `sphinx config --max-output-tokens 8192` (allowed range: 512–16,384). OpenRouter counts hidden model reasoning within this output limit; a larger ceiling can avoid truncation and permits more billed output, without increasing the assessment's call limit. Codex/Claude receive concise-output instructions and local timeout/output-byte limits; their CLI interfaces do not provide an equivalent hard Sphinx token cap.
 - Small/medium changes request low reasoning effort; large changes request medium effort on supporting coding-agent CLIs.
 
 These controls bound requests and evidence; they are not a guaranteed dollar or subscription-token ceiling. Set provider-side spending limits for paid accounts.
@@ -284,7 +286,7 @@ Ignore rules match paths. They do not detect a secret embedded in an otherwise i
 
 ## Configuration
 
-Global settings are stored at `~/.config/sphinx/config.json`. `SPHINX_HOME` relocates all Sphinx settings, credentials, and assessment state. `sphinx config` shows effective settings and configuration paths; `--preset`, `--small`, `--medium`, and `--large` change your machine-wide reviewer routes. Route changes invalidate prepared questions and completion records under the previous assessment policy. For a complete global example using the explicitly paid Qwen preset, see [examples/config.json](examples/config.json).
+Global settings are stored at `~/.config/sphinx/config.json`. `SPHINX_HOME` relocates all Sphinx settings, credentials, and assessment state. `sphinx config` shows effective settings and configuration paths; `--preset`, `--small`, `--medium`, and `--large` change your machine-wide reviewer routes. Route changes invalidate prepared questions and completion records under the previous assessment policy. For a complete global example using the explicitly paid Haiku preset, see [examples/config.json](examples/config.json).
 
 Question depth controls coverage within the change-tier ceilings above:
 
@@ -327,16 +329,19 @@ Sphinx is a voluntary practice for retaining understanding. A local user or agen
 
 This first version handles local Git commit/push checkpoints. Web merges, CI-required checks, deployment gates, signed remote attestations, automatic new-agent discovery after installation, and native Windows support are future work. Run `sphinx install` again to upgrade an existing installation with preparation hooks, or after adding a supported agent. Binary contents are not available as textual evidence. Missing remote history needs a `git fetch` before assessment. A first push compares against an empty tree; the reviewer investigates relevant parts through its tools, subject to its budgets. A comprehension assessment is not an exhaustive code audit.
 
-Question quality and native-form behavior need evaluation on real changes and supported client versions. See [CONTRIBUTING.md](CONTRIBUTING.md). The automated suite uses fixture evaluators and mock MCP clients, including an end-to-end Git-to-questionnaire workflow; it makes no paid or live inference requests.
+The [live evaluation results](eval/RESULTS.md) record question quality, grading, costs, and observed failures on synthetic changes. They do not certify arbitrary repositories or every supported client version. See [CONTRIBUTING.md](CONTRIBUTING.md). The automated suite uses fixture evaluators and mock MCP clients, including an end-to-end Git-to-questionnaire workflow; it makes no paid or live inference requests.
 
 ## Development
 
 ```sh
 npm ci
 npm test
+npm run eval -- --out /tmp/sphinx-eval.json
 node bin/sphinx.js --help
 ```
 
 The reviewer uses `@earendil-works/pi-coding-agent` 1.2.0. Install the locked dependencies with `npm ci` before development. Tests use Node's test runner, real temporary Git repositories, isolated integration homes, and fixture model backends. Never run installer tests against a real home directory or Git configuration.
+
+The [evaluation runner](eval/README.md) includes committed Git fixtures, executable behavior oracles, question-quality checks, and known correct, incorrect, and invalid-question grading probes. Its default mode makes no model requests. Explicit live runs accept request/cost limits and save synthetic questions, evidence, grading results, and failure traces for inspection.
 
 See [docs/architecture.md](docs/architecture.md) for module boundaries and assessment state. MIT licensed.

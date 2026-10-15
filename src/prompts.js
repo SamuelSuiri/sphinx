@@ -5,7 +5,7 @@ import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 export const routeText = route => `${route.provider}${route.model ? `:${route.model}` : ''}`;
 export const splitList = value => String(value).split(',').map(item => item.trim()).filter(Boolean);
 export const questionCapsText = level => ['small', 'medium', 'large'].map(tier => `${tier} ${questionLimit(level, tier)}`).join(', ');
-export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${reviewerTurnLimit(tier, config.agentMaxTurns)}`).join(', ');
+export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${Math.min(config.agentMaxTurns ?? 8, reviewerTurnLimit(tier, config.agentMaxTurns) + 2)}`).join(', ');
 
 export function createPrompts({ ask, ui, select }) {
   async function choose({ title, description, choices, current, requireSelection = false }) {
@@ -105,11 +105,11 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
   let values = { ...initial };
   if (values.agents === undefined) {
     const selected = await prompts.multiselect({ title: 'Which coding agents do you use?', description: 'Connect any combination. Detected agents are preselected; clear all for Git-only use. Previously connected agents remain installed.', current: detectedAgents, choices: [
-      { value: 'codex', label: 'Codex', description: 'Sphinx terminal; native fallback forms. Trust Sphinx hooks in /hooks.' },
-      { value: 'claude', label: 'Claude Code', description: 'Sphinx terminal; native fallback forms.' },
-      { value: 'pi', label: 'Pi', description: 'Sphinx terminal; native fallback dialogs.' },
-      { value: 'cursor', label: 'Cursor', description: 'A Sphinx terminal for answers from local Agent sessions.' },
-      { value: 'opencode', label: 'OpenCode', description: 'A Sphinx terminal for answers. Requires OpenCode 1.x.' },
+      { value: 'codex', label: 'Codex', description: 'Local browser page; native fallback forms. Trust Sphinx hooks in /hooks.' },
+      { value: 'claude', label: 'Claude Code', description: 'Local browser page; native fallback forms.' },
+      { value: 'pi', label: 'Pi', description: 'Local browser page; native fallback dialogs.' },
+      { value: 'cursor', label: 'Cursor', description: 'A local browser page for answers from local Agent sessions.' },
+      { value: 'opencode', label: 'OpenCode', description: 'A local browser page for answers. Requires OpenCode 1.x.' },
     ] });
     values.agents = selected.length ? selected.join(',') : 'none';
   }

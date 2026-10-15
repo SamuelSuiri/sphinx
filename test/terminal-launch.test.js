@@ -32,6 +32,7 @@ test('macOS launch uses a constant AppleScript and shell-quotes all paths withou
   assert.equal(command.command, '/usr/bin/osascript');
   assert.doesNotMatch(command.args[1], /INJECTED|record\.json|worker/);
   assert.match(command.args[1], /do script \(item 1 of argv\)/);
+  assert.doesNotMatch(command.args[1], /activate|frontmost|minimiz/i);
   // Execute only the generated shell command against a harmless fixture, never
   // the AppleScript or any desktop terminal program.
   const actual = JSON.parse(execFileSync('/bin/sh', ['-c', command.shellCommand], { encoding: 'utf8', env: {} }));

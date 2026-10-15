@@ -3,7 +3,7 @@ import { loadConfig, policyHash } from './config.js';
 import { repository, pushSnapshots, commitSnapshot, revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { queuePresentation, claimPresentation, listPresentations } from './presentations.js';
-import { runGitCheckpointTerminal } from './git-interview.js';
+import { createBrowserInterview } from './browser-interview.js';
 
 async function snapshotsFor({ event, args, input, cwd, config, env }) {
   if (event === 'pre-push') return pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config, env });
@@ -11,7 +11,7 @@ async function snapshotsFor({ event, args, input, cwd, config, env }) {
   return [];
 }
 
-/** Preserve Git's operation context when a separate human terminal is opened. */
+/** Preserve Git's operation context while the human questionnaire runs. */
 export function interviewEnvironment(cwd, env) {
   const scoped = { ...env };
   for (const key of ['GIT_INDEX_FILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']) {
@@ -24,7 +24,7 @@ export function interviewEnvironment(cwd, env) {
 /** Wait inside Git's original hook. Never reconstruct or replay a Git command. */
 export async function runGitGate({ event, args = [], input = '', cwd = process.cwd(), env = process.env, signal,
   store: providedStore, readConfig = loadConfig, snapshotsFor: collectSnapshots = snapshotsFor,
-  revalidate = revalidateSnapshot, present = runGitCheckpointTerminal,
+  revalidate = revalidateSnapshot, present,
   queue = queuePresentation, claim = claimPresentation, listRequests = listPresentations,
   output = line => process.stderr.write(`${line}\n`),
 } = {}) {
@@ -58,6 +58,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   }
 
   const requests = [];
+  const browser = present ? null : createBrowserInterview({ env, signal, output });
   try {
     // These requests belong to the waiting hook, not a post-tool callback.
     // Mark the whole batch before launching so sibling tools cannot open forms.
@@ -68,20 +69,20 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
       const old = await listRequests({ cwd: request.repoRoot, host: request.host, hostSession: request.hostSession, env });
       for (const previous of old.filter(item => item.id === request.id)) await claim(previous, { env });
     }
-    if (requests.length) output('Sphinx: Git is waiting for your answers in the Sphinx terminal. It will continue automatically after you pass. Do not start another copy of this Git operation.');
+    if (requests.length) output('Sphinx: Git is waiting for your answers in the local Sphinx questionnaire. It will continue automatically after you pass. Do not start another copy of this Git operation.');
     const interviewEnv = interviewEnvironment(cwd, env);
     for (let index = 0; index < requests.length; index++) {
       signal?.throwIfAborted();
-      const result = await present({ request: requests[index], env: interviewEnv, signal });
+      const result = await (present || browser.present)({ request: requests[index], env: interviewEnv, signal });
       signal?.throwIfAborted();
       if (result?.status === 'unavailable') {
         // Native callbacks only run after Git exits. Keep that explicit fallback
-        // for environments where a separate human terminal cannot be opened.
+        // for noninteractive environments without a local browser handoff.
         for (const { session } of pending.slice(index)) {
           await queue(session, { env });
           output(`Outside a supported agent, run sphinx check --id ${session.id} in your terminal.`);
         }
-        output('Sphinx: no separate human terminal is available. This Git operation was stopped. Complete the queued check, then start the Git operation again.');
+        output('Sphinx: no local questionnaire is available in this environment. This Git operation was stopped. Complete the queued check, then start the Git operation again.');
         return 1;
       }
       if (result?.status !== 'passed') {
@@ -90,7 +91,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
       }
     }
 
-    // Terminal exit status is only a wake-up signal. Every original destination
+    // The interview result is only a wake-up signal. Every original destination
     // needs a current receipt, including snapshots approved before the wait.
     for (const snapshot of snapshots) {
       await validate(snapshot, config);
@@ -105,5 +106,6 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   } finally {
     // A paused or cancelled batch must not reopen from an after-tool callback.
     for (const request of requests) await claim(request, { env });
+    await browser?.close();
   }
 }

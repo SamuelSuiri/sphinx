@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, writeFile, rename, chmod, lstat } from 'node:fs/promises';
+import { mkdir, open, writeFile, rename, chmod, lstat, unlink } from 'node:fs/promises';
 
 export const DEFAULT_CONFIG = {
   version: 1, enabled: true, provider: 'openrouter', model: 'openrouter/free',
@@ -49,12 +49,18 @@ export async function readJson(file, fallback) {
   } finally { await handle?.close(); }
 }
 
-export async function writeJson(file, value) {
+export async function writeJson(file, value, { signal } = {}) {
+  signal?.throwIfAborted();
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  await rename(tmp, file);
-  await chmod(file, 0o600);
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx', signal });
+    signal?.throwIfAborted();
+    await rename(tmp, file);
+    await chmod(file, 0o600);
+  } finally {
+    await unlink(tmp).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
 }
 
 export function validateConfig(config) {
@@ -165,10 +171,11 @@ export function stableStringify(value) {
 }
 export function policyHash(config) {
   // The call ceiling controls spending, not what the human must understand.
-  // Keep the historical default in the canonical representation so existing
-  // 10-call checkpoints retain their IDs when the user changes this ceiling.
-  // This compatibility constant must not follow DEFAULT_CONFIG.
-  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10 })).digest('hex');
+  // Normalize it independently of DEFAULT_CONFIG so allowance edits preserve
+  // checkpoint identity within the same assessment contract.
+  // Version the contract when assessment semantics change: older questions and
+  // receipts must not stand in for an assessment under the new requirements.
+  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, assessmentContract: 3 })).digest('hex');
 }
 
 export async function saveOpenRouterKey(key, env = process.env) {

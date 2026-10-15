@@ -105,7 +105,7 @@ export async function terminalCommand({ recordFile, token, home, platform = proc
     const shellCommand = ['/usr/bin/env', `SPHINX_HOME=${home}`, ...argv].map(quote).join(' ');
     // The AppleScript program is constant; its sole argument is already quoted
     // for the user's shell. No repository path is interpolated into AppleScript.
-    const script = 'on run argv\n  tell application "Terminal"\n    activate\n    do script (item 1 of argv)\n  end tell\nend run';
+    const script = 'on run argv\n  tell application "Terminal"\n    do script (item 1 of argv)\n  end tell\nend run';
     return { command: '/usr/bin/osascript', args: ['-e', script, '--', shellCommand], waitForExit: true, shellCommand };
   }
   if (platform !== 'linux' || (!env.DISPLAY && !env.WAYLAND_DISPLAY)) return null;
@@ -163,15 +163,16 @@ export async function checkpointTerminalStatus({ id, env = process.env, isAlive 
 }
 
 /** Native dialogs and dedicated terminals reserve the same exact checkpoint. */
-export async function claimCheckpointDialog({ request, env = process.env, pid = process.pid, isAlive = live } = {}) {
+export async function claimCheckpointDialog({ request, env = process.env, pid = process.pid, isAlive = live, kind = 'native' } = {}) {
   if (!request || !ID.test(request.id) || !TOKEN.test(request.token) || !path.isAbsolute(request.repoRoot) || request.repoRoot.includes('\0') || !Number.isInteger(pid) || pid <= 0) throw new Error('Invalid native checkpoint reservation.');
+  if (!['native', 'browser'].includes(kind)) throw new Error('Invalid checkpoint presentation kind.');
   if (env.SPHINX_EVALUATOR === '1') return { status: 'busy', id: request.id };
   const file = fileFor(request.id, env), home = getPaths(env).home;
   const result = await lock(file, async () => {
     const current = await checkpointTerminalStatus({ id: request.id, env, isAlive });
     if (['starting', 'running'].includes(current?.status)) return { status: 'busy', id: request.id };
     const token = randomUUID(), at = Date.now();
-    await writeJson(file, { version: 1, id: request.id, token, presentationToken: request.token, repoRoot: request.repoRoot, home, kind: 'native', status: 'running', pid, createdAt: at, updatedAt: at });
+    await writeJson(file, { version: 1, id: request.id, token, presentationToken: request.token, repoRoot: request.repoRoot, home, kind, status: 'running', pid, createdAt: at, updatedAt: at });
     return { status: 'claimed', id: request.id, token };
   });
   return result.status === 'busy' ? { status: 'busy', id: request.id } : result;
@@ -187,7 +188,7 @@ export async function finishCheckpointDialog({ id, token, status, env = process.
   do {
     result = await lock(file, async () => {
       const current = await readJson(file, null);
-      if (current?.version !== 1 || current.id !== id || current.token !== token || current.kind !== 'native' || current.status !== 'running') return { status: 'ignored', id };
+      if (current?.version !== 1 || current.id !== id || current.token !== token || !['native', 'browser'].includes(current.kind) || current.status !== 'running') return { status: 'ignored', id };
       const at = Date.now();
       await writeJson(file, { ...current, status, updatedAt: at, finishedAt: at });
       return { status, id };

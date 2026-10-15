@@ -47,14 +47,28 @@ async function fixture(t, options = {}) {
     const session = await store.ensure(change, config);
     Object.assign(session, {
       calls: 7, preparation: { status: 'failed', completedAt: '2026-01-01T00:00:00.000Z' },
-      // Legacy checkpoints hashed the actual ten-call config without normalization.
-      policy: createHash('sha256').update(stableStringify(config)).digest('hex'),
     }, structuredClone(patch));
     await writeJson(sessionFile(change.id, env), session);
     return structuredClone(session);
   }
   return { store, env, config, invoked, seed, setGlobal };
 }
+
+test('a new assessment contract rejects old questions and receipts without erasing usage', async t => {
+  for (const status of ['active', 'passed']) {
+    const f = await fixture(t);
+    const oldPolicy = createHash('sha256').update(stableStringify(f.config)).digest('hex');
+    const before = await f.seed({ policy: oldPolicy, status, questions: [question], review,
+      index: status === 'passed' ? 1 : 0, expiresAt: new Date(Date.now() + 3600000).toISOString() });
+    await f.setGlobal({ maxModelCalls: 20 });
+    const current = { ...f.config, maxModelCalls: 20 };
+    assert.equal(await f.store.approved(snapshot, current), false);
+    await assert.rejects(f.store.refreshBudget(snapshot.id, current), /settings changed/);
+    await assert.rejects(f.store.start(snapshot.id, current), /settings changed/);
+    assert.deepEqual(await f.store.read(snapshot.id), before);
+    assert.deepEqual(f.invoked, { generate: 0, grade: 0 });
+  }
+});
 
 test('a global ceiling edit adopts 7/20 without a top-up, new checkpoint, or inference', async t => {
   const f = await fixture(t);

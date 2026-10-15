@@ -86,6 +86,24 @@ test('invalid limits fail before writing while both documented boundaries are ac
   assert.equal(JSON.parse(f.ok(['config', '--max-model-calls', '100', '--json'])).maxModelCalls, 100);
 });
 
+test('output-token allowance is explicit, bounded, and preserves model routes and total calls', async t => {
+  const f = await fixture(t);
+  const before = JSON.parse(f.ok(['config', '--json']));
+  const saved = JSON.parse(f.ok(['config', '--max-output-tokens', '8192', '--json']));
+  assert.deepEqual(saved.config, { ...before, maxOutputTokens: 8192 });
+  assert.equal(saved.maxModelCalls, before.maxModelCalls);
+  const original = await readFile(f.configPath, 'utf8');
+  for (const value of ['0', '511', '16385', '-1', '8192.5', '8e3', '', 'many']) {
+    const result = f.run(['config', `--max-output-tokens=${value}`, '--json']);
+    assert.equal(result.status, 1, value);
+    assert.match(result.stderr, /whole number from 512 to 16384/);
+    assert.equal(await readFile(f.configPath, 'utf8'), original);
+  }
+  for (const value of ['512', '16384']) assert.equal(JSON.parse(f.ok(['config', '--max-output-tokens', value, '--json'])).config.maxOutputTokens, Number(value));
+  await f.absent(path.join(f.state, 'sessions'));
+  await f.absent(f.env.GIT_CONFIG_GLOBAL);
+});
+
 test('install accepts the total call limit, preserves it on rerun, and rejects invalid values before setup', async t => {
   const f = await fixture(t);
   const invalid = f.run(['install', '--yes', '--provider', 'claude', '--agents', 'none', '--max-model-calls', '101']);
@@ -108,7 +126,7 @@ test('configuration help documents the setter without saving and text output sep
   await f.absent(f.configPath);
   const output = f.ok(['config', '--max-model-calls', '30']).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\s+/g, ' ');
   assert.match(output, /Saved machine-wide limit: 30 model calls per assessment/);
-  assert.match(output, /Per-review caps remain small 3, medium 5, large 8/);
+  assert.match(output, /Normal audited review caps: small 5, medium 7, large 8/);
 });
 
 test('a fresh unattended installation requires a reviewer choice before writing hooks or credentials', async t => {
@@ -175,10 +193,14 @@ test('paid presets need an explicit flag or previously saved paid permission', a
   const value = JSON.parse(f.ok(['config', '--preset', 'openrouter-value', '--allow-paid', '--json']));
   assert.equal(value.config.allowPaid, true);
   assert.deepEqual(value.config.models, {
-    small: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
-    medium: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
-    large: { provider: 'openrouter', model: 'qwen/qwen3-coder' },
+    small: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
+    medium: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
+    large: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
   });
+  assert.equal(value.config.maxOutputTokens, 8192);
+  assert.equal(value.config.maxModelCalls, 20);
+  const override = JSON.parse(f.ok(['config', '--preset', 'openrouter-value', '--max-output-tokens', '6144', '--json']));
+  assert.equal(override.config.maxOutputTokens, 6144);
   const alternative = JSON.parse(f.ok(['config', '--preset', 'openrouter-deepseek', '--json']));
   for (const route of Object.values(alternative.config.models)) assert.deepEqual(route, { provider: 'openrouter', model: 'deepseek/deepseek-v3.2' });
   await f.absent(path.join(f.state, 'credentials.json'));

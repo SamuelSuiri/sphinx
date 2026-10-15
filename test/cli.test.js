@@ -21,18 +21,19 @@ process.stdin.on('end', () => {
   if (process.env.SPHINX_TEST_FAILURE === '1') process.exit(23);
   const data = JSON.parse(input.slice(input.lastIndexOf('\\n')+1));
   const evidence = [{path:'app.js',reason:'The set records IDs before enqueue returns, so duplicate IDs are rejected in one process.'}];
-  const question = {id:'duplicate',concept:'deduplication lifetime',prompt:'In the same running process, enqueue receives the same ID twice. Does the second request enqueue again? Explain why.',choices:['Yes','No'],expectedAnswer:'No, the set already contains the ID.',rationale:'Membership is checked before insertion. The second call returns false.',evidence};
-  const followUp = {...question,id:'restart',prompt:'After the process restarts, the same ID arrives again. Can this implementation enqueue it? Explain why.',expectedAnswer:'Yes. The in-memory set is recreated on restart.',rationale:'The deduplication state is only an in-memory set.'};
+  const question = {id:'duplicate',concept:'deduplication lifetime',prompt:'In the same running process, enqueue receives the same ID twice. Does the second request enqueue again? Explain why.',choices:[],expectedAnswer:'No, the set already contains the ID.',rationale:'Membership is checked before insertion. The second call returns false.',acceptance:{prediction:'The repeated ID does not enqueue again in the same process.',causalReason:'The existing set membership is checked before insertion.'},evidence};
+  const followUp = {...question,id:'restart',prompt:'After the process restarts, the same ID arrives again. Can this implementation enqueue it? Explain why.',expectedAnswer:'Yes. The in-memory set is recreated on restart.',rationale:'The deduplication state is only an in-memory set.',acceptance:{prediction:'The same ID can enqueue after a process restart.',causalReason:'The process-local set is recreated empty on restart.'}};
   let result;
-  if (!data.question) {
+  if (data.proposedQuestions) result = {questions:data.proposedQuestions,feedback:'The proposed questions match the supplied source observations.'};
+  else if (!data.question) {
     const observations = (data.conversation || []).filter(item => item.content.startsWith('Workspace observation')).map(item => JSON.parse(item.content.slice(item.content.indexOf('\\n')+1)));
     result = observations.length
       ? {action:'finish',calls:[],assessment:{questions:[question]},summary:'The changed enqueue path uses process-local ID membership.',evidenceIds:observations.map(item=>item.id)}
       : {action:'tools',calls:[{name:'read_diff',arguments:JSON.stringify({path:'app.js'})}],assessment:null,summary:'',evidenceIds:[]};
   }
-  else if (data.humanAnswer === 'WRONG' || data.humanAnswer.startsWith('I do not know')) result = {verdict:'incorrect',feedback:'The set belongs to this process. It rejects duplicate IDs until the process restarts; the state is not persisted.',evidence,followUp};
-  else if (data.dispute) result = {verdict:'ambiguous',feedback:'The assumptions need clarification.',evidence,followUp};
-  else result = {verdict:'correct',feedback:'You connected the observable result to the lifetime of the stored IDs.',evidence,followUp:null};
+  else if (data.humanAnswer === 'WRONG' || data.humanAnswer.startsWith('I do not know')) result = {questionValid:true,verdict:'incorrect',feedback:'The set belongs to this process. It rejects duplicate IDs until the process restarts; the state is not persisted.',evidence,followUp};
+  else if (data.dispute) result = {questionValid:true,verdict:'ambiguous',feedback:'The assumptions need clarification.',evidence,followUp};
+  else result = {questionValid:true,verdict:'correct',feedback:'You connected the observable result to the lifetime of the stored IDs.',evidence,followUp:null};
   process.stdout.write(JSON.stringify({type:'result',subtype:'success',structured_output:result}));
 });
 `;
@@ -103,11 +104,12 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   assert.equal(first.status, 'active');
   assert.equal(first.question.id, 'duplicate');
   assert.equal(Object.hasOwn(first.question, 'expectedAnswer'), false);
+  assert.equal(Object.hasOwn(first.question, 'acceptance'), false);
   assert.equal(Object.hasOwn(first.question, 'rationale'), false);
-  assert.equal((await f.calls()).length, 2);
+  assert.equal((await f.calls()).length, 3);
   // Resuming an existing interview does not spend another generation call.
   assert.equal(f.cliJson('check').question.id, 'duplicate');
-  assert.equal((await f.calls()).length, 2);
+  assert.equal((await f.calls()).length, 3);
   const wrong = f.cliJson('answer', first.id, '--text', 'WRONG');
   assert.equal(wrong.verdict, 'incorrect');
   assert.equal(wrong.status, 'active');
@@ -116,7 +118,12 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   assert.notEqual(wrong.question.prompt, first.question.prompt);
   assert.match(wrong.feedback, /not persisted/);
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
-  assert.equal((await f.calls()).length, 3);
+  const afterWrong = await f.calls();
+  assert.equal(afterWrong.length, 5, 'Incorrect grading and the independent transfer-question audit each consume one call');
+  const transferAudit = JSON.parse(afterWrong.at(-1).input.split('\n').at(-1));
+  assert.equal(transferAudit.auditPurpose, 'followUp');
+  assert.equal(transferAudit.proposedQuestions[0].id, 'restart');
+  assert.equal(transferAudit.humanAnswer, undefined, 'The replacement audit must be independent of the human answer');
   const passed = f.cliJson('answer', first.id, '--text', 'Yes. Restart recreates the set, so it cannot remember the previous process\'s IDs.');
   assert.equal(passed.status, 'passed');
   assert.equal(passed.progress.completed, 1);
@@ -126,7 +133,7 @@ test('CLI blocks a push, conducts the learning loop, reuses completion, and reje
   f.git('push', 'origin', 'main');
   assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
   f.git('push', 'origin', 'main');
-  assert.equal((await f.calls()).length, 4);
+  assert.equal((await f.calls()).length, 6);
   assert.deepEqual(f.cliJson('pending'), []);
   await writeFile(path.join(f.repo, 'app.js'), `${f.app}\nexport const maxQueueSize = 100;\n`);
   f.git('add', 'app.js'); f.git('commit', '-qm', 'Expose queue limit');
@@ -154,10 +161,12 @@ test('CLI keeps a failed evaluator pending and enforces the checkpoint on retry'
   assert.equal(f.cliJson('pending')[0].status, 'pending');
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   const first = f.cliJson('check');
+  const beforeLearn = (await f.calls()).length;
   const learned = f.cliJson('explain', first.id);
   assert.equal(learned.status, 'active');
   assert.equal(learned.question.id, 'restart');
   assert.equal(learned.progress.completed, 0);
+  assert.equal((await f.calls()).length, beforeLearn + 2, 'Learning grades once and audits its replacement before display');
 });
 
 test('CLI explicitly retries a failed review without erasing prior usage or resetting active questions', { timeout: 30000 }, async t => {
@@ -445,12 +454,12 @@ test('Git triggers a native questionnaire, direct human replies complete it, and
   const hookOutput = JSON.parse(completed.result.content[0].text);
   assert.equal(hookOutput.hookSpecificOutput.hookEventName, 'PostToolUseFailure');
   assert.match(hookOutput.hookSpecificOutput.additionalContext, /retry/i);
-  assert.equal((await f.calls()).length, 4);
+  assert.equal((await f.calls()).length, 6);
   assert.deepEqual(f.cliJson('pending'), []);
   f.git('push', 'origin', 'main');
   client.hook(3);
   assert.equal((await client.next(message => message.id === 3)).result.structuredContent.status, 'not-required');
-  assert.equal((await f.calls()).length, 4);
+  assert.equal((await f.calls()).length, 6);
   client.child.stdin.end();
 });
 
@@ -465,12 +474,12 @@ test('cancelled native forms do not reopen on unrelated tools; retrying Git resu
   assert.equal((await client.next(message => message.id === 2)).result.structuredContent.status, 'pending');
   client.hook(3);
   assert.equal((await client.next(message => message.id === 3)).result.structuredContent.status, 'not-required');
-  assert.equal((await f.calls()).length, 2);
+  assert.equal((await f.calls()).length, 3);
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   client.hook(4);
   const resumed = await client.next(message => message.method === 'elicitation/create');
   assert.equal(resumed.params.message, first.params.message);
-  assert.equal((await f.calls()).length, 2);
+  assert.equal((await f.calls()).length, 3);
   client.send({ id: resumed.id, result: { action: 'accept', content: { action: 'answer', response: 'No, the set already contains the ID.' } } });
   assert.equal((await client.next(message => message.id === 4)).result.structuredContent.status, 'passed');
   f.git('push', 'origin', 'main');
@@ -561,7 +570,7 @@ test('post-commit preparation investigates before push and the native gate reuse
   assert.equal(status.pending.length, 1);
   assert.equal(status.pending[0].status, 'active');
   const generated = await f.calls();
-  assert.equal(generated.length, 2, 'Reviewer requested a diff, read its observation, then finished before any push');
+  assert.equal(generated.length, 3, 'Reviewer requested a diff, read its observation, then audited the questions before any push');
   assert.ok(generated.every(call => call.input.includes(projectContext)));
   assert.ok(generated[1].input.includes('Workspace observation'));
   assert.equal(generated.some(call => call.input.includes('do-not-transmit-92bfa')), false);
@@ -570,11 +579,11 @@ test('post-commit preparation investigates before push and the native gate reuse
   const client = await nativeClient(f, t); client.hook(2);
   const form = await client.next(message => message.method === 'elicitation/create');
   assert.match(form.params.message, /same ID twice/);
-  assert.equal((await f.calls()).length, 2, 'The native questionnaire reuses preparation without more review calls');
+  assert.equal((await f.calls()).length, 3, 'The native questionnaire reuses preparation without more review calls');
   client.send({ id: form.id, result: { action: 'accept', content: { action: 'answer', response: 'No, the set retains that ID in this process.' } } });
   assert.equal((await client.next(message => message.id === 2)).result.structuredContent.status, 'passed');
   const calls = await f.calls();
-  assert.equal(calls.length, 3); assert.ok(calls[2].input.includes(projectContext));
+  assert.equal(calls.length, 4); assert.ok(calls[3].input.includes(projectContext));
   f.git('push', 'origin', 'main');
   assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
   client.child.stdin.end();

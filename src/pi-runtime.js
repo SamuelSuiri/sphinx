@@ -7,10 +7,19 @@ import { AssistantMessageEventStream, InMemoryCredentialStore, InMemoryModelsSto
 const size = value => Buffer.byteLength(JSON.stringify(value));
 
 /** Embed Pi's real AgentSession, with no ambient resources, tools or credentials. */
-export async function runPiSession({ systemPrompt, prompt, tools, request, maxContextBytes, maxOutputTokens, signal, onCompaction, canCompact = () => true }) {
+export async function runPiSession({ systemPrompt, prompt, tools, request, maxContextBytes, maxOutputTokens, signal, onCompaction, canCompact = () => true, entries, onCheckpoint }) {
   signal.throwIfAborted();
   const directory = await mkdtemp(join(tmpdir(), 'sphinx-reviewer-'));
-  let session, fatal;
+  let session, fatal, sessionManager;
+  let saving = Promise.resolve();
+  const persist = () => {
+    if (!onCheckpoint || !sessionManager) return saving;
+    const state = structuredClone([sessionManager.getHeader(), ...sessionManager.getEntries()]);
+    saving = saving.then(() => onCheckpoint(state));
+    // Subscribers cannot await. The next request/tool boundary and finally do.
+    saving.catch(error => { fatal ??= error; });
+    return saving;
+  };
   const abort = () => { void session?.abort(); };
   try {
     const contextWindow = Math.max(256, Math.floor(maxContextBytes / 4));
@@ -37,6 +46,7 @@ export async function runPiSession({ systemPrompt, prompt, tools, request, maxCo
         try {
           if (fatal) throw fatal;
           signal.throwIfAborted();
+          await persist();
           const result = await request({
             systemPrompt: getCurrentSystemPrompt(context.messages), tools: getCurrentTools(context.messages),
             messages: context.messages.filter(message => message.role !== 'system'),
@@ -78,31 +88,41 @@ export async function runPiSession({ systemPrompt, prompt, tools, request, maxCo
       getSystemPromptSource: () => undefined, getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
       extendResources: () => {}, reload: async () => {},
     };
+    sessionManager = SessionManager.inMemory(directory, undefined, entries);
     ({ session } = await createAgentSession({
       cwd: directory, agentDir: directory, modelRuntime, model: modelRuntime.getModel(provider, 'selected-route'),
-      thinkingLevel: 'off', resourceLoader, sessionManager: SessionManager.inMemory(directory), settingsManager,
+      thinkingLevel: 'off', resourceLoader, sessionManager, settingsManager,
       tools: tools.map(tool => tool.name), noTools: 'builtin',
       customTools: tools.map(tool => ({ ...tool, label: tool.name, execute: async (...args) => {
         if (fatal) throw fatal;
         try {
           const result = await tool.execute(...args);
-          if (result.terminate) settingsManager.setCompactionEnabled(false);
+          // A rejected finalization can reopen bounded repair allowance. Restore
+          // Pi compaction at this boundary when that allowance can cover it.
+          settingsManager.setCompactionEnabled(!result.terminate && canCompact());
           return result;
-        } catch (error) { fail(error); settingsManager.setCompactionEnabled(false); throw error; }
+        } catch (error) {
+          if (!error.recoverable) { fail(error); settingsManager.setCompactionEnabled(false); }
+          throw error;
+        }
       } })),
     }));
     session.agent.toolExecution = 'sequential';
     session.subscribe(event => {
       if (event.type === 'compaction_end' && event.result) onCompaction?.(event.result);
+      if (event.type === 'turn_end' || event.type === 'compaction_end') void persist();
     });
     signal.addEventListener('abort', abort, { once: true });
     signal.throwIfAborted();
     await session.prompt(prompt);
+    await persist();
     signal.throwIfAborted();
     if (fatal) throw fatal;
   } finally {
+    try { await persist(); } finally {
     signal.removeEventListener('abort', abort);
     session?.dispose();
     await rm(directory, { recursive: true, force: true });
+    }
   }
 }

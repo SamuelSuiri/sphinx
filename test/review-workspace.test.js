@@ -119,6 +119,46 @@ test('ignore layers, traversal, magic paths, and symlinks cannot expose excluded
   assert.doesNotMatch(JSON.stringify(workspace.evidenceLog), /DO_NOT_READ/);
 });
 
+test('root directory aliases list and search filtered files without loosening exact paths', async t => {
+  const f = await fixture(t);
+  await f.put({
+    '.sphinxignore': 'private/\n',
+    '.env': 'needle SECRET_ENV\n',
+    'private/notes.txt': 'needle SECRET_PRIVATE\n',
+    'root.js': 'needle root\n',
+    'src/nested.js': 'needle nested\n',
+  });
+  await symlink('.env', join(f.cwd, 'link'));
+  await f.commit({});
+  const forbiddenOids = await Promise.all(['.env', 'private/notes.txt', 'link'].map(path => f.git('rev-parse', `HEAD:${path}`)));
+  const calls = await f.spy();
+  const workspace = await f.workspace();
+  const listed = success(await workspace.execute('list_files'));
+  assert.deepEqual(listed.files.map(file => file.path), ['.sphinxignore', 'link', 'root.js', 'src/nested.js']);
+  const searched = success(await workspace.execute('search', { query: 'needle' }));
+  assert.deepEqual(searched.matches.map(match => match.path), ['root.js', 'src/nested.js']);
+  for (const prefix of ['', '.', './']) {
+    const args = Object.freeze({ prefix });
+    assert.deepEqual(success(await workspace.execute('list_files', args)), listed);
+    assert.equal(args.prefix, prefix, 'normalization must not mutate caller arguments');
+    assert.deepEqual(success(await workspace.execute('search', { query: 'needle', prefix })), searched);
+  }
+  assert.deepEqual(success(await workspace.execute('list_files', { prefix: 'src/' })).files.map(file => file.path), ['src/nested.js']);
+  for (const prefix of ['../', './src/', 'src/../', '/']) {
+    assert.equal((await workspace.execute('list_files', { prefix })).error.code, 'INVALID_PATH');
+    assert.equal((await workspace.execute('search', { query: 'needle', prefix })).error.code, 'INVALID_PATH');
+  }
+  for (const path of ['.', './', './root.js']) {
+    assert.equal((await workspace.execute('read_file', { path })).error.code, 'INVALID_PATH');
+    assert.equal((await workspace.execute('read_diff', { path })).error.code, 'INVALID_PATH');
+    assert.equal((await workspace.execute('search', { query: 'needle', paths: [path] })).error.code, 'INVALID_PATH');
+  }
+  for (const args of await calls()) {
+    if (args.includes('blob') || args.includes('-s')) assert.ok(!forbiddenOids.includes(args.at(-1)), 'root aliases must not read excluded files or symlink targets');
+  }
+  assert.doesNotMatch(JSON.stringify(workspace.evidenceLog), /SECRET_ENV|SECRET_PRIVATE/);
+});
+
 test('UTF-8 and JSON-escaped text paginate without gaps, repetition, or oversized results', async t => {
   const f = await fixture(t, { toolResultBytes: 1000 });
   const body = `${'🙂"\\\t'.repeat(400)}\nsecond line\nthird line\n`;
