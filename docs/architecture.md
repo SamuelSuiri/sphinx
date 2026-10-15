@@ -36,6 +36,7 @@ flowchart LR
 | `ignore.js` | Sensitive-file exclusions and project/global patterns |
 | `git.js` | Deterministic triggers, filtered object/index evidence, snapshot identities |
 | `routing.js` | Line/file/path tiers, depth-dependent question ceilings, and user-selected model routes |
+| `model-presets.js` | Explicit economy presets, per-tier routes, billing descriptions, and reference sources |
 | `evaluator.js` | Fresh CLI evaluator processes, question/rubric schemas, output validation |
 | `reviewer.js` | Pi reviewer integration, exact observation archive, assessment validation, review budgets |
 | `pi-runtime.js` | Isolated Pi SDK session, model-transport bridge, native compaction, cancellation, cleanup |
@@ -61,6 +62,8 @@ flowchart LR
 ## Repository policy and terminal interaction
 
 Machine-wide settings live in `$SPHINX_HOME/config.json`. A repository's canonical policy is JSON stored in `.sphinxconfig`. If that file is absent, the loader accepts legacy `.sphinx.json`. When both are present, canonical policy wins without merging the legacy file. Repository policy can control triggers, question depth, blocking mode, and exclusions; model routes, authentication, and usage budgets remain machine-wide. Repository exclusions add to machine-wide exclusions.
+
+Reviewer presets write concrete per-tier routes into the global configuration. They are not dynamic model selectors: updating the preset catalog does not migrate saved models or trigger fallback. `sphinx config --preset <id>` and the `--small`, `--medium`, and `--large` flags edit those routes without reinstalling or invoking inference. Model-route changes remain part of assessment identity and invalidate reuse under the previous policy. The internal `openrouter/free` default remains for legacy configuration and checkpoint identity compatibility; new unattended installations require a preset or explicit route rather than accepting it silently.
 
 `sphinx init` guides the user through event, branch, depth, mode, remote, and project-context choices. Branch defaults come from effective configuration rather than the currently checked-out branch. The initializer writes `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md` only when absent. It can copy a legacy policy into the canonical file while retaining the original. Rerunning setup preserves existing files and does not silently apply new flags over them.
 
@@ -122,6 +125,10 @@ The existing line, file-count, and consequential-path rules deterministically se
 
 The evaluator must return at least one question and may use fewer than the ceiling when fewer distinct behaviors are supported. It must not invent extra concerns to fill the budget. Model routes remain independent of depth. `maxOutputTokens` is preserved across all tiers; OpenRouter enforces it, while CLI evaluators receive concise-output instructions and local process limits.
 
+The economy CLI presets select `codex:gpt-6-luna` or `claude:haiku` for all tiers, preserving the cheaper model while effort and review ceilings scale. The paid OpenRouter value preset selects `qwen/qwen3-coder-next` for small/medium and `qwen/qwen3-coder` for large. An alternative selects `deepseek/deepseek-v3.2` for every tier. These are transparent starting configurations, not measured guarantees of Sphinx assessment quality. OpenRouter routes consume API credits separately from coding-agent plans; Codex and Claude routes consume the selected CLI account's allowance. Pi, Cursor, and OpenCode client integrations do not supply a model transport or reuse those clients' credentials.
+
+OpenRouter request parameters require compatible provider endpoints; model-level capability lists can combine capabilities from different endpoints. The paid presets were checked against the public endpoint API on October 14, 2026 for native tools, `tool_choice`, `response_format`, and structured-output support. Reference per-million input/output rates were $0.12/$0.80 for Coder Next, $0.22/$1.80 or $0.30/$1.00 for Coder, and $0.26/$0.38 at compatible DeepSeek endpoints. The cheapest advertised DeepSeek endpoint lacked structured-output support. These are reference rates, not price ceilings or a reliability evaluation. OpenRouter's default Auto Exacto routing considers tool-call quality; explicitly sorting by price disables that routing step. Sphinx still validates every response and does not turn missing tool calls or invalid output into completion.
+
 Snapshot IDs include repository identity, exact objects/index, destination, effective policy, ignore-policy hash, and project-context hash. Ignored files affect immutable object identity but their contents never enter evidence. Before model calls, tool use, and completion, Sphinx revalidates local source/index and policies. The eventual Git hook compares a fresh destination snapshot to the completion record, so a changed remote base also invalidates reuse.
 
 `pending → active → passed` is the main state sequence. Wrong answers teach the missed concept and replace its question with a new transfer scenario without advancing progress or adding another concept. Retries can exceed the initial question count, subject to the model-call budget. Ambiguity remains active. Calls are charged against the local request budget before invocation, including failed attempts. Per-session file locks prevent simultaneous grading and duplicate generation; expected question IDs reject stale responses. Native cancellation is checked before committing grading progress or completion. Private state files use mode `0600`; public JSON deliberately omits rubrics and full source evidence.
@@ -137,6 +144,8 @@ For a one-attempt extension without changing the global ceiling, `check --id <id
 A global Git `core.hooksPath` points to Sphinx dispatchers. Existing hooks are chained with their arguments and input preserved. Unrelated hook protocols are forwarded directly so interactive/streaming hooks are not buffered. Repository-level overrides need `sphinx install --repo` to wrap the repository's effective hook directory.
 
 The installation manifest tracks original settings and the exact files/handlers Sphinx created. Uninstall restores only configuration it still owns; subsequent edits are preserved. `--agents auto` detects Codex, Claude, Pi, Cursor, and OpenCode from executables, configuration directories, or an existing installation record. An explicit comma-separated subset selects integrations; `none` selects Git-only setup.
+
+Interactive setup begins with coding-agent checkboxes, with All supported agents first, then offers economy reviewer presets based on the selected clients. Users can choose paid OpenRouter, free OpenRouter as an explicit best-effort option, or custom per-tier routes. Existing configurations retain their saved routes unless the user selects a replacement. A deliberate paid selection in guided setup supplies consent; unattended `install --preset` and `config --preset` require `--allow-paid` or an existing paid-enabled setting. Fresh unattended installation without a preset or explicit reviewer route stops before installing. Credential setup remains separate, uses hidden input for OpenRouter keys, and makes no model request.
 
 Codex and Claude integrations register a local stdio MCP server and inject guidance at session start. Codex uses a native `PostToolUse` MCP tool hook for `Bash`; Claude uses `PostToolUse` and `PostToolUseFailure` for `Bash`. Pi installs `extensions/sphinx.js` under `PI_CODING_AGENT_DIR` or `~/.pi/agent`; a new session or `/reload` loads it. Cursor adds `sessionStart`, `postToolUse`, and `postToolUseFailure` handlers to `~/.cursor/hooks.json`. OpenCode installs `plugins/sphinx.js` in its configuration directory, honoring `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME`, without rewriting `opencode.json` or JSONC settings.
 
@@ -167,3 +176,10 @@ The Git hook remains the canonical local checkpoint. Client integrations consume
 - [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
 - [OpenRouter tool calling](https://openrouter.ai/docs/guides/features/tool-calling)
 - [OpenRouter provider price limits](https://openrouter.ai/docs/guides/routing/provider-selection)
+- [OpenRouter Auto Exacto routing](https://openrouter.ai/docs/guides/routing/auto-exacto)
+- [Qwen3 Coder Next endpoints](https://openrouter.ai/api/v1/models/qwen/qwen3-coder-next/endpoints)
+- [Qwen3 Coder endpoints](https://openrouter.ai/api/v1/models/qwen/qwen3-coder/endpoints)
+- [DeepSeek V3.2 endpoints](https://openrouter.ai/api/v1/models/deepseek/deepseek-v3.2/endpoints)
+- [Qwen3 Coder Next model card](https://huggingface.co/Qwen/Qwen3-Coder-Next)
+- [Codex model configuration](https://learn.chatgpt.com/docs/models)
+- [Claude model configuration](https://code.claude.com/docs/en/model-config)

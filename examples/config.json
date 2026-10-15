@@ -2,7 +2,7 @@
   "version": 1,
   "enabled": true,
   "provider": "openrouter",
-  "model": "openrouter/free",
+  "model": "qwen/qwen3-coder-next",
   "level": "standard",
   "mode": "block",
   "events": [
@@ -21,7 +21,7 @@
   "receiptHours": 24,
   "maxModelCalls": 20,
   "maxOutputTokens": 4096,
-  "allowPaid": false,
+  "allowPaid": true,
   "agentMaxTurns": 8,
   "toolResultBytes": 16000,
   "backgroundPreparation": true,
@@ -29,15 +29,15 @@
   "models": {
     "small": {
       "provider": "openrouter",
-      "model": "openrouter/free"
+      "model": "qwen/qwen3-coder-next"
     },
     "medium": {
       "provider": "openrouter",
-      "model": "openrouter/free"
+      "model": "qwen/qwen3-coder-next"
     },
     "large": {
       "provider": "openrouter",
-      "model": "openrouter/free"
+      "model": "qwen/qwen3-coder"
     }
   },
   "routing": {

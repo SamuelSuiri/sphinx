@@ -19,19 +19,23 @@ sphinx install
 
 The package is not published to a registry yet. There is no account or hosted Sphinx service.
 
-Onboarding selects destination branches, Git events, question depth, and models for small, medium, and large changes. Defaults are pushes to `main` or `master`, standard depth, and `openrouter/free` for every tier.
+Onboarding starts by asking which coding agents you use, then offers economical reviewer presets for those clients. Codex uses GPT-6 Luna; Claude Code uses Haiku. You can instead choose paid OpenRouter coding models or enter your own routes for small, medium, and large changes. Git defaults are pushes to `main` or `master` at standard depth. Existing installations keep their saved models unless you choose a replacement.
 
-**OpenRouter's free models require an API key.** The installer accepts an existing `OPENROUTER_API_KEY` or prompts for a key with hidden input. Create one at [OpenRouter's key settings](https://openrouter.ai/settings/keys). Sphinx stores a supplied key in a user-only `credentials.json` file outside your repositories (mode `0600`); this is a local file, not an OS keychain. `sphinx auth` replaces it later. Keys are never stored in project configuration.
+**Every OpenRouter route requires an API key, including free models.** The installer accepts an existing `OPENROUTER_API_KEY` or prompts for a key with hidden input. Create one at [OpenRouter's key settings](https://openrouter.ai/settings/keys). Paid routes also need OpenRouter credits. Sphinx stores a supplied key in a user-only `credentials.json` file outside your repositories (mode `0600`); this is a local file, not an OS keychain. `sphinx auth` replaces it later. Keys are never stored in project configuration.
 
-Using OpenRouter sends the filtered evidence to OpenRouter and its selected model provider. Choosing an installed coding agent instead uses that CLI's existing authentication and consumes its usage allowance:
+Using OpenRouter sends filtered evidence to OpenRouter and its selected model provider, billed separately from your coding-agent plan. Codex and Claude reviewer routes use that CLI's existing authentication and consume its allowance. For unattended installation, choose a preset explicitly:
 
 ```sh
-sphinx install --yes --provider codex
+sphinx install --yes --preset codex-economy
 # or
-sphinx install --yes --provider claude
+sphinx install --yes --preset claude-economy
+# or, using paid OpenRouter credits
+sphinx install --yes --preset openrouter-value --allow-paid
 ```
 
-You need a recent, signed-in CLI for the selected backend. Sphinx does not automatically switch providers if authentication, availability, or output validation fails.
+Fresh `install --yes` requires a preset or an explicit reviewer route; it does not silently choose a free model. Reinstalling an existing configuration preserves its routes. The free OpenRouter router remains an explicit best-effort option (`--preset openrouter-free`); its model selection, rate limits, and tool support can interrupt a check. Sphinx does not automatically switch providers or upgrade models after a failure.
+
+You need a recent, signed-in CLI with access to the selected model for Codex or Claude review. Pi, Cursor, and OpenCode integrations present checkpoints, but do not supply reviewer authentication or models. Their users choose an installed Codex/Claude CLI transport or OpenRouter separately.
 
 The independent reviewer runs in an embedded [Pi SDK](https://pi.dev/docs/latest/sdk) session. OpenRouter supplies model responses directly. The Codex and Claude routes use fresh, isolated CLI calls as model transports underneath Pi; their CLI sign-in and usage allowance are reused, while Pi runs the reviewer's tool loop and context management.
 
@@ -57,7 +61,7 @@ Interactive installation opens clients by default. Use `--no-launch` to defer th
 
 ```sh
 sphinx install --no-launch
-sphinx install --yes --launch
+sphinx install --yes --preset codex-economy --launch
 sphinx activate
 sphinx activate --agents codex,claude
 ```
@@ -133,7 +137,7 @@ sphinx help check
 | `pending` | List unfinished checks |
 | `answer`, `explain`, `dispute` | Respond, learn a concept, or challenge a question |
 | `status` | Inspect this repository's policy and pending work |
-| `config` | Inspect effective settings; set the machine-wide call ceiling with `--max-model-calls` |
+| `config` | Inspect settings or change machine-wide reviewer presets, model routes, and call ceiling |
 | `doctor` | Check hook and agent integration coverage |
 | `auth` | Save or replace your OpenRouter key |
 | `uninstall` | Remove integrations while preserving unrelated settings |
@@ -197,11 +201,11 @@ sphinx dispute <assessment-id> --text 'Why the premise is wrong' --json
 
 Routing is deterministic and makes no model request of its own. The default heuristics use **added plus deleted lines**, file count, and configurable consequential path terms:
 
-| Tier | Default rule | Default evaluator |
-| --- | --- | --- |
-| Small | At most 80 changed lines and 3 files | `openrouter/free` |
-| Medium | Between the small and large thresholds | `openrouter/free` |
-| Large | At least 400 changed lines, 12 files, or a consequential path | `openrouter/free` |
+| Tier | Default rule |
+| --- | --- |
+| Small | At most 80 changed lines and 3 files |
+| Medium | Between the small and large thresholds |
+| Large | At least 400 changed lines, 12 files, or a consequential path |
 
 Consequential paths include names containing `auth`, `permission`, `migration`, `billing`, `payment`, `crypto`, `security`, or `terraform`. A matching path promotes a change to large even when the patch is tiny. A one-file change is not necessarily small: line count and consequential paths count too. These are configurable heuristics, not a semantic risk classification. Ignored files do not contribute to routing counts.
 
@@ -215,17 +219,31 @@ The same deterministic tier sets the question ceiling together with your chosen 
 
 These are ceilings, not quotas. The evaluator asks fewer questions when the evidence supports fewer distinct behaviors, with at least one question for an assessed change. It does not add filler to reach the ceiling. A wrong answer still leads to teaching and a replacement question about the same concept, so retries can exceed the initial question count while remaining within the model-call budget.
 
-`openrouter/free` selects among available free models; it is not itself a complexity router. Sphinx chooses the tier. Model routes choose who evaluates a tier; depth sets how many concepts it can assess. Changing models does not change the question ceiling. Until you choose separate routes, all tiers stay free:
+Sphinx chooses the tier and uses its saved model route. Depth sets how many concepts it can assess; changing models does not change the question ceiling. Presets are starting points you can change without reinstalling:
+
+| Preset | Small and medium | Large | Usage source |
+| --- | --- | --- | --- |
+| `codex-economy` | `codex:gpt-6-luna` | `codex:gpt-6-luna` | Your Codex CLI account |
+| `claude-economy` | `claude:haiku` | `claude:haiku` | Your Claude CLI account |
+| `openrouter-value` | `openrouter:qwen/qwen3-coder-next` | `openrouter:qwen/qwen3-coder` | Paid OpenRouter credits |
+| `openrouter-deepseek` | `openrouter:deepseek/deepseek-v3.2` | `openrouter:deepseek/deepseek-v3.2` | Paid OpenRouter credits |
+| `openrouter-free` | `openrouter:openrouter/free` | `openrouter:openrouter/free` | OpenRouter free availability and limits |
+
+Codex and Claude presets keep the economical model for all tiers; investigation effort and question count still scale with change size. The Claude `haiku` alias follows the available Haiku model. Neither preset automatically upgrades to a more expensive model. Model access and plan limits depend on your account; see [Codex models](https://learn.chatgpt.com/docs/models) and [Claude model configuration](https://code.claude.com/docs/en/model-config).
 
 ```sh
-# Route larger work to your existing coding-agent plan.
-sphinx install --yes \
-  --small openrouter:openrouter/free \
-  --medium claude:sonnet \
-  --large claude:opus
+# Change the saved reviewer routes without reinstalling.
+sphinx config --preset openrouter-value --allow-paid
+
+# Or choose each tier yourself.
+sphinx config --small claude:haiku --medium claude:haiku --large claude:sonnet
 ```
 
-Model names and access depend on the provider. Any paid OpenRouter route requires explicit `--allow-paid` or `allowPaid: true` in your global settings. Free routes send zero-price provider limits even when another route permits paid models. There are no automatic paid fallbacks or uncounted model requests. Automatic retries and cache warming are disabled. Free availability and account limits still apply; see [OpenRouter limits](https://openrouter.ai/docs/api_reference/limits).
+The paid OpenRouter presets use open-weight models with published coding and tool-use capabilities. Reference prices checked **October 14, 2026**, per million input/output tokens: [Qwen3 Coder Next](https://openrouter.ai/qwen/qwen3-coder-next) is $0.12/$0.80; [Qwen3 Coder](https://openrouter.ai/qwen/qwen3-coder) has a $0.22/$1.80 endpoint and a $0.30/$1.00 endpoint. [DeepSeek V3.2](https://openrouter.ai/api/v1/models/deepseek/deepseek-v3.2/endpoints) has compatible tool/structured-output endpoints at $0.26/$0.38. Rates and availability vary by endpoint and over time. For scale, 30,000 input tokens plus 2,000 output tokens costs about $0.0052 at the Coder Next reference rates; a whole check includes multiple requests and repeated context. These recommendations have not been evaluated for Sphinx question quality.
+
+Interactive setup labels paid choices before selection. Noninteractive commands require `--allow-paid` or an existing `allowPaid: true` setting to choose paid OpenRouter routes. Free routes send zero-price provider limits even when another route permits paid models. There are no automatic paid fallbacks or uncounted model requests. Automatic retries and cache warming are disabled. Free availability and account limits still apply; see [OpenRouter limits](https://openrouter.ai/docs/api_reference/limits).
+
+OpenRouter requests require endpoint support for their tool and output parameters. Capability metadata is a compatibility check, not a guarantee that every response is valid; unusable output leaves the check pending. OpenRouter's [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [structured-output documentation](https://openrouter.ai/docs/guides/features/structured-outputs) explain these requirements.
 
 Other controls:
 
@@ -266,7 +284,7 @@ Ignore rules match paths. They do not detect a secret embedded in an otherwise i
 
 ## Configuration
 
-Global settings are stored at `~/.config/sphinx/config.json`. `SPHINX_HOME` relocates all Sphinx settings, credentials, and assessment state. `sphinx config` shows effective settings and configuration paths. For a complete global example, see [examples/config.json](examples/config.json).
+Global settings are stored at `~/.config/sphinx/config.json`. `SPHINX_HOME` relocates all Sphinx settings, credentials, and assessment state. `sphinx config` shows effective settings and configuration paths; `--preset`, `--small`, `--medium`, and `--large` change your machine-wide reviewer routes. Route changes invalidate prepared questions and completion records under the previous assessment policy. For a complete global example using the explicitly paid Qwen preset, see [examples/config.json](examples/config.json).
 
 Question depth controls coverage within the change-tier ceilings above:
 

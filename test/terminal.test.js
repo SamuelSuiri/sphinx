@@ -5,6 +5,7 @@ import { printHelp, HELP } from '../src/help.js';
 import { askInstall, askPolicy, createPrompts } from '../src/prompts.js';
 import { applyInstallOptions } from '../src/cli.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
+import { presetOptions } from '../src/model-presets.js';
 
 function capture({ width = 80, env = {}, tty = false } = {}) {
   let text = '';
@@ -84,6 +85,20 @@ test('numbered prompts validate choices and retry without accepting invalid inpu
   assert.match(output.text(), /Standard \(default\)/);
 });
 
+test('required choices never accept Enter or display a default', async () => {
+  const output = capture(), answers = ['', 'invalid', 'paid'];
+  const prompts = createPrompts({ ui: output.ui, ask: async prompt => {
+    assert.equal(prompt, '\nChoose: ');
+    return answers.shift();
+  } });
+  assert.equal(await prompts.choose({ title: 'Models', requireSelection: true, current: 'paid', choices: [
+    { value: 'paid', label: 'Paid route', description: 'Uses API credits.' },
+    { value: 'free', label: 'Free route', description: 'Best effort.' },
+  ] }), 'paid');
+  assert.equal((output.text().match(/Enter a number/g) || []).length, 2);
+  assert.doesNotMatch(output.text(), /default|press Enter/);
+});
+
 test('text prompts reject bad routes before returning a valid option', async () => {
   const output = capture(), answers = ['invalid', 'claude:sonnet'];
   const prompts = createPrompts({ ui: output.ui, ask: async () => answers.shift() });
@@ -96,7 +111,7 @@ test('accepting onboarding defaults preserves existing per-tier models and rever
   current.events = ['pre-commit', 'pre-push'];
   current.models = { small: { provider: 'openrouter', model: 'openrouter/free' }, medium: { provider: 'claude', model: 'sonnet' }, large: { provider: 'codex', model: 'custom-model' } };
   const output = capture();
-  const values = await askInstall(current, {}, createPrompts({ ui: output.ui, ask: async () => '' }));
+  const values = await askInstall(current, {}, createPrompts({ ui: output.ui, ask: async () => '' }), { hasExistingConfig: true });
   const updated = applyInstallOptions(current, values);
   assert.deepEqual(updated.models, current.models);
   assert.deepEqual(updated.events, current.events);
@@ -109,7 +124,7 @@ test('agent checkboxes accept arbitrary combinations, preselect detection, and s
   const output = capture();
   const prompts = createPrompts({ ui: output.ui, ask: () => assert.fail('other choices were supplied'), select: async options => {
     selections++;
-    assert.equal(options.title, 'Connect your coding agents');
+    assert.equal(options.title, 'Which coding agents do you use?');
     assert.deepEqual(options.current, ['claude', 'pi']);
     assert.deepEqual(options.choices.map(choice => choice.value), ['codex', 'claude', 'pi', 'cursor', 'opencode']);
     return ['pi', 'cursor', 'opencode'];
@@ -151,8 +166,138 @@ test('explicit model flags alter only their requested routes and reject invalid 
   assert.deepEqual(updated.models.small, config.models.small);
   assert.deepEqual(updated.models.large, { provider: 'claude', model: 'opus' });
   const all = applyInstallOptions(config, { provider: 'codex' });
-  for (const route of Object.values(all.models)) assert.deepEqual(route, { provider: 'codex', model: null });
+  for (const route of Object.values(all.models)) assert.deepEqual(route, { provider: 'codex', model: 'gpt-6-luna' });
   assert.throws(() => applyInstallOptions(config, { agents: 'unknown' }), /--agents/);
   assert.throws(() => applyInstallOptions(config, { large: 'openrouter:paid-model' }), /allow-paid/);
   assert.throws(() => applyInstallOptions(config, { level: 'anything' }), /level/);
+});
+
+const onboardingPolicy = { events: 'pre-push', branches: 'main', remotes: '*', level: 'standard', mode: 'block' };
+
+test('fresh onboarding asks agents first, recommends economical CLI models, then asks policy', async () => {
+  for (const agent of ['codex', 'claude']) {
+    const order = [];
+    const values = await askInstall(DEFAULT_CONFIG, {}, {
+      multiselect: async options => { order.push(options.title); return [agent]; },
+      choose: async options => { order.push(options.title); assert.equal(options.requireSelection ?? false, false); return options.current; },
+      text: async options => { order.push(options.title); return options.current; },
+    }, { hasExistingConfig: false });
+    assert.deepEqual(order.slice(0, 3), ['Which coding agents do you use?', 'Choose your evaluator models', 'When should Sphinx run?']);
+    assert.equal(values.agents, agent);
+    assert.equal(values.preset, `${agent}-economy`);
+    for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], presetOptions(`${agent}-economy`)[tier]);
+    assert.equal(values['allow-paid'], undefined);
+    const configured = applyInstallOptions(DEFAULT_CONFIG, values);
+    assert.equal(configured.provider, agent);
+    assert.equal(configured.model, configured.models.small.model);
+    const next = applyInstallOptions(configured, { model: 'custom-followup-model' });
+    for (const route of Object.values(next.models)) assert.deepEqual(route, { provider: agent, model: 'custom-followup-model' });
+  }
+});
+
+test('fresh auto agent selection uses detection for the economical evaluator default', async () => {
+  const values = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'auto' }, {
+    choose: async options => { assert.equal(options.current, 'claude-economy'); return options.current; },
+  }, { hasExistingConfig: false, detectedAgents: ['claude', 'pi'] });
+  assert.equal(values.small, presetOptions('claude-economy').small);
+});
+
+test('other integrations require a deliberate evaluator choice and paid presets enable only their chosen routes', async () => {
+  for (const agents of ['pi', 'cursor', 'opencode', 'pi,cursor,opencode', 'none']) {
+    const output = capture(), answers = ['', 'openrouter-value'];
+    const values = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
+    assert.match(output.text(), /Enter a number/);
+    assert.doesNotMatch(output.text(), /\(default\)/);
+    assert.match(output.text(), /choosing one enables paid requests/);
+    assert.equal(values['allow-paid'], true);
+    for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], presetOptions('openrouter-value')[tier]);
+    assert.equal(values.agents, agents);
+  }
+});
+
+test('explicit preset and route flags skip the evaluator picker and remain authoritative', async () => {
+  for (const flags of [{ preset: 'claude-economy' }, { provider: 'codex' }, { model: 'custom-model' }, { small: 'claude:haiku', medium: 'codex:custom-model', large: 'openrouter:vendor/model:free' }]) {
+    const initial = { ...onboardingPolicy, agents: 'none', ...flags };
+    const values = await askInstall(DEFAULT_CONFIG, initial, {
+      choose: () => assert.fail('explicit routes must skip the evaluator picker'),
+      multiselect: () => assert.fail('explicit agents must skip checkboxes'),
+      text: () => assert.fail('explicit policy must skip text prompts'),
+    }, { hasExistingConfig: false });
+    assert.deepEqual(values, initial);
+  }
+});
+
+test('partial tier flags preserve saved defaults but require a choice for fresh unset tiers', async () => {
+  const initial = { ...onboardingPolicy, agents: 'claude', small: 'codex:custom-small' };
+  assert.deepEqual(await askInstall(DEFAULT_CONFIG, initial, {
+    choose: () => assert.fail('saved remaining tiers must stay unchanged'),
+  }, { hasExistingConfig: true }), initial);
+  let choices = 0;
+  const values = await askInstall(DEFAULT_CONFIG, initial, {
+    choose: async options => { choices++; assert.equal(options.current, 'claude-economy'); return options.current; },
+  }, { hasExistingConfig: false });
+  assert.equal(choices, 1);
+  const configured = applyInstallOptions(DEFAULT_CONFIG, values);
+  assert.deepEqual(configured.models.small, { provider: 'codex', model: 'custom-small' });
+  for (const tier of ['medium', 'large']) assert.deepEqual(configured.models[tier], { provider: 'claude', model: 'haiku' });
+});
+
+test('fresh partial tiers retain overrides when deliberately selecting a paid preset', async () => {
+  const values = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none', large: 'claude:haiku' }, {
+    choose: async () => 'openrouter-value',
+  }, { hasExistingConfig: false });
+  assert.equal(values.large, 'claude:haiku');
+  assert.equal(values['allow-paid'], true);
+  const configured = applyInstallOptions(DEFAULT_CONFIG, values);
+  assert.equal(configured.allowPaid, true);
+  for (const tier of ['small', 'medium']) assert.equal(configured.models[tier].provider, 'openrouter');
+  assert.deepEqual(configured.models.large, { provider: 'claude', model: 'haiku' });
+});
+
+test('custom selection asks only for missing tiers and includes explicit paid tiers in consent', async () => {
+  const asked = [];
+  let permissions = 0;
+  const values = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none', small: 'openrouter:vendor/paid-model' }, {
+    choose: async options => {
+      if (options.title === 'Enable paid OpenRouter requests?') { permissions++; return 'allow'; }
+      return 'custom';
+    },
+    text: async options => { asked.push(options.title); return 'claude:haiku'; },
+  }, { hasExistingConfig: false });
+  assert.deepEqual(asked, ['Evaluator for medium changes', 'Evaluator for large changes']);
+  assert.equal(values.small, 'openrouter:vendor/paid-model');
+  assert.equal(values.medium, 'claude:haiku');
+  assert.equal(values.large, 'claude:haiku');
+  assert.equal(permissions, 1);
+  assert.equal(values['allow-paid'], true);
+});
+
+test('custom paid routes default back to model choice without enabling spending', async () => {
+  let picks = 0;
+  const values = await askInstall(DEFAULT_CONFIG, { ...onboardingPolicy, agents: 'none' }, {
+    choose: async options => {
+      if (options.title === 'Enable paid OpenRouter requests?') { assert.equal(options.current, 'back'); return options.current; }
+      return picks++ === 0 ? 'custom' : 'openrouter-free';
+    },
+    text: async () => 'openrouter:vendor/paid-model',
+  }, { hasExistingConfig: false });
+  assert.equal(picks, 2);
+  assert.equal(values['allow-paid'], undefined);
+  for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], 'openrouter:openrouter/free');
+});
+
+test('custom paid routes require explicit permission unless machine-wide permission already exists', async () => {
+  for (const allowed of [false, true]) {
+    let permissions = 0;
+    const values = await askInstall({ ...DEFAULT_CONFIG, allowPaid: allowed }, { ...onboardingPolicy, agents: 'none' }, {
+      choose: async options => {
+        if (options.title === 'Enable paid OpenRouter requests?') { permissions++; return 'allow'; }
+        return 'custom';
+      },
+      text: async () => 'openrouter:vendor/paid-model',
+    });
+    assert.equal(permissions, allowed ? 0 : 1);
+    assert.equal(values['allow-paid'], allowed ? undefined : true);
+    for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], 'openrouter:vendor/paid-model');
+  }
 });

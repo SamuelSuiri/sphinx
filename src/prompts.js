@@ -1,5 +1,6 @@
 import { parseRoute, questionLimit } from './routing.js';
 import { reviewerTurnLimit } from './reviewer-limits.js';
+import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 
 export const routeText = route => `${route.provider}${route.model ? `:${route.model}` : ''}`;
 export const splitList = value => String(value).split(',').map(item => item.trim()).filter(Boolean);
@@ -7,19 +8,19 @@ export const questionCapsText = level => ['small', 'medium', 'large'].map(tier =
 export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${reviewerTurnLimit(tier, config.agentMaxTurns)}`).join(', ');
 
 export function createPrompts({ ask, ui, select }) {
-  async function choose({ title, description, choices, current }) {
+  async function choose({ title, description, choices, current, requireSelection = false }) {
     ui.section(title); if (description) ui.paragraph(description);
-    const selected = Math.max(0, choices.findIndex(choice => choice.value === current));
+    const selected = requireSelection ? -1 : Math.max(0, choices.findIndex(choice => choice.value === current));
     ui.blank();
     ui.rows(choices.map((choice, index) => [`${index + 1}. ${choice.label}${index === selected ? ' (default)' : ''}`, choice.description]));
     for (;;) {
-      const answer = (await ask(`\nChoose [${selected + 1}]: `)).trim();
-      if (!answer) return choices[selected].value;
+      const answer = (await ask(selected < 0 ? '\nChoose: ' : `\nChoose [${selected + 1}]: `)).trim();
+      if (!answer && selected >= 0) return choices[selected].value;
       const exact = choices.find(choice => choice.value.toLowerCase() === answer.toLowerCase());
       const number = /^\d+$/.test(answer) ? Number(answer) : 0;
       if (exact) return exact.value;
       if (number >= 1 && number <= choices.length) return choices[number - 1].value;
-      ui.warning(`Enter a number from 1 to ${choices.length}, or press Enter for ${choices[selected].label}.`);
+      ui.warning(`Enter a number from 1 to ${choices.length}${selected < 0 ? '.' : `, or press Enter for ${choices[selected].label}.`}`);
     }
   }
   async function text({ title, description, current, validate = value => value }) {
@@ -100,32 +101,61 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
   return values;
 }
 
-export async function askInstall(config, initial, prompts, { detectedAgents = [] } = {}) {
-  let values = await askPolicy(config, initial, prompts, { scope: 'global' });
-  const explicitRoute = ['provider', 'model', 'small', 'medium', 'large'].some(key => initial[key] !== undefined);
-  if (!explicitRoute) {
-    const choice = await prompts.choose({ title: 'Who should evaluate your understanding?', description: 'A separate evaluator receives filtered code evidence without your coding conversation. Sphinx collects your answers directly in native forms or the terminal.', current: 'keep', choices: [
-      { value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` },
-      { value: 'openrouter', label: 'OpenRouter free models', description: 'Use openrouter/free for every size. Requires an API key; filtered evidence is sent to OpenRouter and its model provider.' },
-      { value: 'codex', label: 'Codex', description: 'Use your installed, signed-in Codex CLI and its usage allowance for every size.' },
-      { value: 'claude', label: 'Claude Code', description: 'Use your installed, signed-in Claude CLI and its usage allowance for every size.' },
-      { value: 'custom', label: 'Choose by change size', description: 'Set separate provider:model routes for small, medium, and large changes.' },
-    ] });
-    if (choice === 'custom') {
-      for (const [tier, description] of [['small', 'At most 80 changed lines and 3 files, with no consequential paths, by default.'], ['medium', 'Changes between the small and large thresholds.'], ['large', 'At least 400 lines, 12 files, or a consequential path by default.']]) {
-        values[tier] = await prompts.text({ title: `Evaluator for ${tier} changes`, description: `${description} Enter provider:model, such as openrouter:openrouter/free or claude:sonnet.`, current: routeText(config.models[tier]), validate: parseRoute });
-      }
-    } else if (choice !== 'keep') values.provider = choice;
-  }
+export async function askInstall(config, initial, prompts, { detectedAgents = [], hasExistingConfig = true } = {}) {
+  let values = { ...initial };
   if (values.agents === undefined) {
-    const selected = await prompts.multiselect({ title: 'Connect your coding agents', description: 'Detected agents are preselected. Choose any combination, or clear all to skip agent setup. Previously connected agents remain installed.', current: detectedAgents, choices: [
-      { value: 'codex', label: 'Codex', description: 'Native forms. Review and trust Sphinx hooks in /hooks.' },
-      { value: 'claude', label: 'Claude Code', description: 'Native questionnaire forms.' },
-      { value: 'pi', label: 'Pi', description: 'Native questionnaire dialogs.' },
+    const selected = await prompts.multiselect({ title: 'Which coding agents do you use?', description: 'Connect any combination. Detected agents are preselected; clear all for Git-only use. Previously connected agents remain installed.', current: detectedAgents, choices: [
+      { value: 'codex', label: 'Codex', description: 'Sphinx terminal; native fallback forms. Trust Sphinx hooks in /hooks.' },
+      { value: 'claude', label: 'Claude Code', description: 'Sphinx terminal; native fallback forms.' },
+      { value: 'pi', label: 'Pi', description: 'Sphinx terminal; native fallback dialogs.' },
       { value: 'cursor', label: 'Cursor', description: 'A Sphinx terminal for answers from local Agent sessions.' },
       { value: 'opencode', label: 'OpenCode', description: 'A Sphinx terminal for answers. Requires OpenCode 1.x.' },
     ] });
     values.agents = selected.length ? selected.join(',') : 'none';
   }
-  return values;
+  const tiers = ['small', 'medium', 'large'];
+  const explicitTiers = tiers.filter(tier => initial[tier] !== undefined);
+  const explicitRoute = ['preset', 'provider', 'model'].some(key => initial[key] !== undefined)
+    || explicitTiers.length === tiers.length || (hasExistingConfig && explicitTiers.length > 0);
+  if (!explicitRoute) {
+    const agents = values.agents === 'auto' ? detectedAgents : splitList(values.agents);
+    const recommended = agents.includes('codex') ? 'codex-economy' : agents.includes('claude') ? 'claude-economy' : undefined;
+    const current = hasExistingConfig ? 'keep' : recommended;
+    for (;;) {
+      const choice = await prompts.choose({
+        title: 'Choose your evaluator models',
+        description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode integrations need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. Setup makes no model calls.',
+        current, requireSelection: !current,
+        choices: [
+          ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` }] : []),
+          ...REVIEWER_PRESETS.map(preset => ({ value: preset.id, label: preset.label, description: preset.description })),
+          { value: 'custom', label: 'Choose by change size', description: 'Set separate provider:model routes for small, medium, and large changes.' },
+        ],
+      });
+      if (choice === 'keep') break;
+      if (choice !== 'custom') {
+        const selected = presetOptions(choice);
+        values = { ...selected, ...values, preset: choice, ...(selected['allow-paid'] ? { 'allow-paid': true } : {}) }; break;
+      }
+      const custom = Object.fromEntries(explicitTiers.map(tier => [tier, initial[tier]]));
+      for (const [tier, description] of [['small', 'At most 80 changed lines and 3 files, with no consequential paths, by default.'], ['medium', 'Changes between the small and large thresholds.'], ['large', 'At least 400 lines, 12 files, or a consequential path by default.']]) {
+        if (initial[tier] !== undefined) continue;
+        custom[tier] = await prompts.text({ title: `Evaluator for ${tier} changes`, description: `${description} Enter provider:model, such as claude:haiku or an OpenRouter model ID prefixed with openrouter:.`, current: routeText(config.models[tier]), validate: parseRoute });
+      }
+      const paid = Object.values(custom).some(value => {
+        const route = parseRoute(value);
+        return route.provider === 'openrouter' && route.model && route.model !== 'openrouter/free' && !route.model.endsWith(':free');
+      });
+      if (paid && !config.allowPaid && !values['allow-paid']) {
+        const permission = await prompts.choose({ title: 'Enable paid OpenRouter requests?', description: 'These custom routes can charge your OpenRouter credits. Model prices vary. This permission applies to your machine-wide evaluator configuration.', current: 'back', choices: [
+          { value: 'back', label: 'Choose routes again', description: 'Return to model selection without enabling paid requests.' },
+          { value: 'allow', label: 'Enable paid requests', description: 'Use these routes with your OpenRouter API key and credits.' },
+        ] });
+        if (permission !== 'allow') continue;
+        custom['allow-paid'] = true;
+      }
+      values = { ...values, ...custom }; break;
+    }
+  }
+  return askPolicy(config, values, prompts, { scope: 'global' });
 }

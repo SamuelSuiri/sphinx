@@ -110,3 +110,145 @@ test('configuration help documents the setter without saving and text output sep
   assert.match(output, /Saved machine-wide limit: 30 model calls per assessment/);
   assert.match(output, /Per-review caps remain small 3, medium 5, large 8/);
 });
+
+test('a fresh unattended installation requires a reviewer choice before writing hooks or credentials', async t => {
+  const f = await fixture(t);
+  for (const routes of [[], ['--small', 'claude:haiku'], ['--small', 'claude:haiku', '--medium', 'codex:custom']]) {
+    const result = f.run(['install', '--yes', '--agents', 'none', ...routes]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /First installation needs an explicit reviewer choice/);
+  }
+  for (const file of [f.configPath, f.env.GIT_CONFIG_GLOBAL, path.join(f.state, 'install.json'), path.join(f.state, 'credentials.json')]) await f.absent(file);
+});
+
+test('a fresh unattended installation accepts an explicit route for every size', async t => {
+  const f = await fixture(t);
+  f.ok(['install', '--yes', '--agents', 'none', '--small', 'claude:haiku', '--medium', 'claude:haiku', '--large', 'codex:custom']);
+  const config = JSON.parse(await readFile(f.configPath, 'utf8'));
+  assert.deepEqual(config.models, {
+    small: { provider: 'claude', model: 'haiku' },
+    medium: { provider: 'claude', model: 'haiku' },
+    large: { provider: 'codex', model: 'custom' },
+  });
+});
+
+test('economical CLI provider defaults are explicit and custom models remain selectable', async t => {
+  const f = await fixture(t);
+  for (const [provider, model] of [['codex', 'gpt-6-luna'], ['claude', 'haiku']]) {
+    const result = JSON.parse(f.ok(['config', '--provider', provider, '--json']));
+    for (const tier of ['small', 'medium', 'large']) assert.deepEqual(result.config.models[tier], { provider, model });
+    assert.equal(result.config.provider, provider);
+    assert.equal(result.config.model, model);
+  }
+  const custom = JSON.parse(f.ok(['config', '--provider', 'claude', '--model', 'my-explicit-model', '--json']));
+  for (const route of Object.values(custom.config.models)) assert.deepEqual(route, { provider: 'claude', model: 'my-explicit-model' });
+  await f.absent(f.env.GIT_CONFIG_GLOBAL);
+  await f.absent(path.join(f.state, 'install.json'));
+});
+
+test('presets allow tier overrides and preserve unrelated global settings', async t => {
+  const f = await fixture(t);
+  await mkdir(f.state);
+  await writeFile(f.configPath, JSON.stringify({ version: 1, branches: ['production'], maxModelCalls: 27, level: 'relaxed', backgroundPreparation: false }));
+  const result = JSON.parse(f.ok(['config', '--preset', 'codex-economy', '--large', 'claude:sonnet', '--json']));
+  assert.deepEqual(result.config.models, {
+    small: { provider: 'codex', model: 'gpt-6-luna' },
+    medium: { provider: 'codex', model: 'gpt-6-luna' },
+    large: { provider: 'claude', model: 'sonnet' },
+  });
+  assert.deepEqual(result.config.branches, ['production']);
+  assert.equal(result.config.level, 'relaxed');
+  assert.equal(result.config.backgroundPreparation, false);
+  assert.equal(result.previousMaxModelCalls, 27);
+  assert.equal(result.maxModelCalls, 27);
+  await f.absent(path.join(f.state, 'sessions'));
+});
+
+test('paid presets need an explicit flag or previously saved paid permission', async t => {
+  const f = await fixture(t);
+  for (const preset of ['openrouter-value', 'openrouter-deepseek']) {
+    const denied = f.run(['config', '--preset', preset, '--json']);
+    assert.equal(denied.status, 1);
+    assert.match(denied.stderr, /--allow-paid/);
+    await f.absent(f.configPath);
+  }
+  const value = JSON.parse(f.ok(['config', '--preset', 'openrouter-value', '--allow-paid', '--json']));
+  assert.equal(value.config.allowPaid, true);
+  assert.deepEqual(value.config.models, {
+    small: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
+    medium: { provider: 'openrouter', model: 'qwen/qwen3-coder-next' },
+    large: { provider: 'openrouter', model: 'qwen/qwen3-coder' },
+  });
+  const alternative = JSON.parse(f.ok(['config', '--preset', 'openrouter-deepseek', '--json']));
+  for (const route of Object.values(alternative.config.models)) assert.deepEqual(route, { provider: 'openrouter', model: 'deepseek/deepseek-v3.2' });
+  await f.absent(path.join(f.state, 'credentials.json'));
+  await f.absent(path.join(f.state, 'install.json'));
+});
+
+test('explicit tier routes retain paid checks and untouched routes', async t => {
+  const f = await fixture(t);
+  f.ok(['config', '--preset', 'claude-economy', '--json']);
+  const previous = await readFile(f.configPath, 'utf8');
+  const denied = f.run(['config', '--large', 'openrouter:custom/paid', '--json']);
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /--allow-paid/);
+  assert.equal(await readFile(f.configPath, 'utf8'), previous);
+  const saved = JSON.parse(f.ok(['config', '--large', 'openrouter:custom/paid', '--allow-paid', '--max-model-calls', '24', '--json']));
+  assert.deepEqual(saved.config.models.small, { provider: 'claude', model: 'haiku' });
+  assert.deepEqual(saved.config.models.medium, { provider: 'claude', model: 'haiku' });
+  assert.deepEqual(saved.config.models.large, { provider: 'openrouter', model: 'custom/paid' });
+  assert.equal(saved.maxModelCalls, 24);
+});
+
+test('unknown or conflicting presets fail without changing saved settings', async t => {
+  const f = await fixture(t);
+  f.ok(['config', '--preset', 'claude-economy', '--json']);
+  const previous = await readFile(f.configPath, 'utf8');
+  for (const args of [
+    ['--preset', 'missing'],
+    ['--preset', 'codex-economy', '--provider', 'claude'],
+    ['--preset', 'codex-economy', '--model', 'custom'],
+  ]) {
+    for (const command of ['config', 'install']) {
+      const result = f.run([command, ...args, ...(command === 'install' ? ['--yes', '--agents', 'none'] : ['--json'])]);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /preset/);
+      assert.equal(await readFile(f.configPath, 'utf8'), previous);
+      await f.absent(f.env.GIT_CONFIG_GLOBAL);
+    }
+  }
+});
+
+test('preset installation preserves explicit routes on an unattended rerun', async t => {
+  const f = await fixture(t);
+  f.ok(['install', '--yes', '--preset', 'claude-economy', '--large', 'codex:custom-reviewer', '--agents', 'none']);
+  const previous = await readFile(f.configPath, 'utf8');
+  const config = JSON.parse(previous);
+  assert.deepEqual(config.models.small, { provider: 'claude', model: 'haiku' });
+  assert.deepEqual(config.models.large, { provider: 'codex', model: 'custom-reviewer' });
+  f.ok(['install', '--yes', '--agents', 'none']);
+  assert.equal(await readFile(f.configPath, 'utf8'), previous);
+});
+
+test('paid preset installation checks permission and credentials before installing', async t => {
+  const f = await fixture(t);
+  const denied = f.run(['install', '--yes', '--preset', 'openrouter-value', '--agents', 'none']);
+  assert.equal(denied.status, 1);
+  assert.match(denied.stderr, /--allow-paid/);
+  const missingKey = f.run(['install', '--yes', '--preset', 'openrouter-value', '--allow-paid', '--agents', 'none']);
+  assert.equal(missingKey.status, 1);
+  assert.match(missingKey.stderr, /OpenRouter requires a key/);
+  for (const file of [f.configPath, f.env.GIT_CONFIG_GLOBAL, path.join(f.state, 'install.json')]) await f.absent(file);
+});
+
+test('free routing remains an explicit best-effort choice and help never saves presets', async t => {
+  const f = await fixture(t);
+  const help = JSON.parse(f.ok(['config', '--preset', 'openrouter-value', '--help', '--json']));
+  assert.match(JSON.stringify(help), /openrouter-free/);
+  assert.match(JSON.stringify(help), /best-effort/);
+  assert.match(JSON.stringify(help), /--allow-paid/);
+  await f.absent(f.configPath);
+  const free = JSON.parse(f.ok(['config', '--preset', 'openrouter-free', '--json']));
+  assert.equal(free.config.allowPaid, false);
+  for (const route of Object.values(free.config.models)) assert.deepEqual(route, { provider: 'openrouter', model: 'openrouter/free' });
+});

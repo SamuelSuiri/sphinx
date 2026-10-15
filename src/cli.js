@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lstat } from 'node:fs/promises';
 import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
@@ -19,16 +20,18 @@ import { HELP, printHelp } from './help.js';
 import { askInstall, askPolicy, createPrompts, questionCapsText, reviewCapsText, routeText, splitList } from './prompts.js';
 import { runGitGate } from './git-gate.js';
 import { loadProjectContext } from './repo-context.js';
+import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
+const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls'];
 const OPTIONS = {
-  install: ['yes', 'repo', 'agents', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'launch', 'no-launch', ...POLICY_FLAGS],
+  install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
   init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json', 'max-model-calls'], doctor: ['json'], auth: [], uninstall: ['repo'],
+  status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: [], uninstall: ['repo'],
   mcp: [],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -108,11 +111,23 @@ function parseModelCalls(value) {
 
 export function applyInstallOptions(current, values) {
   const config = structuredClone(current);
+  if (values.preset !== undefined) {
+    if (values.provider !== undefined || values.model !== undefined) throw new Error('--preset cannot be combined with --provider or --model. Use --small, --medium, or --large to override a preset tier.');
+    // A preset describes paid routes, but never grants spending permission.
+    // Guided setup must return an explicit --allow-paid after confirmation.
+    const selected = presetOptions(values.preset);
+    for (const tier of ['small', 'medium', 'large']) config.models[tier] = parseRoute(selected[tier]);
+    config.provider = config.models.small.provider;
+    config.model = config.models.small.model;
+  }
   if (values['max-model-calls'] !== undefined) config.maxModelCalls = parseModelCalls(values['max-model-calls']);
   for (const key of ['provider', 'model', 'level', 'mode']) if (values[key] !== undefined) config[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) config[key] = splitList(values[key]);
   if (values.provider !== undefined || values.model !== undefined) {
-    if (values.provider !== undefined && values.model === undefined) config.model = values.provider === 'openrouter' ? 'openrouter/free' : null;
+    if (values.provider !== undefined && values.model === undefined) {
+      const economical = REVIEWER_PRESETS.find(preset => preset.id === `${values.provider}-economy`);
+      config.model = economical ? economical.models.small.model : values.provider === 'openrouter' ? 'openrouter/free' : null;
+    }
     for (const tier of ['small', 'medium', 'large']) config.models[tier] = { provider: config.provider, model: config.model };
   }
   for (const tier of ['small', 'medium', 'large']) if (values[tier] !== undefined) config.models[tier] = parseRoute(values[tier]);
@@ -198,6 +213,7 @@ async function auth() {
 
 async function installCommand(initial) {
   const terminal = ui(), current = await loadConfig();
+  const hasExistingConfig = await lstat(getPaths().config).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
   if (initial.launch && initial['no-launch']) throw new Error('Choose either --launch or --no-launch, not both.');
   if (initial.repo) {
     const incompatible = Object.keys(initial).filter(key => !['repo', 'yes'].includes(key));
@@ -206,14 +222,19 @@ async function installCommand(initial) {
     printInstallationResult(terminal, await install({ config: current, agents: 'none', repo: true, cliPath: CLI_PATH })); return 0;
   }
   applyInstallOptions(current, initial);
+  const completeRouteChoice = ['preset', 'provider', 'model'].some(key => initial[key] !== undefined)
+    || ['small', 'medium', 'large'].every(key => initial[key] !== undefined);
+  if (initial.yes && !hasExistingConfig && !completeRouteChoice) {
+    throw new Error('First installation needs an explicit reviewer choice for every change size. Run sphinx install for guided setup, or use --yes --preset codex-economy, --preset claude-economy, or --preset openrouter-value --allow-paid. Custom routes need all three flags: --small, --medium, and --large.');
+  }
   if (!initial.yes && !process.stdin.isTTY) throw new Error('Run sphinx install in a terminal for guided setup, or use --yes with your chosen options. See sphinx install --help.');
   terminal.banner(); terminal.paragraph('Connect Git and your coding agents once for this machine. Existing hooks and unrelated agent settings are preserved.');
   const launch = !initial['no-launch'] && (initial.launch || !initial.yes);
   if (launch) terminal.paragraph('After setup, Sphinx opens selected installed clients in fresh sessions. Existing sessions stay open. Use --no-launch to defer this step.');
-  const detected = !initial.yes && initial.agents === undefined ? await detectAgents() : [];
+  const detected = !initial.yes && (initial.agents === undefined || initial.agents === 'auto') ? await detectAgents() : [];
   const values = initial.yes ? initial : await withReadline(ask => askInstall(current, initial, createPrompts({ ask, ui: terminal,
     select: process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb' ? ask.checkbox : undefined,
-  }), { detectedAgents: detected }));
+  }), { detectedAgents: detected, hasExistingConfig }));
   const config = applyInstallOptions(current, values);
   terminal.section('Machine-wide defaults');
   terminal.paragraph('Each repository can override these branches and remotes in .sphinxconfig to match its own production setup.');
@@ -392,7 +413,7 @@ export async function main(argv) {
   }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' },
@@ -436,17 +457,21 @@ export async function main(argv) {
     return result.checks.every(check => check.ok) ? 0 : 1;
   }
   if (command === 'config') {
-    if (values['max-model-calls'] !== undefined) {
-      const maxModelCalls = parseModelCalls(values['max-model-calls']);
-      const config = await loadConfig(), previousMaxModelCalls = config.maxModelCalls;
-      config.maxModelCalls = maxModelCalls;
+    if (MODEL_FLAGS.some(key => values[key] !== undefined)) {
+      const current = await loadConfig(), previousMaxModelCalls = current.maxModelCalls;
+      const config = applyInstallOptions(current, values), maxModelCalls = config.maxModelCalls;
       await saveConfig(config);
       const result = { scope: 'global', path: getPaths().config, previousMaxModelCalls, maxModelCalls, config };
       if (values.json) { json(result); return 0; }
       const terminal = ui();
-      terminal.success(`Saved machine-wide limit: ${maxModelCalls} model calls per assessment (previously ${previousMaxModelCalls}).`);
+      if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${maxModelCalls} model calls per assessment (previously ${previousMaxModelCalls}).`);
+      if (MODEL_FLAGS.some(key => key !== 'max-model-calls' && values[key] !== undefined)) {
+        terminal.success('Saved machine-wide evaluator settings.');
+        terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
+        terminal.note('Changing evaluator routes applies to fresh checkpoints. Existing checkpoints remain bound to their original assessment policy.');
+      }
       terminal.note(result.path);
-      terminal.paragraph('This is the total allowance for review, compaction, grading, learning follow-ups, and failed requests. Saving it makes no model request.');
+      terminal.paragraph(`The total allowance is ${maxModelCalls} model calls for review, compaction, grading, learning follow-ups, and failed requests. Saving configuration makes no model request.`);
       terminal.note(`Per-review caps remain ${reviewCapsText(config)} calls, within the total allowance.`);
       return 0;
     }
@@ -460,7 +485,7 @@ export async function main(argv) {
     }
     terminal.section('Checkpoint policy'); printConfiguration(terminal, config);
     terminal.section('Limits and exclusions'); terminal.rows([['Reviewer context', `${config.maxContextBytes.toLocaleString()} bytes in active context; older investigation is compacted`], ['Tool result', `${config.toolResultBytes.toLocaleString()} bytes per page`], ['Reviewer turns', `Up to ${config.agentMaxTurns}, within the shared model-call budget`], ['Reviewer timeout', `${config.timeoutSeconds} seconds per investigation`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
-    terminal.blank(); terminal.note('Set the machine-wide call limit with sphinx config --max-model-calls <1-100>. Edit the listed files for other settings. Use sphinx config --json for every effective field.'); return 0;
+    terminal.blank(); terminal.note('Use sphinx config --preset <name> to choose evaluator models, or --max-model-calls <1-100> to change the total allowance. See sphinx config --help for tier overrides and paid routes.'); return 0;
   }
   if (command === 'check') return checkCommand(values);
   if (['pending', 'status'].includes(command)) return statusCommand(command, values);
