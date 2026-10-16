@@ -11,6 +11,7 @@ import { createBrowserInterview, openQuestionnaireBrowser } from '../src/browser
 import { createSessionStore } from '../src/sessions.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { claimCheckpointDialog, checkpointTerminalStatus } from '../src/terminal-launch.js';
+import { recentOverrides } from '../src/overrides.js';
 
 const q = { id: 'duplicate', concept: 'idempotency', prompt: 'Can a retry duplicate the insert? <script>PRIVATE_SCRIPT</script>', choices: ['Yes', 'No'], expectedAnswer: 'PRIVATE_KEY', rationale: 'PRIVATE_RUBRIC', evidence: [{ path: 'app.js', reason: 'The insert is unconditional.' }] };
 async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {} } = {}) {
@@ -220,4 +221,35 @@ test('CI and evaluator subprocesses never start a browser or model', async () =>
     const interview = createBrowserInterview({ env, openBrowser: () => assert.fail('must not open'), reserve: () => assert.fail('must not reserve') });
     assert.equal((await interview.present({ request: { id: 'a'.repeat(64) } })).status, 'unavailable'); await interview.close();
   }
+});
+
+test('the page receives a chat transcript of questions, answers, feedback, follow-ups, and live review activity', async t => {
+  const f = await fixture(t, {
+    generate: async (_count, options) => { options.onProgress?.('Reading app.js'); await options.beforeCall(); return { questions: [q] }; },
+    grade: async (_request, count) => count === 1 ? { verdict: 'incorrect', feedback: 'There is no durable deduplication.', followUp: { ...q, id: 'transfer', prompt: 'What changes after restart?' } } : { verdict: 'correct', feedback: 'Correct.', followUp: null },
+  });
+  const done = f.present(); await f.waitFor('question');
+  await f.post('answer', { response: 'No.' });
+  for (let i = 0; i < 300 && f.interview.state.question?.id !== 'transfer'; i++) await delay(10);
+  await f.waitFor('question');
+  const shape = f.interview.state.messages.map(item => [item.role, item.kind, item.status, item.followUp].filter(value => value !== undefined));
+  assert.deepEqual(shape, [['sphinx', 'activity'], ['sphinx', 'question', false], ['human', 'answer', 'graded'], ['sphinx', 'feedback'], ['sphinx', 'question', true]]);
+  assert.equal(f.interview.state.messages[2].text, 'No.');
+  assert.doesNotMatch(JSON.stringify(f.interview.state), /PRIVATE_KEY|PRIVATE_RUBRIC|idempotency/);
+  await f.post('answer', { response: 'The set is recreated.' });
+  assert.equal((await done).status, 'passed');
+});
+
+test('Skip this time lets Git continue during review, logs the reason, and never writes a receipt', async t => {
+  let entered;
+  const reviewing = new Promise(resolve => { entered = resolve; });
+  const f = await fixture(t, { generate: async (_count, options) => { entered(); await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true })); throw options.signal.reason; } });
+  const done = f.present(); await reviewing; await f.waitFor('working');
+  const response = await f.post('skip', { response: 'prod is down', revision: 'stale-revision' });
+  assert.equal(response.status, 200, 'Skip does not need the latest revision while progress streams');
+  assert.equal((await done).status, 'skipped');
+  assert.equal(f.interview.state.phase, 'skipped');
+  assert.equal(await f.store.approved(f.snapshot, f.config), false);
+  const [entry] = await recentOverrides({ env: f.env });
+  assert.equal(entry.kind, 'skip'); assert.equal(entry.reason, 'prod is down'); assert.equal(entry.id, f.snapshot.id);
 });

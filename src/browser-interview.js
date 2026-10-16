@@ -8,6 +8,7 @@ import { createSessionStore } from './sessions.js';
 import { prepareInteractiveCheck } from './check-recovery.js';
 import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTerminal } from './terminal-launch.js';
 import { browserPage } from './browser-page.js';
+import { recordOverride } from './overrides.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -48,14 +49,25 @@ function publicFields(state) {
 export function createBrowserInterview({ env = process.env, signal, timeoutMs = 25 * 60 * 1000,
   store: providedStore, readConfig = loadConfig, revalidate = revalidateSnapshot,
   reserve = claimCheckpointDialog, release = finishCheckpointDialog, waitForExisting = waitForCheckpointTerminal,
-  openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`),
+  openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`), logOverride = recordOverride,
 } = {}) {
   const token = randomBytes(32).toString('base64url'), nonce = randomBytes(24).toString('base64');
-  let server, origin, url, opened = false, closed = false, active, resolver, sequence = 0, waitingGit = false;
+  let server, origin, url, opened = false, closed = false, active, skip, resolver, sequence = 0, waitingGit = false;
   const pauseMessage = () => waitingGit
     ? 'Paused. Progress is saved; the waiting Git operation was stopped.'
     : 'Paused. Your progress and completed checkpoints are saved.';
-  let state = { phase: 'waiting', operationClosed: false, revision: randomUUID(), sequence, message: 'Waiting for the checkpoint.' };
+  let state = { phase: 'waiting', operationClosed: false, revision: randomUUID(), sequence, message: 'Waiting for the checkpoint.', messages: [] };
+  // The chat transcript for the current checkpoint lives only in this process.
+  // It contains public questions, feedback, and the human's own text.
+  let transcript = [], turns = 0;
+  const say = item => { transcript = [...transcript, { id: `m${++turns}`, ...item }]; };
+  const settle = status => { transcript = transcript.map(item => item.role === 'human' && item.status === 'checking' ? { ...item, status } : item); };
+  const showQuestion = visible => {
+    const question = visible?.question;
+    if (!question || transcript.some(item => item.kind === 'question' && item.questionId === question.id)) return;
+    const number = visible.progress.completed + 1;
+    say({ role: 'sphinx', kind: 'question', questionId: question.id, number, followUp: transcript.some(item => item.kind === 'question' && item.number === number), text: question.prompt, choices: question.choices || [] });
+  };
   const streams = new Set();
   const writeEvent = (stream, event) => {
     if (stream.destroyed || stream.writableEnded) { streams.delete(stream); return; }
@@ -67,7 +79,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     } catch { stream.destroy(); streams.delete(stream); }
   };
   const publish = next => {
-    state = { ...next, waitingGit, operationClosed: closed, revision: randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, waitingGit, operationClosed: closed, revision: randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -111,7 +123,15 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     let data; try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return send(res, 400, { error: 'Invalid response.' }); }
     if (!data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).some(key => !['id', 'revision', 'action', 'response', 'questionId'].includes(key))
       || typeof data.action !== 'string' || (data.response !== undefined && (typeof data.response !== 'string' || data.response.length > 8000))) return send(res, 400, { error: 'Invalid response.' });
-    if (!active || active.signal.aborted || data.id !== state.id || data.revision !== state.revision) return send(res, 409, { error: 'This checkpoint changed. Use the current question.' });
+    // Live progress changes the revision often; Pause and Skip only need the checkpoint.
+    if (!active || active.signal.aborted || data.id !== state.id || (!['pause', 'skip'].includes(data.action) && data.revision !== state.revision)) return send(res, 409, { error: 'This checkpoint changed. Use the current question.' });
+    if (data.action === 'skip') {
+      // Available at any step, including while the review is still running.
+      skip = { reason: data.response };
+      active.abort(cancelled());
+      publish({ ...publicFields(state), phase: 'skipped', message: waitingGit ? 'Skipped. Git is continuing; this check stays pending for later.' : 'Skipped. This check stays pending for later.' });
+      return send(res, 200, state);
+    }
     if (data.action === 'pause') {
       active.abort(cancelled());
       publish({ ...publicFields(state), phase: 'paused', message: pauseMessage() });
@@ -121,6 +141,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (['answer', 'learn', 'dispute'].includes(data.action) && data.questionId !== state.question?.id) return send(res, 409, { error: 'The question changed. Use the current question.' });
     if (['answer', 'dispute'].includes(data.action) && !data.response?.trim()) return send(res, 400, { error: 'Enter an answer or a dispute reason first.' });
     const current = resolver;
+    if (data.action === 'answer') say({ role: 'human', kind: 'answer', text: data.response.trim(), status: 'checking' });
+    else if (data.action === 'dispute') say({ role: 'human', kind: 'dispute', text: `Dispute: ${data.response.trim()}`, status: 'checking' });
+    else if (data.action === 'learn') say({ role: 'human', kind: 'learn', text: 'Explain this concept.', status: 'checking' });
     publish({ ...publicFields(state), phase: 'working', message: data.action === 'answer' ? 'Checking your reasoning…' : data.action === 'learn' ? 'Preparing an explanation and a new scenario…' : data.action === 'dispute' ? 'Reviewing the question…' : 'Continuing the review…' });
     send(res, 202, state); current.resolve(data);
   }
@@ -131,7 +154,11 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       handle(req, res).catch(() => { if (!res.headersSent) send(res, 400, { error: 'Could not process this response.' }); else res.destroy(); });
     });
     server.requestTimeout = 15000; server.headersTimeout = 10000; server.maxHeadersCount = 32;
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+    // Port 0 asks the OS for a free ephemeral loopback port, so an occupied
+    // port cannot collide. If binding still fails, forget the half-made server
+    // so a later checkpoint retries instead of serving with no origin.
+    try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); }); }
+    catch (error) { server = undefined; throw error; }
     origin = `http://127.0.0.1:${server.address().port}`; url = `${origin}/${token}`;
     output(`Sphinx questionnaire: ${url}`);
     if (!opened) {
@@ -144,12 +171,18 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (offLimits(operationEnv)) return { status: 'unavailable', reason: 'noninteractive', id: request?.id };
     if (closed || active) return { status: 'unavailable', id: request?.id };
     if (!request || !ID.test(request.id) || typeof request.repoRoot !== 'string') throw new Error('Invalid browser checkpoint request.');
-    const controller = new AbortController(); active = controller; waitingGit = request.delivery === 'hook';
+    const controller = new AbortController(); active = controller; skip = undefined; waitingGit = request.delivery === 'hook';
+    transcript = [];
     const cancel = () => controller.abort(requestSignal?.reason || cancelled());
     requestSignal?.addEventListener('abort', cancel, { once: true });
     if (requestSignal?.aborted) cancel();
     const timer = setTimeout(() => controller.abort(cancelled()), timeoutMs);
     let reservation, finalStatus = 'pending';
+    const skipped = async () => {
+      // A human chose to let Git continue. Log it; never write a receipt.
+      await logOverride({ kind: 'skip', repoRoot: request.repoRoot, target: state.target, id: request.id, reason: skip.reason }, operationEnv).catch(() => {});
+      return { status: 'skipped', id: request.id };
+    };
     const localSignal = controller.signal;
     const validate = async (snapshot, expected) => {
       localSignal.throwIfAborted();
@@ -180,7 +213,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         start: async () => {
           notes.length = 0;
           publish({ ...publicFields(store.public(await store.read(request.id))), repoRoot: request.repoRoot, phase: 'working', message: 'Reviewing the change…' });
-          return store.start(request.id, config, { signal: localSignal });
+          return store.start(request.id, config, { signal: localSignal, onProgress: text => { say({ role: 'sphinx', kind: 'activity', text }); publish(state); } });
         },
         choose: async prompt => {
           const current = store.public(await store.read(request.id));
@@ -188,16 +221,20 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
           return action.action;
         },
       });
-      if (!visible) return { status: 'pending', id: request.id };
+      if (!visible) return skip ? skipped() : { status: 'pending', id: request.id };
       while (visible.status !== 'passed') {
         localSignal.throwIfAborted();
+        showQuestion(visible);
         const action = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'question', ...(visible.browserError ? { error: visible.browserError } : {}) }, ['answer', 'learn', 'dispute']);
         try {
           await validate(session.snapshot, config);
           visible = await store.answer(request.id, action.action === 'learn' ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : action.response.trim(), config, {
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
           });
+          settle('graded');
+          if (visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
         } catch (error) {
+          settle('not-graded');
           localSignal.throwIfAborted(); await validate(session.snapshot, config);
           visible = store.public(await store.read(request.id));
           publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'question', error: error.message, message: 'Your response was not accepted. Review the error before submitting again.' });
@@ -210,6 +247,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'passed', message: 'Understanding check complete. Return to the original Git output for the operation’s result.' });
       return { status: 'passed', id: request.id };
     } catch (error) {
+      settle('not-graded');
+      if (skip) return skipped();
       publish({ ...publicFields(state), repoRoot: request.repoRoot, phase: localSignal.aborted ? 'paused' : 'error', message: localSignal.aborted ? pauseMessage() : 'The check could not finish. Saved progress and completed checkpoints are retained.', ...(localSignal.aborted ? {} : { error: error.message }) });
       return { status: 'pending', id: request.id };
     } finally {

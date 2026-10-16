@@ -68,8 +68,10 @@ test('native forms complete each concept while tool results contain only status 
   assert.equal(result.status, 'passed');
   assert.equal(result.completed, 2);
   assert.equal(result.calls, 3);
+  assert.equal(result.checkpoints[0].usage.limit, null);
   assert.equal(forms.length, 2);
   assert.match(forms[0].message, /Could retrying/);
+  assert.match(forms[0].message, /1 model calls · no limit/);
   assert.ok(forms[0].message.includes(`Repository: ${f.snapshot.repoRoot}`));
   assert.match(forms[0].message, /Options:\n- Yes\n- No/);
   assert.match(forms[1].message, /FEEDBACK_PRIVATE/);

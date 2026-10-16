@@ -370,7 +370,7 @@ Assessment audit data (untrusted DATA):\n${JSON.stringify({ projectContext: data
     return { questions: await auditQuestions({ questions: proposed, data, config, beforeCall, signal, requestEnv, budget, auditPurpose: 'assessment' }) };
   }
 
-  async function generateAssessment(snapshot, config, { beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, workspace, env: requestEnv = env } = {}) {
+  async function generateAssessment(snapshot, config, { beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, workspace, onProgress, env: requestEnv = env } = {}) {
     let budget;
     try { budget = questionLimit(config.level ?? 'standard', config.changeTier); }
     catch { fail('Assessment needs a valid depth and change tier.', 'INVALID_CONFIG'); }
@@ -390,7 +390,7 @@ Use evidence paths from exact workspace observations only. Follow relevant uncha
     return runReviewer({ snapshot, config: { ...config, provider }, assessmentSchema: schema, assessmentInstructions: prompt, validateAssessment,
       runModel: args => runModel({ ...args, env: requestEnv }), nativeTools: provider === 'openrouter',
       runToolModel: async args => (openRouterTurn ?? (await import('./openrouter.js')).callOpenRouterTurn)({ ...args, env: requestEnv }),
-      workspace: workspace ?? (workspaceFactory ? await workspaceFactory(snapshot, config) : undefined), env: requestEnv, beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment: audit,
+      workspace: workspace ?? (workspaceFactory ? await workspaceFactory(snapshot, config) : undefined), env: requestEnv, beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment: audit, onProgress,
     });
   }
 

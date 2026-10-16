@@ -9,7 +9,7 @@ function retryable(error, before, state, minimum) {
   // A failed preflight cannot improve by spending more. Budget exhaustion is
   // different: an explicit human choice can authorize a new allowance.
   if (state.usage.calls === before.usage.calls) {
-    return state.usage.limit - state.usage.calls < minimum
+    return state.usage.limit !== null && state.usage.limit - state.usage.calls < minimum
       && (error.code === 'REVIEWER_BUDGET' || /^Assessment call limit \(/u.test(error.message));
   }
   return !/API key|sign.in|model access|output (?:token )?limit|finish_reason: length|refused or filtered/iu.test(error.message);
@@ -21,6 +21,7 @@ function diagnostic(error, state) {
   const hints = [
     ` Run sphinx check --id ${state.id} --retry-review to explicitly authorize a fresh review allowance; prior usage will be retained.`,
     ` ${state.usage.limit - state.usage.calls} model calls remain in the existing assessment allowance (${state.usage.calls}/${state.usage.limit} used). When ready, retry within that allowance: sphinx check --id ${state.id}.`,
+    ` ${state.usage.calls} model calls used; no assessment call limit is set. When ready, continue the check: sphinx check --id ${state.id}.`,
   ];
   let message = error.message || String(error);
   for (const hint of hints) if (message.endsWith(hint)) message = message.slice(0, -hint.length);
@@ -47,14 +48,15 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
       signal?.throwIfAborted();
       const reserve = questionLimit(config.level, state.route.tier);
       const reviewMinimum = state.preparation.minimumReviewerCalls === 1 ? 1 : 2, minimum = reserve + reviewMinimum;
-      const remaining = state.usage.limit - state.usage.calls;
+      const unlimited = state.usage.limit === null;
+      const remaining = unlimited ? Infinity : state.usage.limit - state.usage.calls;
       const choices = [];
       ui.warning(diagnostic(error, state));
-      ui.note(`${state.usage.calls}/${state.usage.limit} model calls used. No questions or approval were recorded.`);
+      ui.note(`${unlimited ? `${state.usage.calls} model calls used; no assessment call limit is set` : `${state.usage.calls}/${state.usage.limit} model calls used`}. No questions or approval were recorded.`);
       if (retryable(error, before, state, minimum)) {
         if (remaining >= minimum) choices.push({
-          value: 'retry', label: state.preparation.resumable ? 'Continue the saved review' : 'Retry within the remaining allowance',
-          description: `${remaining} calls remain, including ${reserve} reserved for grading. ${state.preparation.resumable ? 'Reuse the evidence and investigation already saved.' : 'Keep the same evaluator route and total limit.'}`,
+          value: 'retry', label: state.preparation.resumable ? 'Continue the saved review' : unlimited ? 'Retry the review' : 'Retry within the remaining allowance',
+          description: `${unlimited ? 'No assessment call limit is set; all calls remain counted.' : `${remaining} calls remain, including ${reserve} reserved for grading.`} ${state.preparation.resumable ? 'Reuse the evidence and investigation already saved.' : 'Keep the same evaluator route and spending settings.'}`,
         });
         else if (config.maxModelCalls >= minimum) choices.push({
           value: 'extend', label: `Allow up to ${config.maxModelCalls} more calls and retry`,

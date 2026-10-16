@@ -5,7 +5,7 @@ import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 export const routeText = route => `${route.provider}${route.model ? `:${route.model}` : ''}`;
 export const splitList = value => String(value).split(',').map(item => item.trim()).filter(Boolean);
 export const questionCapsText = level => ['small', 'medium', 'large'].map(tier => `${tier} ${questionLimit(level, tier)}`).join(', ');
-export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${Math.min(config.agentMaxTurns ?? 8, reviewerTurnLimit(tier, config.agentMaxTurns) + 2)}`).join(', ');
+export const reviewCapsText = config => ['small', 'medium', 'large'].map(tier => `${tier} ${Math.min(config.agentMaxTurns ?? 8, reviewerTurnLimit(tier, config.agentMaxTurns ?? 8) + 2)}`).join(', ');
 
 export function createPrompts({ ask, ui, select }) {
   async function choose({ title, description, choices, current, requireSelection = false }) {
@@ -124,7 +124,7 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
     for (;;) {
       const choice = await prompts.choose({
         title: 'Choose your evaluator models',
-        description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode integrations need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. Setup makes no model calls.',
+        description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode integrations need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. There is no model-call cap by default. You can optionally set one later with sphinx config --max-model-calls 30, or clear a saved cap with --max-model-calls unlimited. Setup makes no model calls.',
         current, requireSelection: !current,
         choices: [
           ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` }] : []),

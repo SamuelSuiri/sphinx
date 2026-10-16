@@ -200,7 +200,7 @@ test('preparation charges each actual request, reuses questions, and cannot appr
   const review={version:1,summary:'Reviewed retry handling.',evidence:'insert()',evidencePaths:['src/order.js'],toolCalls:2,compactions:1};
   const {store,config}=await fixture(t,{
     generate:async(_snapshot,_config,{beforeCall,maxReviewerCalls})=>{
-      generations++; assert.ok(maxReviewerCalls>=3);
+      generations++; assert.ok(maxReviewerCalls===null||maxReviewerCalls>=3);
       await beforeCall(); await beforeCall(); await beforeCall();
       return{questions:[q],review};
     },

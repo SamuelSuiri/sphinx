@@ -9,8 +9,8 @@ export const DEFAULT_CONFIG = {
   level: 'standard', mode: 'block', events: ['pre-push'],
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
-  maxModelCalls: 20, maxOutputTokens: 4096, allowPaid: false,
-  agentMaxTurns: 8, toolResultBytes: 16000,
+  maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false,
+  agentMaxTurns: null, toolResultBytes: 16000,
   backgroundPreparation: true, preparationDebounceMs: 1500,
   models: {
     small: { provider: 'openrouter', model: 'openrouter/free' },
@@ -78,7 +78,9 @@ export function validateConfig(config) {
     if (!Array.isArray(config[key]) || config[key].some(x => typeof x !== 'string' || !x.length)) fail(`${key} must be an array of nonempty strings`);
   }
   if (config.events.some(x => !['pre-push','pre-commit'].includes(x))) fail('events must use pre-push or pre-commit');
-  for (const [key, min, max] of [['maxContextBytes',1000,1000000],['timeoutSeconds',1,600],['receiptHours',1,720],['maxModelCalls',1,100],['maxOutputTokens',512,16384],['agentMaxTurns',2,50],['toolResultBytes',1000,64000],['preparationDebounceMs',0,60000]]) {
+  if (config.maxModelCalls !== null && (!Number.isInteger(config.maxModelCalls) || config.maxModelCalls < 1 || config.maxModelCalls > 100)) fail('maxModelCalls must be null (unlimited) or an integer between 1 and 100');
+  if (config.agentMaxTurns !== null && (!Number.isInteger(config.agentMaxTurns) || config.agentMaxTurns < 2 || config.agentMaxTurns > 50)) fail('agentMaxTurns must be null (unlimited) or an integer between 2 and 50');
+  for (const [key, min, max] of [['maxContextBytes',1000,1000000],['timeoutSeconds',1,600],['receiptHours',1,720],['maxOutputTokens',512,16384],['toolResultBytes',1000,64000],['preparationDebounceMs',0,60000]]) {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) fail(`${key} must be an integer between ${min} and ${max}`);
   }
   if (!config.models || typeof config.models !== 'object') fail('models must define small, medium, and large routes');
@@ -175,7 +177,7 @@ export function policyHash(config) {
   // checkpoint identity within the same assessment contract.
   // Version the contract when assessment semantics change: older questions and
   // receipts must not stand in for an assessment under the new requirements.
-  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, assessmentContract: 3 })).digest('hex');
+  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, agentMaxTurns: 8, assessmentContract: 3 })).digest('hex');
 }
 
 export async function saveOpenRouterKey(key, env = process.env) {

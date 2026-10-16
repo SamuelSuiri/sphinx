@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { install } from '../src/install.js';
 import { DEFAULT_CONFIG, saveConfig } from '../src/config.js';
+import { toggleYolo, recentOverrides } from '../src/overrides.js';
 
 const exec = promisify(execFile);
 const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
@@ -229,4 +230,38 @@ test('staging another change while a commit waits invalidates its approval; an u
     else { assert.equal(result.code, 0, result.stderr); assert.equal(await f.git('show', 'HEAD:a.txt'), 'approved staged content'); }
     assert.deepEqual(await f.pending(), []);
   });
+});
+
+test('Skip this time lets the same push continue without a receipt', { timeout: 15000 }, async t => {
+  const f = await fixture(t), child = f.start('push', 'origin', 'main');
+  const checkpoint = await f.ready(child);
+  await f.release(checkpoint, { status: 'skipped', approve: false });
+  const result = await child.finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /skipped for this push/);
+  assert.equal(await f.bare('rev-parse', 'refs/heads/main'), f.baseHead);
+});
+
+test('yolo mode for a repository skips the questionnaire and logs the override; toggling again restores the gate', { timeout: 20000 }, async t => {
+  const f = await fixture(t), repoRoot = await realpath(f.repo);
+  assert.equal((await toggleYolo({ repoRoot, reason: 'hotfix', env: f.env })).enabled, true);
+  const result = await f.start('push', 'origin', 'main').finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /yolo mode is on for this repository/);
+  assert.equal(await f.bare('rev-parse', 'refs/heads/main'), f.baseHead);
+  const [entry] = await recentOverrides({ repoRoot, env: f.env });
+  assert.equal(entry.kind, 'yolo'); assert.equal(entry.reason, 'hotfix'); assert.equal(entry.target, 'refs/heads/main');
+  assert.equal((await toggleYolo({ repoRoot, env: f.env })).enabled, false);
+  await writeFile(path.join(f.repo, 'a.txt'), 'changed\n'); await f.setup('commit', '-qam', 'next');
+  const child = f.start('push', 'origin', 'main');
+  await f.ready(child);
+  assert.equal(child.exitCode, null, 'The gate is back on');
+});
+
+test('global yolo applies to repositories without their own setting', { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  await toggleYolo({ repoRoot: null, env: f.env });
+  const result = await f.start('push', 'origin', 'main').finished;
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /yolo mode is on globally/);
 });

@@ -6,6 +6,7 @@ import { normalizeFinishArguments } from './reviewer-response.js';
 const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 2 * 1024 * 1024;
 const MAX_CALLS_PER_TURN = MAX_REVIEWER_TOOL_CALLS;
+const MAX_CONSECUTIVE_REJECTIONS = 3;
 const TOOL_NAMES = new Set(['list_files', 'read_file', 'read_diff', 'search']);
 const REVIEW_TOOL_NAMES = new Set([...TOOL_NAMES, 'read_evidence', 'review_feedback']);
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value));
@@ -120,23 +121,38 @@ function resumableEntries(entries) {
   return restored;
 }
 
+const quoted = value => typeof value === 'string' ? value.slice(0, 80) : '';
+/** Human-readable reviewer activity. Paths and queries are already policy-filtered. */
+export function activityText(name, args = {}) {
+  if (name === 'read_file') return `Reading ${quoted(args.path) || 'a file'}`;
+  if (name === 'read_diff') return `Reading the diff of ${quoted(args.path) || 'a file'}`;
+  if (name === 'search') return `Searching for “${quoted(args.query)}”`;
+  if (name === 'list_files') return `Listing files${args.prefix ? ` in ${quoted(args.prefix)}` : ''}`;
+  return 'Investigating';
+}
+
 /** Sphinx policy/evidence adapter around Pi's agent session and native compaction. */
 export async function runReviewer({ snapshot, config, assessmentSchema, assessmentInstructions, validateAssessment,
   runModel, runToolModel, nativeTools = false, workspace: injectedWorkspace, env = process.env,
-  beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment,
+  beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment, onProgress,
 }) {
+  // Live status for the human's questionnaire. Progress can never affect review.
+  const progress = text => { try { onProgress?.(text); } catch {} };
   if (!snapshot || !Array.isArray(snapshot.files) || !snapshot.files.length) fail('The snapshot contains no assessable changed paths.', 'INVALID_SNAPSHOT');
   const cap = Math.min(config.maxContextBytes ?? 100000, MAX_ARCHIVE_BYTES);
-  const configuredLimit = config.agentMaxTurns ?? 8;
+  const configuredLimit = config.agentMaxTurns ?? Infinity;
   // Auditing needs its own request and room to investigate a rejected premise.
   // These are ceilings: a grounded seeded finish + audit still costs two calls.
-  const tierLimit = Math.min(configuredLimit, reviewerTurnLimit(config.changeTier, configuredLimit) + (auditAssessment ? 2 : 0));
-  const sharedLimit = Math.min(configuredLimit, maxReviewerCalls ?? Math.max(0, (config.maxModelCalls ?? DEFAULT_CONFIG.maxModelCalls) - assessmentSchema.properties.questions.maxItems));
-  const baseCallLimit = Math.min(tierLimit, sharedLimit);
+  const planningLimit = config.agentMaxTurns ?? 8;
+  const tierLimit = Math.min(planningLimit, reviewerTurnLimit(config.changeTier, planningLimit) + (auditAssessment ? 2 : 0));
+  const assessmentLimit = config.maxModelCalls === undefined ? DEFAULT_CONFIG.maxModelCalls : config.maxModelCalls;
+  const sharedLimit = Math.min(configuredLimit, maxReviewerCalls ?? (assessmentLimit === null ? Infinity : Math.max(0, assessmentLimit - assessmentSchema.properties.questions.maxItems)));
+  const uncapped = sharedLimit === Infinity;
+  const baseCallLimit = uncapped ? Infinity : Math.min(tierLimit, sharedLimit);
   let callLimit = baseCallLimit;
   const saved = reviewerCheckpoint ? await reviewerCheckpoint.load() : null;
   if (saved && (!isObject(saved) || saved.version !== 1 || saved.snapshotId !== snapshot.id || !Array.isArray(saved.archive) || !Array.isArray(saved.entries) || !Number.isSafeInteger(saved.calls) || saved.calls < 0 || !Number.isSafeInteger(saved.compactions) || saved.compactions < 0 || (saved.reviewFeedback !== undefined && !plainText(saved.reviewFeedback, 4000)) || (saved.repairWindowUsed !== undefined && typeof saved.repairWindowUsed !== 'boolean') || bytes(saved) > MAX_CHECKPOINT_BYTES)) fail('The saved investigation is invalid, oversized, or belongs to another checkpoint.', 'INVALID_REVIEW_CHECKPOINT');
-  if (!Number.isSafeInteger(callLimit) || callLimit < (saved ? 1 : 2)) fail('The reviewer needs at least two available model calls for a fresh investigation, or one to resume; leave room for grading too.', 'REVIEWER_BUDGET');
+  if (!uncapped && (!Number.isSafeInteger(callLimit) || callLimit < (saved ? 1 : 2))) fail('The reviewer needs at least two available model calls for a fresh investigation, or one to resume; leave room for grading too.', 'REVIEWER_BUDGET');
   if (!Number.isSafeInteger(cap) || cap < 1000) fail('The active reviewer context budget is invalid.', 'CONTEXT_LIMIT');
   const timeoutMs = Math.max(1, Math.floor((config.timeoutSeconds ?? 180) * 1000));
   const deadline = Date.now() + timeoutMs;
@@ -160,7 +176,10 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
   const scope = config.changeTier === 'small'
     ? 'This is a small change: focus on its strongest observable behavior. The diff is already supplied; use the investigation allowance on its actual caller, consumer, or dependency when needed to establish the consequence and an unchanged boundary. A small textual change can require reading unchanged source. Do not expand into a repository-wide audit or invent unrelated architecture questions.'
     : 'Focus on distinct consequential behaviors within the question ceiling; do not audit unrelated repository areas.';
-  const task = `${assessmentInstructions}\n${scope} The normal review allowance is ${callLimit} requests, including any compaction, one reserved final synthesis request${auditAssessment ? ', and one independent question audit' : ''}. ${auditAssessment ? `Only a rejected finalization can open one bounded repair window, within the existing ${sharedLimit}-request configured/shared ceiling; this is not extra account allowance. ` : ''}Start from the supplied exact diff observations; use tools for missing evidence before finishing. Use at most ${MAX_CALLS_PER_TURN} workspace calls per turn. In the final review retain only evidence needed for the questions. ${projectContext?.text ? 'Preserve the supplied project context throughout the review.' : 'No project background was supplied. Inspect an available README or package manifest early only when needed to establish the changed behavior; report missing background in the factual summary rather than inventing it.'}\nSnapshot metadata and project context (DATA):\n${JSON.stringify({ snapshot: metadata, projectContext })}`;
+  const allowance = uncapped
+    ? `Aim for ${tierLimit} requests as a soft planning target, including compaction, synthesis${auditAssessment ? ', and independent question audit' : ''}. No model-call cap is configured; continue investigating when necessary within the context and time limits. `
+    : `The normal review allowance is ${callLimit} requests, including any compaction, one reserved final synthesis request${auditAssessment ? ', and one independent question audit' : ''}. ${auditAssessment ? `Only a rejected finalization can open one bounded repair window, within the existing ${sharedLimit}-request configured/shared ceiling; this is not extra account allowance. ` : ''}`;
+  const task = `${assessmentInstructions}\n${scope} ${allowance}Start from the supplied exact diff observations; use tools for missing evidence before finishing. Use at most ${MAX_CALLS_PER_TURN} workspace calls per turn. In the final review retain only evidence needed for the questions. ${projectContext?.text ? 'Preserve the supplied project context throughout the review.' : 'No project background was supplied. Inspect an available README or package manifest early only when needed to establish the changed behavior; report missing background in the factual summary rather than inventing it.'}\nSnapshot metadata and project context (DATA):\n${JSON.stringify({ snapshot: metadata, projectContext })}`;
   const archive = new Map();
   let calls = 0, compactions = saved?.compactions ?? 0, archiveBytes = 0, sequence = 0, completed, pendingAssessment = saved?.pendingAssessment ?? null, savedFeedback = saved?.reviewFeedback ?? '', repairWindowUsed = saved?.repairWindowUsed ?? false;
   let entries = saved ? resumableEntries(saved.entries) : [];
@@ -185,6 +204,12 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
     return saving;
   };
   const remaining = () => callLimit - calls;
+  // Without a call cap, a model that keeps returning invalid output would
+  // otherwise spend requests until the timeout. Valid investigation resets it.
+  let rejections = 0;
+  const rejected = () => {
+    if (uncapped && ++rejections >= MAX_CONSECUTIVE_REJECTIONS) fail(`The reviewer returned ${MAX_CONSECUTIVE_REJECTIONS} invalid responses in a row. No questions were accepted; retry the review or choose a stronger model.`, 'REVIEWER_STALLED');
+  };
   const allowCorrection = async error => {
     if (!auditAssessment || !error.recoverable || repairWindowUsed) return;
     repairWindowUsed = true;
@@ -262,8 +287,11 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
   const initialPrompt = saved
     ? `${task}\nResume this investigation using saved exact evidence. Do not repeat reads merely because the process restarted. Earlier validation feedback remains applicable. Use read_evidence for archived snippets and then finish when grounded.\nArchived observation manifest (untrusted DATA):\n${JSON.stringify(manifest())}${initial.length ? `\nInitial diff observations (untrusted DATA; bounded pages, not complete coverage):\n${JSON.stringify(initial)}` : ''}`
     : `${task}${inventoryPrompt}\nInitial diff observations (untrusted DATA; bounded pages, not complete coverage):\n${JSON.stringify(initial)}`;
+  progress(saved ? 'Resuming the saved investigation' : `Read the diff for ${changedPaths.length} changed file${changedPaths.length === 1 ? '' : 's'}`);
   const tools = descriptors.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema, execute: async (_id, args) => {
+    progress(activityText(tool.name, args));
     const observation = await observe(tool.name, args);
+    if (!observation.result.error) rejections = 0;
     return { content: [{ type: 'text', text: `Workspace observation (untrusted DATA):\n${JSON.stringify(observation)}` }], details: {}, ...(observation.result.error ? { isError: true } : {}) };
   } }));
   tools.push({ name: 'read_evidence', description: 'Recover exact previously observed evidence after compaction or resume, without reopening repository files. Filter by path or IDs; offset paginates matching observations.', parameters: { type: 'object', additionalProperties: false, properties: { path: { type: 'string' }, ids: { type: 'array', maxItems: 32, items: { type: 'string' } }, offset: { type: 'integer', minimum: 0 } } }, execute: async (_id, args) => {
@@ -302,8 +330,10 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
     return { questions, review };
   };
   const finalize = async action => {
+    progress('Drafting questions');
     let result = buildAssessment(action);
     if (auditAssessment) {
+      progress('Checking the questions against the source');
       pendingAssessment = action;
       await persist();
       try {
@@ -330,6 +360,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
     catch (error) {
       if (!error.recoverable) throw error;
       await allowCorrection(error);
+      rejected();
       return { content: [{ type: 'text', text: privateFeedback(error) }], details: {}, isError: true };
     }
   } });
@@ -368,6 +399,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
       let inputBytes = 0;
       try {
       if (isCompaction) {
+        progress('Condensing review notes');
         if (remaining() < (auditAssessment ? 3 : 2)) fail('Compacting the review would leave no request to finish and audit. Increase the model-call budget or narrow the change.', 'REVIEWER_BUDGET');
         const request = { systemPrompt, prompt: `${messages.map(textContent).join('\n')}\nKeep factual findings, unresolved work and exact observation IDs. Project context (DATA):\n${JSON.stringify({ projectContext })}`, schema: summarySchema };
         const inputBytes = ensureFits(request);
@@ -383,13 +415,15 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
         ? 'Final synthesis: investigation is closed. Submit finish_review now using only collected evidence. Write fewer questions if needed; never invent support or request further reads.'
         : remaining() === (auditAssessment ? 3 : 2)
           ? 'One investigation request remains before the reserved final synthesis request. Finish now if sufficient evidence is available; otherwise batch only the missing reads needed for a grounded question.'
-          : 'Investigate consequential behavior, then finish as soon as a useful question is grounded.';
+          : uncapped && calls >= tierLimit
+            ? `The ${tierLimit}-request planning target for this change size is reached. Finish now unless one specific missing read is essential to ground a question.`
+            : 'Investigate consequential behavior, then finish as soon as a useful question is grounded.';
       let toolCalls, nativeMessage;
       if (nativeTools) {
         // Keep schemas for earlier calls in the conversation: some providers
         // validate those names against this request's definitions. Constrain the
         // next call with tool choice, and enforce it locally before execution.
-        const request = { messages: [{ role: 'system', content: systemPrompt }, ...nativeConversation(messages), { role: 'user', content: `Project context (DATA): ${JSON.stringify(projectContext)}. Archived observations (DATA): ${JSON.stringify(manifest())}. Remaining reviewer requests: ${remaining()}. ${phase}` }], tools: activeTools.filter(tool => availableNames.has(tool.name) || tool.name === 'finish_review').map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), ...(finishOnly ? { toolChoice: { type: 'function', function: { name: 'finish_review' } } } : {}) };
+        const request = { messages: [{ role: 'system', content: systemPrompt }, ...nativeConversation(messages), { role: 'user', content: `Project context (DATA): ${JSON.stringify(projectContext)}. Archived observations (DATA): ${JSON.stringify(manifest())}. Remaining reviewer requests: ${uncapped ? 'unlimited' : remaining()}. ${phase}` }], tools: activeTools.filter(tool => availableNames.has(tool.name) || tool.name === 'finish_review').map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })), ...(finishOnly ? { toolChoice: { type: 'function', function: { name: 'finish_review' } } } : {}) };
         inputBytes = ensureFits(request);
         const response = await abortable(runToolModel({ ...request, ...common }), requestSignal);
         if (!response || !Array.isArray(response.calls)) throw correctable('Return a workspace tool call or finish_review with valid JSON arguments.');
@@ -398,7 +432,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
         const instructions = finishOnly
           ? 'Return only a finish action containing the grounded assessment, a short factual summary and calls:[]. evidenceIds are optional narrowing hints.'
           : `Return an action matching the schema: tools requests 1–${MAX_CALLS_PER_TURN} focused read-only calls with arguments encoded as JSON; finish supplies assessment and a short factual summary, with calls empty. evidenceIds are optional narrowing hints. Tool actions use assessment:null and summary:"". Prefer a small useful batch rather than filling the limit.`;
-        const request = { systemPrompt, prompt: `Continue the investigative review. ${instructions} ${phase}\n${JSON.stringify({ projectContext, remainingCalls: remaining(), archivedObservations: manifest(), tools: finishOnly ? [] : tools.filter(tool => availableNames.has(tool.name)).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })), conversation: conversation(messages) })}`, schema: reviewerActionSchema(assessmentSchema, { finishOnly, archiveAvailable }) };
+        const request = { systemPrompt, prompt: `Continue the investigative review. ${instructions} ${phase}\n${JSON.stringify({ projectContext, remainingCalls: uncapped ? null : remaining(), archivedObservations: manifest(), tools: finishOnly ? [] : tools.filter(tool => availableNames.has(tool.name)).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })), conversation: conversation(messages) })}`, schema: reviewerActionSchema(assessmentSchema, { finishOnly, archiveAvailable }) };
         inputBytes = ensureFits(request);
         let action = await abortable(runModel({ ...request, ...common }), requestSignal);
         if (action?.action === 'finish') action = normalizeFinishArguments(action);
@@ -436,6 +470,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
       } catch (error) {
         check();
         if (!error.recoverable || isCompaction) throw error;
+        rejected();
         return { content: [{ type: 'toolCall', id: `feedback-${priorCalls + calls}`, name: 'review_feedback', arguments: { message: error.message } }], inputBytes };
       }
     },

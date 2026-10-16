@@ -172,6 +172,8 @@ test('CLI keeps a failed evaluator pending and enforces the checkpoint on retry'
 test('CLI explicitly retries a failed review without erasing prior usage or resetting active questions', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  // Extending an allowance only applies to an explicitly configured cap.
+  f.cli('config', '--max-model-calls', '20');
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   const failed = f.run(process.execPath, [CLI, 'check', '--json'], { env: { ...f.env, SPHINX_TEST_FAILURE: '1' } });
   assert.equal(failed.status, 1);
@@ -587,4 +589,17 @@ test('post-commit preparation investigates before push and the native gate reuse
   f.git('push', 'origin', 'main');
   assert.equal(f.git('ls-remote', 'origin', 'refs/heads/main').split('\t')[0], f.git('rev-parse', 'HEAD'));
   client.child.stdin.end();
+});
+
+test('without a call cap, --retry-review simply continues a failed review', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
+  assert.equal(f.run(process.execPath, [CLI, 'check', '--json'], { env: { ...f.env, SPHINX_TEST_FAILURE: '1' } }).status, 1);
+  const before = f.cliJson('pending')[0];
+  assert.equal(before.usage.limit, null);
+  const retried = f.cliJson('check', '--id', before.id, '--retry-review');
+  assert.equal(retried.status, 'active');
+  assert.equal(retried.usage.limit, null);
+  assert.ok(retried.usage.calls > before.usage.calls, 'Prior usage is kept and counted');
 });

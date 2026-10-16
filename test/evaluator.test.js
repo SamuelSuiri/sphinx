@@ -29,7 +29,8 @@ function auditQuestions(prompt) {
   return { questions: data.proposedQuestions };
 }
 
-const config = { provider: 'codex', level: 'standard', timeoutSeconds: 3, maxContextBytes: 120000 };
+// Fail-closed cases below run under an explicit call cap; see the uncapped stall test.
+const config = { provider: 'codex', level: 'standard', timeoutSeconds: 3, maxContextBytes: 120000, maxModelCalls: 20, agentMaxTurns: 8 };
 const parentContext = {
   CODEX_THREAD_ID: 'parent-thread', CODEX_PARENT_THREAD_ID: 'parent',
   CLAUDE_SESSION_ID: 'parent-session', CLAUDECODE: '1', SPHINX_CLAUDE_SESSION: 'claude-parent',
@@ -323,7 +324,7 @@ test('a small change requests one bounded question and rejects an oversized ques
   const change = { ...snapshot, files: ['src/orders.js'], stats: { additions: 14, deletions: 9, files: 1 } };
   for (const level of ['relaxed', 'standard', 'thorough']) {
     let request;
-    const settings = { ...DEFAULT_CONFIG, level };
+    const settings = { ...DEFAULT_CONFIG, maxModelCalls: 20, agentMaxTurns: 8, level };
     const runtime = evaluatorConfig(settings, selectRoute(change, settings));
     const { evaluator } = await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { request = args; }) });
     assert.equal((await evaluator.generateAssessment(change, runtime)).questions.length, 1);

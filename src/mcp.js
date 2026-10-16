@@ -100,7 +100,7 @@ export function validateElicitationResult(result, schema) {
   return { action: 'accept', content: JSON.parse(JSON.stringify(result.content)) };
 }
 
-/** Only fixed statuses, numeric progress, and checkpoint IDs may reach the model. */
+/** Only fixed statuses, numeric progress, optional usage limits, and checkpoint IDs may reach the model. */
 export function sanitizeCheckpointSummary(value) {
   if (!object(value) || !SUMMARY_STATUSES.has(value.status)) throw new McpTransportError('Invalid checkpoint summary.', 'INVALID_CHECKPOINT_SUMMARY');
   const summary = { status: value.status, checkpoints: [] };
@@ -111,7 +111,7 @@ export function sanitizeCheckpointSummary(value) {
       const item = { id: checkpoint.id, status: checkpoint.status };
       for (const [field, keys] of [['progress', ['completed', 'total']], ['usage', ['calls', 'limit']]]) {
         if (checkpoint[field] !== undefined) {
-          if (!object(checkpoint[field]) || keys.some(key => !count(checkpoint[field][key]))) throw new McpTransportError('Invalid checkpoint summary.', 'INVALID_CHECKPOINT_SUMMARY');
+          if (!object(checkpoint[field]) || keys.some(key => !(field === 'usage' && key === 'limit' && checkpoint[field][key] === null) && !count(checkpoint[field][key]))) throw new McpTransportError('Invalid checkpoint summary.', 'INVALID_CHECKPOINT_SUMMARY');
           item[field] = Object.fromEntries(keys.map(key => [key, checkpoint[field][key]]));
         }
       }

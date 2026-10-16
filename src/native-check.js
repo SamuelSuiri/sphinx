@@ -3,6 +3,7 @@ import { revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { listPresentations, claimPresentation } from './presentations.js';
 import { claimCheckpointDialog, finishCheckpointDialog } from './terminal-launch.js';
+import { modelUsageText } from './usage.js';
 
 const LEARN_REQUEST = 'I do not know. Explain this concept and give me a different scenario to apply it to.';
 const ACTIONS = ['answer', 'learn', 'dispute', 'pause'];
@@ -13,6 +14,7 @@ function formFor(state, notice, repoRoot) {
     `Sphinx: ${state.progress.completed + 1} of ${state.progress.total} concepts`,
     `Repository: ${repoRoot}`,
     `Destination: ${state.target}`,
+    ...(state.usage ? [modelUsageText(state.usage)] : []),
     ...(notice ? [`\n${notice}`] : []),
     ...(state.feedback ? [`\nPrevious feedback:\n${state.feedback}`] : []),
     `\n${question.prompt}`,
@@ -50,7 +52,7 @@ function checkpointSummary(id, state, status) {
   return {
     id, status,
     progress: { completed: number(state?.progress?.completed), total: number(state?.progress?.total) },
-    usage: { calls: number(state?.usage?.calls), limit: number(state?.usage?.limit) },
+    usage: { calls: number(state?.usage?.calls), limit: state?.usage?.limit === null ? null : number(state?.usage?.limit) },
   };
 }
 function summary(status, checkpoints = []) {

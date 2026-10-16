@@ -4,6 +4,7 @@ import { repository, pushSnapshots, commitSnapshot, revalidateSnapshot } from '.
 import { createSessionStore } from './sessions.js';
 import { queuePresentation, claimPresentation, listPresentations } from './presentations.js';
 import { createBrowserInterview } from './browser-interview.js';
+import { yoloStatus, recordOverride } from './overrides.js';
 
 async function snapshotsFor({ event, args, input, cwd, config, env }) {
   if (event === 'pre-push') return pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config, env });
@@ -24,7 +25,7 @@ export function interviewEnvironment(cwd, env) {
 /** Wait inside Git's original hook. Never reconstruct or replay a Git command. */
 export async function runGitGate({ event, args = [], input = '', cwd = process.cwd(), env = process.env, signal,
   store: providedStore, readConfig = loadConfig, snapshotsFor: collectSnapshots = snapshotsFor,
-  revalidate = revalidateSnapshot, present,
+  revalidate = revalidateSnapshot, present, readYolo = yoloStatus, logOverride = recordOverride,
   queue = queuePresentation, claim = claimPresentation, listRequests = listPresentations,
   output = line => process.stderr.write(`${line}\n`),
 } = {}) {
@@ -51,13 +52,20 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     pending.push({ snapshot, session });
     output(`Sphinx: understanding check needed for ${snapshot.target.ref} (${session.route.tier} change).`);
   }
+  const yolo = pending.length ? await readYolo(repo.root, env) : null;
+  if (yolo) {
+    // Skipped checks stay pending; nothing is marked as understood.
+    for (const { snapshot, session } of pending) await logOverride({ kind: 'yolo', repoRoot: repo.root, target: snapshot.target.ref, id: session.id, head: snapshot.head, reason: yolo.reason }, env);
+    output(`Sphinx: yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'}; skipping the understanding check. The check stays pending for later. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`);
+    return 0;
+  }
   if (config.mode === 'advisory') {
     for (const { session } of pending) await queue(session, { env });
     if (pending.length) output('Sphinx: advisory mode; allowing this operation with an incomplete assessment.');
     return 0;
   }
 
-  const requests = [];
+  const requests = [], skipped = new Set();
   const browser = present ? null : createBrowserInterview({ env, signal, output });
   try {
     // These requests belong to the waiting hook, not a post-tool callback.
@@ -85,6 +93,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
         output('Sphinx: no local questionnaire is available in this environment. This Git operation was stopped. Complete the queued check, then start the Git operation again.');
         return 1;
       }
+      if (result?.status === 'skipped') { skipped.add(requests[index].id); output('Sphinx: understanding check skipped for this push. It was logged and stays pending for later.'); continue; }
       if (result?.status !== 'passed') {
         output('Sphinx: the understanding check is incomplete, cancelled, or timed out. This Git operation was stopped; progress is saved.');
         return 1;
@@ -94,6 +103,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     // The interview result is only a wake-up signal. Every original destination
     // needs a current receipt, including snapshots approved before the wait.
     for (const snapshot of snapshots) {
+      if (skipped.has(snapshot.id)) continue;
       await validate(snapshot, config);
       if (!(await store.approved(snapshot, config))) {
         output('Sphinx: no valid completion exists for this exact change and destination. This Git operation was stopped.');

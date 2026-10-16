@@ -6,12 +6,20 @@ import { askInstall, askPolicy, createPrompts } from '../src/prompts.js';
 import { applyInstallOptions } from '../src/cli.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { presetOptions } from '../src/model-presets.js';
+import { modelUsageText, modelLimitText } from '../src/usage.js';
 
 function capture({ width = 80, env = {}, tty = false } = {}) {
   let text = '';
   const stream = { isTTY: tty, columns: width, write(value) { text += value; } };
   return { stream, ui: createTerminal({ stream, env }), text: () => text };
 }
+
+test('human usage keeps uncapped calls visible without a numeric denominator', () => {
+  assert.equal(modelUsageText({ calls: 20, limit: null }), '20 model calls · no limit');
+  assert.equal(modelUsageText({ calls: 7, limit: 30 }), '7/30 model calls');
+  assert.equal(modelLimitText(null), 'no limit');
+  assert.equal(modelLimitText(30), '30 model calls per assessment');
+});
 
 test('color follows terminal, NO_COLOR, TERM=dumb, and explicit FORCE_COLOR policy', () => {
   assert.equal(colorEnabled({ stream: { isTTY: true }, env: {} }), true);
@@ -108,6 +116,8 @@ test('text prompts reject bad routes before returning a valid option', async () 
 
 test('accepting onboarding defaults preserves existing per-tier models and reversed event order', async () => {
   const current = structuredClone(DEFAULT_CONFIG);
+  current.maxModelCalls = 12;
+  current.agentMaxTurns = 6;
   current.events = ['pre-commit', 'pre-push'];
   current.models = { small: { provider: 'openrouter', model: 'openrouter/free' }, medium: { provider: 'claude', model: 'sonnet' }, large: { provider: 'codex', model: 'custom-model' } };
   const output = capture();
@@ -115,6 +125,9 @@ test('accepting onboarding defaults preserves existing per-tier models and rever
   const updated = applyInstallOptions(current, values);
   assert.deepEqual(updated.models, current.models);
   assert.deepEqual(updated.events, current.events);
+  assert.equal(updated.maxModelCalls, 12);
+  assert.equal(updated.agentMaxTurns, 6);
+  assert.match(output.text().replace(/\s+/g, ' '), /no model-call cap by default/);
   assert.deepEqual(current.models.large, { provider: 'codex', model: 'custom-model' });
 });
 

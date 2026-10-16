@@ -45,8 +45,8 @@ function validReceipt(session, config) {
   return session?.status === 'passed' && session.policy === policyHash(config) && Date.parse(session.expiresAt) > Date.now();
 }
 function callLimit(session) {
-  const limit = session.callLimit ?? session.config.maxModelCalls;
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('The assessment call limit is invalid.');
+  const limit = session.callLimit === undefined ? session.config.maxModelCalls : session.callLimit;
+  if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) throw new Error('The assessment call limit is invalid.');
   return limit;
 }
 // A saved candidate can resume its independent audit directly. An investigation
@@ -64,7 +64,12 @@ function withRecoveryMessage(error, message) {
 }
 function reviewFailure(error, session, signal) {
   if (signal?.aborted || error?.name === 'AbortError') return error;
-  const remaining = callLimit(session) - session.calls - questionLimit(session.config.level, session.route.tier);
+  const limit = callLimit(session);
+  if (limit === null) {
+    if (!['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code)) return error;
+    return withRecoveryMessage(error, `${error.message} ${session.calls} model calls used; no assessment call limit is set. When ready, continue the check: sphinx check --id ${session.id}.`);
+  }
+  const remaining = limit - session.calls - questionLimit(session.config.level, session.route.tier);
   const minimum = minimumReviewerCalls(session);
   if (['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code) && remaining >= minimum) {
     const totalRemaining = callLimit(session) - session.calls;
@@ -99,7 +104,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     const global = await readJson(getPaths(env).config, undefined);
     if (global !== undefined && (!global || typeof global !== 'object' || Array.isArray(global))) throw new Error('Global Sphinx configuration must be a JSON object.');
     const configuredLimit = global === undefined ? config.maxModelCalls : Object.hasOwn(global, 'maxModelCalls') ? global.maxModelCalls : DEFAULT_CONFIG.maxModelCalls;
-    if (!Number.isSafeInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 100) throw new Error('maxModelCalls must be an integer between 1 and 100.');
+    if (configuredLimit !== null && (!Number.isSafeInteger(configuredLimit) || configuredLimit < 1 || configuredLimit > 100)) throw new Error('maxModelCalls must be null (unlimited) or an integer between 1 and 100.');
     if (session.config.maxModelCalls === configuredLimit) return;
     const at = now(), previousLimit = callLimit(session);
     session.budgetChanges = [...(session.budgetChanges || []), { at, calls: session.calls, previousConfiguredLimit: session.config.maxModelCalls, configuredLimit, previousLimit, limit: configuredLimit }];
@@ -132,8 +137,10 @@ export function createSessionStore({ env = process.env, generate = generateAsses
   }
   async function budget(session, reserve = 0) {
     await syncCallLimit(session, session.config);
-    if (reserve && session.calls >= callLimit(session) - reserve) throw new Error(`Assessment call limit (${callLimit(session)}) leaves no investigation calls after reserving ${reserve} for grading. No additional model request was made.`);
-    if (session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.${session.questions.length ? '' : ` ${retryHint(session)}`}`);
+    const limit = callLimit(session);
+    if (limit !== null && reserve && session.calls >= limit - reserve) throw new Error(`Assessment call limit (${limit}) leaves no investigation calls after reserving ${reserve} for grading. No additional model request was made.`);
+    if (limit !== null && session.calls >= limit) throw new Error(`Assessment call limit (${limit}) reached. No additional model request was made.${session.questions.length ? '' : ` ${retryHint(session)}`}`);
+    if (!Number.isSafeInteger(session.calls + 1)) throw new Error('The assessment usage counter cannot be incremented safely.');
     session.calls += 1;
     session.updatedAt = now();
     await save(session); // Failed requests also consume the local attempt budget.
@@ -176,12 +183,16 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       signal?.throwIfAborted();
       await syncCallLimit(session, config);
       if (session.status !== 'pending' || session.questions.length || session.preparation?.status !== 'failed') throw new Error('Only a failed review with no questions can be restarted. Active questions and completed checks are preserved.');
+      // Unlimited assessments need no additional authorization. Preserve their
+      // failed state so an ordinary start can resume saved investigation work.
+      if (callLimit(session) === null) return publicSession(session);
       const reserve = questionLimit(config.level, session.route.tier);
       const minimum = minimumReviewerCalls(session);
-      if (config.maxModelCalls < reserve + minimum) throw new Error(`A ${minimum === 1 ? 'saved audit' : 'review'} needs at least ${minimum} investigation call(s) and ${reserve} reserved grading call(s). The configured allowance of ${config.maxModelCalls} cannot fit this review. No model request was made.`);
+      const extension = config.maxModelCalls ?? session.config.maxModelCalls;
+      if (extension < reserve + minimum) throw new Error(`A ${minimum === 1 ? 'saved audit' : 'review'} needs at least ${minimum} investigation call(s) and ${reserve} reserved grading call(s). The configured allowance of ${extension} cannot fit this review. No model request was made.`);
       // A recovery menu may predate a global ceiling increase. An explicit
       // one-attempt extension must never lower that newly adopted ceiling.
-      const previousLimit = callLimit(session), limit = Math.max(previousLimit, session.calls + config.maxModelCalls);
+      const previousLimit = callLimit(session), limit = Math.max(previousLimit, session.calls + extension);
       if (!Number.isSafeInteger(limit)) throw new Error('The assessment call limit cannot be extended further.');
       const at = now();
       session.reviewRetries = [...(session.reviewRetries || []), { at, calls: session.calls, previousLimit, limit }];
@@ -193,7 +204,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       return publicSession(session);
     }, { signal });
   }
-  async function prepare(id, config, {signal, wait = false} = {}) {
+  async function prepare(id, config, {signal, wait = false, onProgress} = {}) {
     return withLock(id,env,async () => {
       signal?.throwIfAborted();
       const session = await read(id);
@@ -206,20 +217,23 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       signal?.throwIfAborted();
       if (!session.questions.length) {
         const reserve = questionLimit(config.level, session.route.tier);
-        const maxReviewerCalls = Math.min(config.agentMaxTurns, callLimit(session) - session.calls - reserve);
+        const limit = callLimit(session);
+        const available = Math.min(config.agentMaxTurns ?? Infinity, limit === null ? Infinity : limit - session.calls - reserve);
+        const maxReviewerCalls = available === Infinity ? null : available;
         const minimumCalls = minimumReviewerCalls(session);
-        if (maxReviewerCalls < minimumCalls) {
+        if (maxReviewerCalls !== null && maxReviewerCalls < minimumCalls) {
           session.preparation = { status: 'failed', completedAt: now() };
           session.updatedAt = now();
           await save(session);
-          throw new Error(`Assessment call limit (${callLimit(session)}) leaves ${Math.max(0, maxReviewerCalls)} investigation call(s); review needs at least ${minimumCalls}, plus ${reserve} reserved grading call(s). No model request was made. ${retryHint(session)}`);
+          if (limit === null || config.agentMaxTurns !== null && config.agentMaxTurns < minimumCalls) throw new Error(`Configured reviewer turn limit (${config.agentMaxTurns}) cannot fit this review; at least ${minimumCalls} investigation call(s) are required. No model request was made.`);
+          throw new Error(`Assessment call limit (${limit}) leaves ${Math.max(0, maxReviewerCalls)} investigation call(s); review needs at least ${minimumCalls}, plus ${reserve} reserved grading call(s). No model request was made. ${retryHint(session)}`);
         }
         session.preparation = { status: 'running', startedAt: now() };
         await save(session);
         let requests = 0;
         const beforeCall = async () => {
           signal?.throwIfAborted();
-          if (requests >= maxReviewerCalls) throw new Error('Reviewer call limit reached. The check remains pending.');
+          if (maxReviewerCalls !== null && requests >= maxReviewerCalls) throw new Error('Reviewer call limit reached. The check remains pending.');
           await validate(session.snapshot, config);
           await budget(session, reserve);
           requests++;
@@ -240,7 +254,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           },
         };
         try {
-          const result = await generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,env});
+          const result = await generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env});
           signal?.throwIfAborted();
           if (!Array.isArray(result.questions) || !result.questions.length) throw new Error('Evaluator returned no grounded questions. The check remains pending.');
           if (result.questions.length > reserve) throw new Error('Evaluator exceeded the question limit. The check remains pending.');
@@ -282,7 +296,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         error.code = 'SPHINX_STALE_QUESTION';
         throw error;
       }
-      if (session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.`);
+      if (callLimit(session) !== null && session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.`);
       const beforeCall = async () => { signal?.throwIfAborted(); await budget(session); signal?.throwIfAborted(); };
       const result = await grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env});
       signal?.throwIfAborted();

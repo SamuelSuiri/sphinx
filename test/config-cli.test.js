@@ -86,6 +86,31 @@ test('invalid limits fail before writing while both documented boundaries are ac
   assert.equal(JSON.parse(f.ok(['config', '--max-model-calls', '100', '--json'])).maxModelCalls, 100);
 });
 
+test('call caps default to unlimited and explicit unlimited aliases clear a saved cap without inference', async t => {
+  const f = await fixture(t);
+  const initial = JSON.parse(f.ok(['config', '--json']));
+  assert.equal(initial.maxModelCalls, null);
+  assert.equal(initial.agentMaxTurns, null);
+  for (const value of ['unlimited', 'none']) {
+    f.ok(['config', '--max-model-calls', '20', '--json']);
+    const saved = JSON.parse(f.ok(['config', '--max-model-calls', value, '--json']));
+    assert.equal(saved.previousMaxModelCalls, 20);
+    assert.equal(saved.maxModelCalls, null);
+    assert.equal(saved.config.maxModelCalls, null);
+    assert.deepEqual(saved.config.models, initial.models);
+    assert.equal(JSON.parse(await readFile(f.configPath, 'utf8')).maxModelCalls, null);
+  }
+  const output = f.ok(['config', '--max-model-calls', 'unlimited']).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\s+/g, ' ');
+  assert.match(output, /Saved machine-wide limit: no limit \(previously no limit\)/);
+  assert.doesNotMatch(output, /\bnull\b|Infinity|\/null/);
+  const displayed = f.ok(['config']).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\s+/g, ' ');
+  assert.match(displayed, /Model calls: no limit/);
+  assert.match(displayed, /Reviewer turns No request limit/);
+  assert.doesNotMatch(displayed, /\bnull\b|Infinity|\/null/);
+  await f.absent(path.join(f.state, 'sessions'));
+  await f.absent(f.env.GIT_CONFIG_GLOBAL);
+});
+
 test('output-token allowance is explicit, bounded, and preserves model routes and total calls', async t => {
   const f = await fixture(t);
   const before = JSON.parse(f.ok(['config', '--json']));
@@ -114,8 +139,10 @@ test('install accepts the total call limit, preserves it on rerun, and rejects i
   f.ok(['install', '--yes', '--agents', 'none']);
   assert.equal(JSON.parse(await readFile(f.configPath, 'utf8')).maxModelCalls, 35);
   const config = JSON.parse(f.ok(['config', '--json']));
-  assert.equal(config.agentMaxTurns, 8);
+  assert.equal(config.agentMaxTurns, null);
   assert.equal(config.models.small.provider, 'claude');
+  f.ok(['install', '--yes', '--agents', 'none', '--max-model-calls', 'unlimited']);
+  assert.equal(JSON.parse(await readFile(f.configPath, 'utf8')).maxModelCalls, null);
 });
 
 test('configuration help documents the setter without saving and text output separates total and review limits', async t => {
@@ -126,7 +153,9 @@ test('configuration help documents the setter without saving and text output sep
   await f.absent(f.configPath);
   const output = f.ok(['config', '--max-model-calls', '30']).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\s+/g, ' ');
   assert.match(output, /Saved machine-wide limit: 30 model calls per assessment/);
-  assert.match(output, /Normal audited review caps: small 5, medium 7, large 8/);
+  assert.match(output, /Review planning targets: small 5, medium 7, large 8/);
+  assert.match(JSON.stringify(help), /unlimited/);
+  assert.match(JSON.stringify(help), /Default: no limit/);
 });
 
 test('a fresh unattended installation requires a reviewer choice before writing hooks or credentials', async t => {
@@ -198,7 +227,7 @@ test('paid presets need an explicit flag or previously saved paid permission', a
     large: { provider: 'openrouter', model: 'anthropic/claude-haiku-5.5' },
   });
   assert.equal(value.config.maxOutputTokens, 8192);
-  assert.equal(value.config.maxModelCalls, 20);
+  assert.equal(value.config.maxModelCalls, null);
   const override = JSON.parse(f.ok(['config', '--preset', 'openrouter-value', '--max-output-tokens', '6144', '--json']));
   assert.equal(override.config.maxOutputTokens, 6144);
   const alternative = JSON.parse(f.ok(['config', '--preset', 'openrouter-deepseek', '--json']));

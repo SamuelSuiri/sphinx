@@ -21,6 +21,8 @@ import { askInstall, askPolicy, createPrompts, questionCapsText, reviewCapsText,
 import { runGitGate } from './git-gate.js';
 import { loadProjectContext } from './repo-context.js';
 import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
+import { modelUsageText, modelLimitText } from './usage.js';
+import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
@@ -32,7 +34,7 @@ const OPTIONS = {
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: [], uninstall: ['repo'],
-  mcp: [],
+  mcp: [], yolo: ['json', 'reason'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
 const ui = () => createTerminal();
@@ -105,7 +107,8 @@ async function gate({ event, args, input, cwd }) {
 }
 
 function parseModelCalls(value) {
-  if (!/^(?:[1-9]|[1-9][0-9]|100)$/u.test(String(value))) throw new Error('--max-model-calls must be a whole number from 1 to 100.');
+  if (['unlimited', 'none'].includes(String(value).toLowerCase())) return null;
+  if (!/^(?:[1-9]|[1-9][0-9]|100)$/u.test(String(value))) throw new Error('--max-model-calls must be a whole number from 1 to 100, or unlimited (none is an alias).');
   return Number(value);
 }
 
@@ -166,8 +169,9 @@ function printConfiguration(terminal, config, { routes = true } = {}) {
   if (routes) {
     terminal.section('Evaluator routes');
     terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
-    terminal.blank(); terminal.note(`Up to ${config.maxModelCalls} model calls per assessment, including failed requests. Completion lasts ${config.receiptHours} hours unless code, destination, or policy changes.`);
-    terminal.note(`Normal audited review caps: ${reviewCapsText(config)} calls. One repair window may use up to 3 more within agentMaxTurns and the same total allowance. Grading and audited learning questions share that total.`);
+    terminal.blank(); terminal.note(`Model calls: ${modelLimitText(config.maxModelCalls)}. Review, compaction, grading, learning, and failed requests stay counted. Completion lasts ${config.receiptHours} hours unless code, destination, or policy changes.`);
+    terminal.note(`Review planning targets: ${reviewCapsText(config)} calls. These are soft targets; only explicitly configured request limits stop further calls. Context limits and deadlines still apply.`);
+    terminal.note('A call cap is optional. Set one with sphinx config --max-model-calls 30, or clear it with --max-model-calls unlimited.');
   }
 }
 
@@ -312,7 +316,7 @@ function printSession(session, terminal = ui()) {
       : 'Approval saved for this exact change and destination. A waiting Git operation can now continue.');
     return;
   }
-  terminal.blank(); terminal.note(`${session.route.tier} change · ${routeText(session.route)} · ${session.usage.calls}/${session.usage.limit} model calls`);
+  terminal.blank(); terminal.note(`${session.route.tier} change · ${routeText(session.route)} · ${modelUsageText(session.usage)}`);
   if (!session.question) { terminal.paragraph('Assessment queued. Run sphinx check to begin.'); return; }
   terminal.section(`Question ${session.progress.completed + 1} of ${session.progress.total}`); terminal.paragraph(session.question.prompt);
   if (session.question.choices.length) { terminal.blank(); terminal.rows(session.question.choices.map((choice, index) => [`${index + 1}.`, choice])); }
@@ -344,7 +348,9 @@ async function checkCommand(values) {
     if (values['retry-review']) {
       await store.retryReview(session.id, config, { signal });
       signal.throwIfAborted();
-      terminal.note(`Starting a new review attempt with up to ${config.maxModelCalls} additional model calls, including grading. Previous usage remains counted.`);
+      terminal.note(config.maxModelCalls === null
+        ? 'Resuming the review with no model-call limit. Previous usage remains counted.'
+        : `Starting a new review attempt with up to ${config.maxModelCalls} additional model calls, including grading. Previous usage remains counted.`);
     }
     let state = await prepareInteractiveCheck({
       start: () => start(signal), inspect: async () => store.public(await store.read(session.id)),
@@ -374,7 +380,7 @@ function printPending(terminal, pending) {
   if (!pending.length) { terminal.success('No pending assessments.'); return; }
   for (const session of pending) {
     terminal.section(`${session.target} · ${session.status}`);
-    terminal.paragraph(`${session.route.tier} change · ${routeText(session.route)} · ${session.progress.completed}/${session.progress.total} concepts complete · ${session.usage.calls}/${session.usage.limit} model calls`);
+    terminal.paragraph(`${session.route.tier} change · ${routeText(session.route)} · ${session.progress.completed}/${session.progress.total} concepts complete · ${modelUsageText(session.usage)}`);
     terminal.command(`sphinx check --id ${session.id}`);
   }
 }
@@ -384,7 +390,8 @@ async function statusCommand(command, values) {
   const { preparationStatus } = await import('./preparation.js');
   const preparation = command === 'status' ? await preparationStatus({ cwd: repo.root }) : null;
   for (const session of await store.pending(repo.root)) if (await git.revalidateSnapshot(session.snapshot, config)) pending.push(store.public(session));
-  if (values.json) { json(command === 'status' ? { repo: repo.root, config, pending, preparation } : pending); return 0; }
+  const yolo = command === 'status' ? await yoloStatus(repo.root) : null, overrides = command === 'status' ? await recentOverrides({ repoRoot: repo.root }) : [];
+  if (values.json) { json(command === 'status' ? { repo: repo.root, config, pending, preparation, yolo, overrides } : pending); return 0; }
   const terminal = ui();
   if (command === 'pending') { terminal.section('Pending assessments'); printPending(terminal, pending); return 0; }
   const info = await repositoryConfigInfo(repo.root), report = await doctor();
@@ -397,7 +404,9 @@ async function statusCommand(command, values) {
   terminal.section('Configured checkpoints'); printConfiguration(terminal, config, { routes: false });
   if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : [])]);
   if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
+  if (yolo) { terminal.blank(); terminal.warning(`Yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'} since ${yolo.since}: checks are skipped. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`); }
   terminal.section('Pending assessments'); printPending(terminal, pending);
+  if (overrides.length) { terminal.section('Recent overrides'); terminal.rows(overrides.map(row => [row.at, `${row.kind}${row.target ? ` · ${row.target}` : ''}${row.reason ? ` · ${row.reason}` : ''}`])); }
   terminal.blank(); terminal.note('Status uses local Git state only. Agent hook trust is not verified here.'); return 0;
 }
 
@@ -422,7 +431,7 @@ export async function main(argv) {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
-    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' },
+    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
@@ -471,16 +480,16 @@ export async function main(argv) {
       const result = { scope: 'global', path: getPaths().config, previousMaxModelCalls, maxModelCalls, config };
       if (values.json) { json(result); return 0; }
       const terminal = ui();
-      if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${maxModelCalls} model calls per assessment (previously ${previousMaxModelCalls}).`);
-      if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. The assessment call limit remains ${maxModelCalls}.`);
+      if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${modelLimitText(maxModelCalls)} (previously ${modelLimitText(previousMaxModelCalls)}).`);
+      if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. Model calls: ${modelLimitText(maxModelCalls)}.`);
       if (MODEL_FLAGS.some(key => !['max-model-calls', 'max-output-tokens'].includes(key) && values[key] !== undefined)) {
         terminal.success('Saved machine-wide evaluator settings.');
         terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
         terminal.note('Changing evaluator routes applies to fresh checkpoints. Existing checkpoints remain bound to their original assessment policy.');
       }
       terminal.note(result.path);
-      terminal.paragraph(`The total allowance is ${maxModelCalls} model calls for review, compaction, grading, learning follow-ups, and failed requests. Saving configuration makes no model request.`);
-      terminal.note(`Normal audited review caps: ${reviewCapsText(config)} calls; one bounded repair window remains within agentMaxTurns and the total allowance.`);
+      terminal.paragraph(`Model calls: ${modelLimitText(maxModelCalls)}. Review, compaction, grading, learning follow-ups, and failed requests stay counted. Saving configuration makes no model request.`);
+      terminal.note(`Review planning targets: ${reviewCapsText(config)} calls. Explicit request caps, context limits, and deadlines still apply.`);
       return 0;
     }
     const repo = await git.repository(process.cwd()).catch(() => null), config = await loadConfig(repo?.root);
@@ -492,10 +501,20 @@ export async function main(argv) {
       if (info.shadowed) terminal.warning(`Legacy ${info.shadowed} is shadowed by .sphinxconfig.`);
     }
     terminal.section('Checkpoint policy'); printConfiguration(terminal, config);
-    terminal.section('Limits and exclusions'); terminal.rows([['Reviewer context', `${config.maxContextBytes.toLocaleString()} bytes in active context; older investigation is compacted`], ['Tool result', `${config.toolResultBytes.toLocaleString()} bytes per page`], ['Reviewer turns', `Up to ${config.agentMaxTurns}, within the shared model-call budget`], ['Reviewer timeout', `${config.timeoutSeconds} seconds per investigation`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
-    terminal.blank(); terminal.note('Use sphinx config --preset <name> to choose evaluator models, or --max-model-calls <1-100> to change the total allowance. See sphinx config --help for tier overrides and paid routes.'); return 0;
+    terminal.section('Limits and exclusions'); terminal.rows([['Reviewer context', `${config.maxContextBytes.toLocaleString()} bytes in active context; older investigation is compacted`], ['Tool result', `${config.toolResultBytes.toLocaleString()} bytes per page`], ['Reviewer turns', config.agentMaxTurns === null ? 'No request limit; shared limits apply when explicitly configured' : `Up to ${config.agentMaxTurns}, also subject to an explicitly configured total call limit`], ['Reviewer timeout', `${config.timeoutSeconds} seconds per investigation`], ['Configured exclusions', config.exclude.join(', ') || 'None beyond built-in rules and ignore files']]);
+    terminal.blank(); terminal.note('Use sphinx config --preset <name> to choose evaluator models, or --max-model-calls <1-100|unlimited> to set or clear an optional call cap. See sphinx config --help for tier overrides and paid routes.'); return 0;
   }
   if (command === 'check') return checkCommand(values);
+  if (command === 'yolo') {
+    const repo = await git.repository(process.cwd()).catch(() => null);
+    const result = await toggleYolo({ repoRoot: repo?.root ?? null, reason: values.reason });
+    if (values.json) { json(result); return 0; }
+    const where = result.scope === 'repo' ? `for ${result.repoRoot}` : 'globally (every repository without its own setting)';
+    const terminal = ui();
+    if (result.enabled) { terminal.warning(`Yolo mode is ON ${where}. Git operations skip the understanding check; each skip is logged and the check stays pending.`); terminal.command('sphinx yolo   # run again to turn it off'); }
+    else terminal.success(`Yolo mode is OFF ${where}. Understanding checks are back on.`);
+    return 0;
+  }
   if (['pending', 'status'].includes(command)) return statusCommand(command, values);
   if (needsId) {
     const { repo, config } = await repoConfig(), existing = await store.read(id);

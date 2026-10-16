@@ -242,18 +242,18 @@ test('other assessment or privacy changes still invalidate the legacy checkpoint
   assert.deepEqual(f.invoked, { generate: 0, grade: 0 });
 });
 
-test('a global file without an explicit ceiling adopts the new default for an already open CLI', async t => {
+test('a global file without an explicit ceiling adopts the uncapped default for an already open CLI', async t => {
   const f = await fixture(t);
   await f.seed();
   await f.setGlobal({});
-  assert.deepEqual((await f.store.refreshBudget(snapshot.id, f.config)).usage, { calls: 7, limit: 20 });
-  assert.equal((await f.store.read(snapshot.id)).config.maxModelCalls, 20);
+  assert.deepEqual((await f.store.refreshBudget(snapshot.id, f.config)).usage, { calls: 7, limit: null });
+  assert.equal((await f.store.read(snapshot.id)).config.maxModelCalls, null);
 });
 
-test('explicit null config or ceiling is rejected, while a missing file uses the passed configuration', async t => {
+test('a null config file or invalid ceiling is rejected, while a missing file uses the passed configuration', async t => {
   const f = await fixture(t);
   const before = await f.seed();
-  for (const [value, expected] of [[null, /configuration must be a JSON object/], [{ maxModelCalls: null }, /maxModelCalls must be an integer/]]) {
+  for (const [value, expected] of [[null, /configuration must be a JSON object/], [{ maxModelCalls: 0 }, /maxModelCalls must be null \(unlimited\) or an integer/]]) {
     await f.setGlobal(value);
     await assert.rejects(f.store.refreshBudget(snapshot.id, f.config), expected);
     await assert.rejects(f.store.start(snapshot.id, f.config), expected);

@@ -15,10 +15,12 @@ async function fixture(t) {
   return { directory, repo, env, paths: getPaths(env) };
 }
 
-test('default configuration is free, bounded, and valid', () => {
+test('default configuration is free, uncapped by call count, and valid', () => {
   assert.equal(validateConfig(structuredClone(DEFAULT_CONFIG)).provider, 'openrouter');
   assert.equal(DEFAULT_CONFIG.allowPaid, false);
-  assert.equal(DEFAULT_CONFIG.maxModelCalls, 20);
+  assert.equal(DEFAULT_CONFIG.maxModelCalls, null);
+  assert.equal(DEFAULT_CONFIG.agentMaxTurns, null);
+  assert.equal(validateConfig({ ...structuredClone(DEFAULT_CONFIG), maxModelCalls: 30, agentMaxTurns: 8 }).maxModelCalls, 30);
   assert.ok(DEFAULT_CONFIG.maxOutputTokens > 0);
   for (const route of Object.values(DEFAULT_CONFIG.models)) assert.deepEqual(route, { provider: 'openrouter', model: 'openrouter/free' });
 });
@@ -152,7 +154,7 @@ test('invalid token, timeout, spend, and routing settings fail validation', () =
     ['maxModelCalls', 0], ['maxModelCalls', 101], ['timeoutSeconds', 0], ['timeoutSeconds', 601],
     ['maxContextBytes', 999], ['maxContextBytes', 1000001], ['maxOutputTokens', 512.5],
     ['provider', 'unknown'], ['model', '   '], ['events', ['post-commit']],
-    ['backgroundPreparation','yes'], ['agentMaxTurns',1], ['agentMaxTurns',51],
+    ['backgroundPreparation','yes'], ['agentMaxTurns',1], ['agentMaxTurns',51], ['maxModelCalls','20'],
     ['toolResultBytes',999], ['toolResultBytes',64001], ['preparationDebounceMs',-1], ['preparationDebounceMs',60001],
   ];
   for (const [key, value] of invalid) assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), [key]: value }), /Invalid Sphinx configuration/);

@@ -5,7 +5,8 @@ import { DEFAULT_CONFIG } from '../src/config.js';
 import { QUESTION_SCHEMA, validateQuestion } from '../src/evaluator.js';
 
 const snapshot = { id: 'recovery-snapshot', version: 2, files: ['worker.js'], projectContext: { path: '.sphinxcontext.md', text: 'A retry worker.', hash: 'context' } };
-const config = { ...structuredClone(DEFAULT_CONFIG), changeTier: 'large', timeoutSeconds: 5 };
+// These cases exercise explicitly configured allowances (the pre-1.0 defaults).
+const config = { ...structuredClone(DEFAULT_CONFIG), maxModelCalls: 20, agentMaxTurns: 8, changeTier: 'large', timeoutSeconds: 5 };
 const question = { id: 'retry', concept: 'Retry behavior', prompt: 'Will a duplicate id execute the operation again? Explain why.', choices: [], expectedAnswer: 'No, the stored id is checked before executing.', rationale: 'The changed worker delegates to the guard.', evidence: [{ path: 'worker.js', reason: 'Calls the retry guard.' }] };
 const assessmentSchema = { type: 'object', properties: { questions: { type: 'array', minItems: 1, maxItems: 1, items: QUESTION_SCHEMA } }, required: ['questions'] };
 const base = { snapshot, config, assessmentSchema, assessmentInstructions: 'Ask one consequence question.', validateAssessment: (assessment, paths) => assessment.questions.map(item => validateQuestion(item, paths)) };
@@ -386,4 +387,34 @@ test('oversized persisted state is rejected before workspace reads or inference'
   await assert.rejects(runReviewer({ ...base, workspace: space({ rejectReads: true }), reviewerCheckpoint: storage,
     runModel: async () => assert.fail('Oversized state must not reach a provider'),
   }), { code: 'INVALID_REVIEW_CHECKPOINT' });
+});
+
+test('without a call cap, valid investigation can pass the planning target and reports live progress', async () => {
+  let calls = 0;
+  const events = [];
+  const uncapped = { ...config, maxModelCalls: null, agentMaxTurns: null, changeTier: 'small' };
+  const result = await runReviewer({ ...base, config: uncapped, workspace: space(), onProgress: text => events.push(text), runModel: async args => {
+    await args.beforeCall(); calls++;
+    if (calls <= 5) {
+      assert.doesNotMatch(args.prompt, /planning target for this change size is reached/);
+      return action('read_file', { path: 'lib/guard.js' });
+    }
+    assert.match(args.prompt, /planning target for this change size is reached/);
+    return finish();
+  }, auditAssessment: async args => { await args.beforeCall(); return { questions: args.questions }; } });
+  assert.equal(calls, 6, 'The old small-change ceiling of five would have stopped this review');
+  assert.deepEqual(result.questions, [question]);
+  assert.ok(events.includes('Reading lib/guard.js'));
+  assert.ok(events.includes('Drafting questions'));
+  assert.ok(events.includes('Checking the questions against the source'));
+});
+
+test('without a call cap, three consecutive invalid responses stop the review', async () => {
+  let calls = 0;
+  const uncapped = { ...config, maxModelCalls: null, agentMaxTurns: null, changeTier: 'small' };
+  await assert.rejects(runReviewer({ ...base, config: uncapped, workspace: space(), runModel: async args => {
+    await args.beforeCall(); calls++;
+    return { action: 'nonsense' };
+  } }), { code: 'REVIEWER_STALLED' });
+  assert.equal(calls, 3);
 });

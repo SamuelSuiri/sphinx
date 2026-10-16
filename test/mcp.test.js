@@ -306,5 +306,8 @@ test('form schemas remain flat, and summary sanitation strips all unconstrained 
     assert.throws(() => validateFormSchema({ type: 'object', properties: { answer: property } }), { code: 'INVALID_FORM_SCHEMA' });
   }
   assert.deepEqual(sanitizeCheckpointSummary({ ...passed, question: 'secret', feedback: 'secret', answer: 'secret' }), passed);
+  const unlimited = { ...passed, checkpoints: [{ ...passed.checkpoints[0], usage: { calls: 20, limit: null } }] };
+  assert.deepEqual(sanitizeCheckpointSummary({ ...unlimited, question: 'secret' }), unlimited);
+  for (const limit of [undefined, -1, 'unlimited', Infinity]) assert.throws(() => sanitizeCheckpointSummary({ ...passed, checkpoints: [{ ...passed.checkpoints[0], usage: { calls: 20, limit } }] }), { code: 'INVALID_CHECKPOINT_SUMMARY' });
   assert.throws(() => sanitizeCheckpointSummary({ status: 'passed', checkpoints: [{ ...passed.checkpoints[0], id: 'raw question' }] }), { code: 'INVALID_CHECKPOINT_SUMMARY' });
 });
