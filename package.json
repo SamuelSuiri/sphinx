@@ -2,6 +2,14 @@
   "name": "sphinx-understand",
   "version": "0.1.0",
   "description": "Outsource your thinking, not your understanding. A comprehension checkpoint for agent-assisted development.",
+  "homepage": "https://github.com/parthh01/sphinx#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/parthh01/sphinx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/parthh01/sphinx/issues"
+  },
   "type": "module",
   "bin": {
     "sphinx": "bin/sphinx.js"

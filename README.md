@@ -10,14 +10,12 @@ Install once for your machine. Git provides a local browser questionnaire and wa
 
 Requires Node.js 22.19 or newer, Git, and macOS, Linux, or WSL. Native Windows installation is not supported yet.
 
-From this checkout:
-
 ```sh
-npm install -g .
+npm install -g sphinx-understand
 sphinx install
 ```
 
-The package is not published to a registry yet. There is no account or hosted Sphinx service.
+There is no account or hosted Sphinx service. To work from a checkout instead, run `npm install -g .` in the repository.
 
 Onboarding starts by asking which coding agents you use, then offers economical reviewer presets for those clients. Codex uses GPT-6 Luna; Claude Code uses Haiku. You can instead choose paid OpenRouter coding models or enter your own routes for small, medium, and large changes. Git defaults are pushes to `main` or `master` at standard depth. Existing installations keep their saved models unless you choose a replacement.
 
@@ -95,7 +93,7 @@ After installing Sphinx once, run this in a repository:
 sphinx init
 ```
 
-The guided setup explains the available Git events, and question depths, then asks which destination branches and remotes to cover. It creates `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md`, preserving existing files. Model selection and credentials remain in your machine-wide settings.
+The guided setup explains the available Git events and question depths, then asks which destination branches and remotes to cover. It creates `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md`, preserving existing files. Model selection and credentials remain in your machine-wide settings.
 
 Use `.sphinxcontext.md` to describe what the project does, who uses it, important workflows, and architecture boundaries. Its text is included in every reviewer, compaction, and grading request. The reviewer checks its claims against code; it cannot override Sphinx policy or authorize reading ignored files. Keep it under 16,000 bytes, without secrets. Changing context invalidates prepared questions and prior completion records. The context file itself also respects `.sphinxignore`.
 
