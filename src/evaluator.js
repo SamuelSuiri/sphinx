@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { reportUsage } from './usage.js';
 import { constants } from 'node:fs';
 import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -296,7 +297,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       const childEnv = childEnvironment(requestEnv);
       let args;
       if (provider === 'codex') {
-        args = ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', outputPath];
+        args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', outputPath];
         const overrides = [
           'approval_policy="never"', 'features.hooks=false', 'features.shell_tool=false',
           'features.shell_snapshot=false', 'features.multi_agent=false', 'features.memories=false',
@@ -317,12 +318,16 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       signal?.throwIfAborted();
       await beforeCall?.();
       signal?.throwIfAborted();
-      const result = await runner({ command: provider, args, cwd: directory, env: childEnv, input: prompt, timeoutMs: timeoutSeconds * 1000, maxOutputBytes: MAX_OUTPUT_BYTES, signal });
+      const result = await runner({ command: provider, args, cwd: directory, env: childEnv, input: prompt, timeoutMs: timeoutSeconds * 1000, maxOutputBytes: provider === 'codex' ? 4 * MAX_OUTPUT_BYTES : MAX_OUTPUT_BYTES, signal });
       signal?.throwIfAborted();
       if (result.exitCode !== 0) {
         fail(`${provider} exited ${result.signal ? `with signal ${result.signal}` : `with code ${result.exitCode}`}. Check CLI sign-in, model access, and that the CLI supports the isolation flags (update it if needed). No completion was recorded.`, 'PROVIDER_FAILED');
       }
       if (provider === 'codex') {
+        // --json streams events; turn.completed carries token usage.
+        for (const line of String(result.stdout || '').split('\n')) {
+          try { const event = JSON.parse(line); if (event?.type === 'turn.completed') reportUsage({ inputTokens: event.usage?.input_tokens, outputTokens: event.usage?.output_tokens }); } catch {}
+        }
         try {
           if ((await stat(outputPath)).size > MAX_OUTPUT_BYTES) fail('Codex returned oversized output.', 'OUTPUT_LIMIT');
           return parseModelJSON(await readFile(outputPath, 'utf8'), 'Codex');
@@ -332,6 +337,8 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
         }
       }
       const envelope = parseModelJSON(result.stdout, 'Claude Code');
+      const u = envelope?.usage;
+      if (u) reportUsage({ inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens });
       if (envelope?.is_error === true || (envelope?.type === 'result' && envelope.subtype && envelope.subtype !== 'success')) {
         fail('Claude Code reported an unsuccessful result. Check CLI sign-in, model access, and usage limits; then retry.', 'PROVIDER_FAILED');
       }

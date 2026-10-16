@@ -226,3 +226,7 @@ test('malformed credential files never echo their content in errors', async t =>
     return true;
   });
 });
+
+test('advisory mode was removed and fails with a pointer to yolo', () => {
+  assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), mode: 'advisory' }), /advisory" was removed.*sphinx yolo/);
+});

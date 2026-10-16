@@ -70,7 +70,8 @@ export function validateConfig(config) {
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
   for (const key of ['enabled', 'allowPaid', 'backgroundPreparation']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
-  for (const [key, values] of Object.entries({ provider: ['openrouter','codex','claude','auto'], level: ['relaxed','standard','thorough'], mode: ['block','advisory'] })) {
+  for (const [key, values] of Object.entries({ provider: ['openrouter','codex','claude','auto'], level: ['relaxed','standard','thorough'], mode: ['block'] })) {
+    if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
   if (config.model !== null && (typeof config.model !== 'string' || !config.model.trim())) fail('model must be a nonempty string or null');

@@ -12,15 +12,15 @@ const ACTIONS = new Map([
 ]);
 const checkpoint = async options => (await import('./native-check.js')).runNativeCheckpoint(options);
 export const PI_GUIDANCE = [
-  'Sphinx Git hooks serve a local browser questionnaire for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback or advisory checks; they do not resume an exited process.',
+  'Sphinx Git hooks serve a local browser questionnaire for blocking checkpoints and keep the original Git operation waiting. That same operation continues after verified completion. Native Pi dialogs are fallback checks; they do not resume an exited process.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
-  'Never answer for the human, relay the questionnaire through chat, open or automate its local browser URL, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful or advisory operations.',
+  'Never answer for the human, relay the questionnaire through chat, open or automate its local browser URL, read private Sphinx assessments or answer keys, or bypass Git hooks. After a fallback check passes, verify that the original Git operation exited with a Sphinx blocking failure before retrying. Never repeat successful operations.',
 ];
 
 function outcomeText(status) {
   if (status === 'busy') return 'A Sphinx questionnaire is already open. Wait for the human to finish it; do not open another interview or duplicate a waiting Git operation.';
-  if (status === 'passed') return 'Sphinx fallback checkpoint passed. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.';
-  if (status === 'unsupported') return 'Sphinx fallback checkpoint pending. This Pi session has no interactive dialogs. The human can run sphinx check in their own terminal. Never duplicate a waiting Git operation; retry only after the check passes and the original operation has exited with a Sphinx blocking failure. Do not repeat successful or advisory operations.';
+  if (status === 'passed') return 'Sphinx fallback checkpoint passed. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful operation.';
+  if (status === 'unsupported') return 'Sphinx fallback checkpoint pending. This Pi session has no interactive dialogs. The human can run sphinx check in their own terminal. Never duplicate a waiting Git operation; retry only after the check passes and the original operation has exited with a Sphinx blocking failure. Do not repeat successful operations.';
   if (status === 'pending') return 'Sphinx fallback checkpoint paused. Do not retry Git until the person asks to continue and the previous Git process has exited. Never duplicate a waiting operation.';
   return 'Sphinx fallback checkpoint remains pending. The human can run sphinx check in their own terminal to inspect or resume it. Do not retry Git until the person asks to continue and the previous Git process has exited.';
 }

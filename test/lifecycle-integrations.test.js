@@ -13,7 +13,7 @@ test('Cursor SessionStart uses documented context/env fields and never installs 
   assert.match(output.additional_context, /Never run the interview/);
   assert.match(output.additional_context, /keeps the original Git operation waiting/);
   assert.match(output.additional_context, /that same operation continues automatically/);
-  assert.match(output.additional_context, /handles fallback or advisory requests only/);
+  assert.match(output.additional_context, /handles fallback requests only/);
   assert.match(output.additional_context, /verify that the original Git operation has exited with a Sphinx blocking failure before retrying/);
   assert.match(output.additional_context, /waits up to 25 minutes, but the host may cancel the shell sooner/);
   assert.match(output.additional_context, /supported yielding or background execution; do not terminate or duplicate/);
@@ -128,7 +128,7 @@ test('terminal handoff consumes only Git-created requests once, without reading 
   assert.match(notice, /fallback understanding check/);
   assert.match(notice, /does not resume an exited Git process/);
   assert.match(notice, /Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure/);
-  assert.match(notice, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+  assert.match(notice, /Never duplicate a waiting operation or repeat a successful operation/);
   assert.deepEqual(launched, [requests[0].id, requests[1].id]);
   assert.doesNotMatch(notice, /NEVER SEND|aaaaa|bbbbb/);
   assert.equal(await terminalHandoff(options), null);

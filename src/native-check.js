@@ -14,7 +14,7 @@ function formFor(state, notice, repoRoot) {
     `Sphinx: ${state.progress.completed + 1} of ${state.progress.total} concepts`,
     `Repository: ${repoRoot}`,
     `Destination: ${state.target}`,
-    ...(state.usage ? [modelUsageText(state.usage)] : []),
+    ...(state.usage ? [modelUsageText(state.usage, state.tokens)] : []),
     ...(notice ? [`\n${notice}`] : []),
     ...(state.feedback ? [`\nPrevious feedback:\n${state.feedback}`] : []),
     `\n${question.prompt}`,

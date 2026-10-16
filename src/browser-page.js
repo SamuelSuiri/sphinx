@@ -44,7 +44,7 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 </style></head><body><div class="shell">
 <header><div class="brand"><strong>sphinx</strong><span>Understanding check</span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
 <main><div class="context"><span id="meta"></span><span id="usage"></span></div>
-<div id="skipbar" class="skipbar" hidden><input id="skipreason" maxlength="500" autocomplete="off" placeholder="Why is this urgent? (optional)" aria-label="Reason for skipping"><button id="skipconfirm" class="danger" type="button">Skip and continue</button><button id="skipcancel" class="quiet" type="button">Cancel</button><p>The push goes through without the check. The skip is logged and the check stays pending for later.</p></div>
+<div id="skipbar" class="skipbar" hidden><input id="skipreason" maxlength="500" autocomplete="off" placeholder="Why is this urgent? (optional)" aria-label="Reason for skipping"><button id="skipconfirm" class="danger" type="button">Skip and continue</button><button id="skipcancel" class="quiet" type="button">Cancel</button><p>The push goes through without the check. The skip is logged.</p></div>
 <div id="conversation" class="conversation" aria-label="Understanding check conversation">
 <ol id="messages" aria-label="Conversation"></ol>
 <p id="feedback" class="feedback" hidden></p><section id="question" hidden><p id="prompt" class="question"></p><ul id="choices" hidden></ul></section>
@@ -60,6 +60,9 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 const token=${JSON.stringify(token)},base='/'+token,$=id=>document.getElementById(id);
 let current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
 const text=(id,value)=>{$(id).textContent=value||'';$(id).hidden=!value;};
+const compact=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n);
+const usageText=(u,t)=>{if(!t)return '';const total=(t.input||0)+(t.output||0);if(!total&&t.cost==null)return '';
+ return [compact(total)+' tokens',...(t.cost!=null?[t.cost===0?'$0':t.cost<0.0001?'<$0.0001':t.cost<0.01?'$'+t.cost.toFixed(4):'$'+t.cost.toFixed(2)]:[]),...(u?.limit!=null?[u.calls+'/'+u.limit+' calls']:[])].join(' · ');};
 const resize=()=>{$('response').style.height='auto';$('response').style.height=Math.min($('response').scrollHeight||76,180)+'px';};
 function controls(){
  if(!current)return;
@@ -107,7 +110,7 @@ function render(state){
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
  const repo=state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',[repo,branch].filter(Boolean).join(' / '));$('meta').title=state.repoRoot||'';
- text('usage',state.usage?(state.usage.limit==null?state.usage.calls+' model calls · no limit':state.usage.calls+' / '+state.usage.limit+' model calls'):'');
+ text('usage',usageText(state.usage,state.tokens));
  text('waiting',state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Working…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Complete':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  text('status',label);$('status').className='status'+(state.phase==='working'?' busy':'');text('message',state.message);text('error',state.error);

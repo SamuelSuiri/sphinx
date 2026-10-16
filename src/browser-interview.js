@@ -37,7 +37,7 @@ function publicFields(state) {
   return {
     id: state.id, target: state.target,
     route: state.route && { provider: state.route.provider, model: state.route.model, tier: state.route.tier },
-    progress: state.progress, usage: state.usage,
+    progress: state.progress, usage: state.usage, tokens: state.tokens,
     ...(state.question ? { question: { id: state.question.id, prompt: state.question.prompt, choices: state.question.choices || [] } } : {}),
     ...(state.feedback ? { feedback: state.feedback } : {}),
   };
@@ -129,7 +129,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       // Available at any step, including while the review is still running.
       skip = { reason: data.response };
       active.abort(cancelled());
-      publish({ ...publicFields(state), phase: 'skipped', message: waitingGit ? 'Skipped. Git is continuing; this check stays pending for later.' : 'Skipped. This check stays pending for later.' });
+      publish({ ...publicFields(state), phase: 'skipped', message: waitingGit ? 'Skipped. Git is continuing.' : 'Skipped.' });
       return send(res, 200, state);
     }
     if (data.action === 'pause') {
@@ -179,7 +179,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     const timer = setTimeout(() => controller.abort(cancelled()), timeoutMs);
     let reservation, finalStatus = 'pending';
     const skipped = async () => {
-      // A human chose to let Git continue. Log it; never write a receipt.
+      // A human chose to let Git continue. Close the check and log it; never write a receipt.
+      await store.skip?.(request.id).catch(() => {});
       await logOverride({ kind: 'skip', repoRoot: request.repoRoot, target: state.target, id: request.id, reason: skip.reason }, operationEnv).catch(() => {});
       return { status: 'skipped', id: request.id };
     };
@@ -213,7 +214,11 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         start: async () => {
           notes.length = 0;
           publish({ ...publicFields(store.public(await store.read(request.id))), repoRoot: request.repoRoot, phase: 'working', message: 'Reviewing the change…' });
-          return store.start(request.id, config, { signal: localSignal, onProgress: text => { say({ role: 'sphinx', kind: 'activity', text }); publish(state); } });
+          return store.start(request.id, config, { signal: localSignal, onProgress: text => {
+            say({ role: 'sphinx', kind: 'activity', text }); publish(state);
+            // Refresh tokens and cost from the per-call save without blocking review.
+            store.read(request.id).then(saved => { if (active === controller && state.id === request.id) { const fresh = store.public(saved); publish({ ...state, usage: fresh.usage, tokens: fresh.tokens }); } }, () => {});
+          } });
         },
         choose: async prompt => {
           const current = store.public(await store.read(request.id));

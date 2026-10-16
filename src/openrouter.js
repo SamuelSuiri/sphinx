@@ -1,4 +1,5 @@
 import { openRouterKey } from './config.js';
+import { reportUsage } from './usage.js';
 import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
 
 const incomplete = 'No completion was recorded; Sphinx did not retry or switch models.';
@@ -197,6 +198,8 @@ async function requestOpenRouter({messages, schema, tools, toolChoice, config, e
   if (!response.ok) throw providerError(`OpenRouter HTTP ${response.status}`, data?.error ?? data?.choices?.[0]?.error, response.status, response.headers);
   if (!data || typeof data!=='object' || Array.isArray(data)) throw new Error('OpenRouter returned an invalid response object.');
   requestSignal.throwIfAborted();
+  // Billed even when the choice is later rejected, so record it first.
+  reportUsage({ inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens, cost: data.usage?.cost });
   return requireFinishedChoice(data, config, Boolean(tools), response.headers);
 }
 

@@ -43,6 +43,13 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     }
     signal?.throwIfAborted();
   };
+  // Yolo is a straight bypass: no check is created, so nothing resurfaces later.
+  const yolo = await readYolo(repo.root, env);
+  if (yolo) {
+    for (const snapshot of snapshots) await logOverride({ kind: 'yolo', repoRoot: repo.root, target: snapshot.target.ref, id: snapshot.id, head: snapshot.head, reason: yolo.reason }, env);
+    output(`Sphinx: yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'}; skipping the understanding check. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`);
+    return 0;
+  }
   const store = providedStore ?? createSessionStore({ env, validate });
   const pending = [];
   for (const snapshot of snapshots) {
@@ -51,18 +58,6 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     const session = await store.ensure(snapshot, config);
     pending.push({ snapshot, session });
     output(`Sphinx: understanding check needed for ${snapshot.target.ref} (${session.route.tier} change).`);
-  }
-  const yolo = pending.length ? await readYolo(repo.root, env) : null;
-  if (yolo) {
-    // Skipped checks stay pending; nothing is marked as understood.
-    for (const { snapshot, session } of pending) await logOverride({ kind: 'yolo', repoRoot: repo.root, target: snapshot.target.ref, id: session.id, head: snapshot.head, reason: yolo.reason }, env);
-    output(`Sphinx: yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'}; skipping the understanding check. The check stays pending for later. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`);
-    return 0;
-  }
-  if (config.mode === 'advisory') {
-    for (const { session } of pending) await queue(session, { env });
-    if (pending.length) output('Sphinx: advisory mode; allowing this operation with an incomplete assessment.');
-    return 0;
   }
 
   const requests = [], skipped = new Set();
@@ -93,7 +88,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
         output('Sphinx: no local questionnaire is available in this environment. This Git operation was stopped. Complete the queued check, then start the Git operation again.');
         return 1;
       }
-      if (result?.status === 'skipped') { skipped.add(requests[index].id); output('Sphinx: understanding check skipped for this push. It was logged and stays pending for later.'); continue; }
+      if (result?.status === 'skipped') { skipped.add(requests[index].id); output('Sphinx: understanding check skipped for this push and logged.'); continue; }
       if (result?.status !== 'passed') {
         output('Sphinx: the understanding check is incomplete, cancelled, or timed out. This Git operation was stopped; progress is saved.');
         return 1;

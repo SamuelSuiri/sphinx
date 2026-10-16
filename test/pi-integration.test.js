@@ -44,7 +44,7 @@ test('Pi dialog answers go straight to Sphinx; only fixed outcome text enters th
   assert.match(result.content.at(-1).text, /fallback checkpoint passed/);
   assert.match(result.content.at(-1).text, /does not resume an exited Git process/);
   assert.match(result.content.at(-1).text, /Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure/);
-  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful operation/);
   assert.deepEqual(result.structuredContent, h.event.structuredContent);
   assert.equal(result.isError, undefined, 'The hook never rewrites the original failed Git status');
   assert.doesNotMatch(JSON.stringify([result, h.notifications]), /QUESTION_PRIVATE|HUMAN_PRIVATE|FEEDBACK_PRIVATE|RUBRIC_PRIVATE/);
@@ -57,7 +57,7 @@ test('a passed Pi fallback preserves successful advisory tool output and warns a
   assert.deepEqual(result.content[0], event.content[0]);
   assert.deepEqual(result.structuredContent, { exitCode: 0 });
   assert.equal(result.isError, undefined);
-  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+  assert.match(result.content.at(-1).text, /Never duplicate a waiting operation or repeat a successful operation/);
   assert.deepEqual(h.selections, []);
 });
 

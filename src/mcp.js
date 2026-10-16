@@ -127,7 +127,7 @@ export function sanitizeCheckpointSummary(value) {
 
 function toolResult(summary, args, message, isError = ['error', 'unsupported', 'busy'].includes(summary.status)) {
   const instructions = {
-    passed: 'The human completed the fallback native questionnaire. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.',
+    passed: 'The human completed the fallback native questionnaire. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful operation.',
     pending: 'The fallback native questionnaire remains pending. Do not retry the Git operation until the human asks to resume and the previous Git process has exited. Never duplicate a waiting operation.',
     unsupported: 'Native forms are unavailable in this client. No evaluator was called. The checkpoint remains pending; the human can use sphinx check in a terminal.',
     error: 'The fallback native checkpoint could not complete and remains pending. Do not retry until the human asks to resume and the previous Git process has exited; sphinx check in a terminal can inspect or resume it.',

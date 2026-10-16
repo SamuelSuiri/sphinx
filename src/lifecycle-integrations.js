@@ -18,11 +18,11 @@ export const TERMINAL_GUIDANCE = [
   'Git alone decides when a checkpoint is required. Do not alter policy or bypass its hooks.',
   'For a blocking checkpoint, the Git hook serves a local Sphinx browser questionnaire and keeps the original Git operation waiting. On macOS the page opens in the background without activating or minimizing your coding window. Other environments print the local URL. After the human passes and Git verifies the exact change and policy, that same operation continues automatically. Never start a duplicate Git operation while it waits.',
   'Allow enough shell execution time for the human questionnaire. Sphinx waits up to 25 minutes, but the host may cancel the shell sooner. Keep the original process running using the host\'s supported yielding or background execution; do not terminate or duplicate it while the human answers.',
-  'After shell execution, this integration handles fallback or advisory requests only. It presents a local browser questionnaire for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',
+  'After shell execution, this integration handles fallback requests only. It presents a local browser questionnaire for the exact queued checkpoint and waits for the human\'s result. A fallback interview cannot resume an exited Git process. Do not open another interview or poll for answers.',
   'If a local browser questionnaire is unavailable, the human can run `sphinx check` in their own terminal in the checked repository. No terminal window is opened automatically.',
   'Never run the interview or answer, explain, or dispute commands for the human. Do not relay questions or answers through chat, read private Sphinx session files or answer keys, or automate the questionnaire.',
   'Respect .sphinxignore and configured exclusions. The independent evaluator only sees permitted immutable Git evidence.',
-  'The human can learn, dispute, or pause inside the questionnaire. Never open its local URL, submit browser responses, or automate it for the human. After a fallback check passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.',
+  'The human can learn, dispute, or pause inside the questionnaire. Never open its local URL, submit browser responses, or automate it for the human. After a fallback check passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful operation.',
 ].join('\n');
 
 export function lifecycleHome(name, paths, env = process.env) {
@@ -172,7 +172,7 @@ export async function terminalHandoff({ cwd, host, hostSession, checkpointIds, e
   const completed = outcomes.filter(status => status === 'passed').length;
   unavailable += outcomes.filter(status => ['unavailable', 'interrupted'].includes(status)).length;
   if (unavailable) return `Sphinx could not open a desktop terminal or keep its fallback questionnaire running for ${unavailable === 1 ? 'a checkpoint' : `${unavailable} checkpoints`}. The checkpoint remains pending. The human can run \`sphinx check\` in their own terminal in the checked repository. Check desktop availability or Terminal automation permission. Do not open another interview, relay questions, answer for the human, or repeatedly retry Git. Never duplicate a waiting operation; retry only after completion and confirmation that the original Git operation exited with a Sphinx blocking failure.`;
-  if (completed === outcomes.length) return 'Sphinx fallback understanding check completed directly in its terminal window. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful or advisory operation.';
+  if (completed === outcomes.length) return 'Sphinx fallback understanding check completed directly in its terminal window. This does not resume an exited Git process. Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure. Never duplicate a waiting operation or repeat a successful operation.';
   return 'The Sphinx fallback terminal questionnaire remains incomplete or is still open. The human answers directly there. Do not open another interview, relay questions, answer for the human, poll for answers, or repeatedly retry Git. Never duplicate a waiting Git operation. Wait for the human before resuming a failed blocking operation.';
 }
 
@@ -219,7 +219,7 @@ export async function browserHandoff({ cwd, host, hostSession, checkpointIds, en
       }
       passed++;
     }
-    return `${passed} Sphinx checkpoint(s) completed directly in the human’s browser. Verify the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful or advisory operation.`;
+    return `${passed} Sphinx checkpoint(s) completed directly in the human’s browser. Verify the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful operation.`;
   } finally { await interview.close(); }
 }
 

@@ -112,7 +112,7 @@ test('native form answers go directly to the controller and tool results contain
   assert.match(hook.hookSpecificOutput.additionalContext, /fallback native questionnaire/);
   assert.match(hook.hookSpecificOutput.additionalContext, /does not resume an exited Git process/);
   assert.match(hook.hookSpecificOutput.additionalContext, /Before retrying, verify that the original Git operation has exited with a Sphinx blocking failure/);
-  assert.match(hook.hookSpecificOutput.additionalContext, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+  assert.match(hook.hookSpecificOutput.additionalContext, /Never duplicate a waiting operation or repeat a successful operation/);
   for (const secret of [answer, form.message, 'PRIVATE FEEDBACK']) assert.equal(JSON.stringify(final).includes(secret), false);
   assert.equal(final.isError, false);
   assert.equal(c.raw().includes('\u001b'), false);

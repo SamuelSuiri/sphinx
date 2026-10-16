@@ -36,11 +36,11 @@ test('generic defaults inherit configured branches and local policy choices', as
   const args = await fixture(t);
   args.config.branches = ['release/*'];
   args.config.level = 'relaxed';
-  args.config.mode = 'advisory';
+  args.config.level = 'relaxed';
   const result = await initializeRepository(args);
   assert.deepEqual(result.config.branches, ['release/*']);
   assert.equal(result.config.level, 'relaxed');
-  assert.equal(result.config.mode, 'advisory');
+  assert.equal(result.config.mode, 'block');
 });
 
 test('initialization preserves existing canonical policy and ignore rules byte for byte', async t => {
@@ -65,7 +65,7 @@ test('initialization preserves existing canonical policy and ignore rules byte f
 test('legacy migration retains exactly the existing policy fields and keeps the legacy file', async t => {
   const args = await fixture(t);
   const legacyPath = join(args.repoRoot, '.sphinx.json');
-  const legacy = { branches: ['release/*'], exclude: ['private/**'], mode: 'advisory' };
+  const legacy = { branches: ['release/*'], exclude: ['private/**'], mode: 'block' };
   await writeJson(legacyPath, legacy);
   const oldText = await readFile(legacyPath, 'utf8');
   const before = await loadConfig(args.repoRoot, args.env);

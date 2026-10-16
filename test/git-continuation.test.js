@@ -251,6 +251,7 @@ test('yolo mode for a repository skips the questionnaire and logs the override; 
   assert.equal(await f.bare('rev-parse', 'refs/heads/main'), f.baseHead);
   const [entry] = await recentOverrides({ repoRoot, env: f.env });
   assert.equal(entry.kind, 'yolo'); assert.equal(entry.reason, 'hotfix'); assert.equal(entry.target, 'refs/heads/main');
+  assert.equal(await readFile(path.join(f.state, 'ready-0.json')).catch(() => null), null, 'Yolo never prepares or queues a check');
   assert.equal((await toggleYolo({ repoRoot, env: f.env })).enabled, false);
   await writeFile(path.join(f.repo, 'a.txt'), 'changed\n'); await f.setup('commit', '-qam', 'next');
   const child = f.start('push', 'origin', 'main');

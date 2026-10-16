@@ -41,15 +41,15 @@ The independent reviewer runs in an embedded [Pi SDK](https://pi.dev/docs/latest
 
 The installer configures user-level Git hooks and adapters for detected coding clients, then opens the selected installed clients. Codex, Claude Code, Pi, and OpenCode start fresh CLI sessions; Cursor opens a new editor window. Activation supplies no prompt and makes no Sphinx model request. It does not restart existing client processes.
 
-Complete any trust or connection prompts in the opened client. **In Codex, open `/hooks` to review and trust the installed hooks.** Opening the client does not verify MCP connectivity or complete hook trust, and Sphinx does not bypass those reviews. The normal blocking flow uses a local browser questionnaire, opened in the background on macOS. Codex/Claude native forms and Pi extension dialogs handle fallback or advisory checkpoints; each client controls those dialogs' appearance.
+Complete any trust or connection prompts in the opened client. **In Codex, open `/hooks` to review and trust the installed hooks.** Opening the client does not verify MCP connectivity or complete hook trust, and Sphinx does not bypass those reviews. The normal blocking flow uses a local browser questionnaire, opened in the background on macOS. Codex/Claude native forms and Pi extension dialogs handle fallback checkpoints; each client controls those dialogs' appearance.
 
 In Cursor, start a new Agent conversation in the opened window. Activation flags known versions older than 1.7 for an update; newer versions still need the hook events used by Sphinx.
 
 | Development client | Checkpoint experience | Installed integration |
 | --- | --- | --- |
-| Codex | Local browser questionnaire; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
-| Claude Code | Local browser questionnaire; native MCP form for fallback/advisory checks | MCP server and lifecycle hooks |
-| Pi 1.2+ | Local browser questionnaire; native dialogs for fallback/advisory checks | Local Pi extension |
+| Codex | Local browser questionnaire; native MCP form for fallback checks | MCP server and lifecycle hooks |
+| Claude Code | Local browser questionnaire; native MCP form for fallback checks | MCP server and lifecycle hooks |
+| Pi 1.2+ | Local browser questionnaire; native dialogs for fallback checks | Local Pi extension |
 | Cursor | Local browser questionnaire | Local user hooks |
 | OpenCode 1.x | Local browser questionnaire | Local OpenCode plugin |
 
@@ -95,7 +95,7 @@ After installing Sphinx once, run this in a repository:
 sphinx init
 ```
 
-The guided setup explains the available Git events, question depths, and blocking/advisory modes, then asks which destination branches and remotes to cover. It creates `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md`, preserving existing files. Model selection and credentials remain in your machine-wide settings.
+The guided setup explains the available Git events, and question depths, then asks which destination branches and remotes to cover. It creates `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md`, preserving existing files. Model selection and credentials remain in your machine-wide settings.
 
 Use `.sphinxcontext.md` to describe what the project does, who uses it, important workflows, and architecture boundaries. Its text is included in every reviewer, compaction, and grading request. The reviewer checks its claims against code; it cannot override Sphinx policy or authorize reading ignored files. Keep it under 16,000 bytes, without secrets. Changing context invalidates prepared questions and prior completion records. The context file itself also respects `.sphinxignore`.
 
@@ -160,7 +160,7 @@ Pausing, cancellation, stale code/policy, or the 25-minute interview deadline st
 - **Skip this time:** the questionnaire has a *Skip this time* button, available even while the review is still running. Git continues immediately.
 - **Yolo mode:** `sphinx yolo` toggles skipping checks. Inside a Git repository it applies to that repository; outside one it applies globally (repositories with their own setting win). Run it again to turn it off. `--reason "prod hotfix"` is optional.
 
-Skips never count as understanding: no receipt is written, the check stays pending, and every skip or toggle is appended with its optional reason to `~/.config/sphinx/overrides.jsonl`. `sphinx status` shows whether yolo is on and lists recent overrides.
+Skips never count as understanding: no receipt is written and nothing resurfaces later. Every skip or toggle is appended with its optional reason to `~/.config/sphinx/overrides.jsonl`. `sphinx status` shows whether yolo is on and lists recent overrides.
 
 The questionnaire streams the reviewer's progress live (files read, searches, drafting and auditing questions) while you wait.
 
@@ -178,7 +178,7 @@ Pi owns the reviewer session, tool loop, and [native context compaction](https:/
 
 The agent integration shares state with Git, so there is one assessment per change. The local questionnaire and native fallback forms send your responses directly to Sphinx; the development model receives only completion status and the original Git result. It does not relay questions or answers. There is no extra development-model turn for each answer.
 
-Each form lets you answer, learn the concept, dispute the premise, or pause. Pausing or dismissing keeps the assessment incomplete. It does not reopen on unrelated shell commands; retrying a blocked Git operation queues it again. For a paused advisory check, use `sphinx check` in your terminal instead of repeating an operation that already succeeded. The integration associates queued checks with the agent session, including when the shell uses `cd` or `git -C`.
+Each form lets you answer, learn the concept, dispute the premise, or pause. Pausing or dismissing keeps the assessment incomplete. It does not reopen on unrelated shell commands; retrying a blocked Git operation queues it again. The integration associates queued checks with the agent session, including when the shell uses `cd` or `git -C`.
 
 The local questionnaire also works for shell/GUI pushes outside supported coding agents. Platforms without a reliable background browser opener print the local URL instead of taking focus. SSH users can forward the loopback port or use `sphinx check` explicitly. If presentation is unavailable, Sphinx leaves the checkpoint pending and stops Git. Native after-tool callbacks or `sphinx check` can then complete the fallback check, but cannot revive a Git process that already exited.
 
@@ -318,7 +318,7 @@ Repository policy uses JSON in `.sphinxconfig`. Start with `sphinx init` or [.sp
 }
 ```
 
-Supported repository overrides are `enabled`, `level`, `mode`, `events`, `branches`, `remotes`, `exclude`, and `backgroundPreparation`, with `version: 1`. A repository cannot redirect source to another provider, supply credentials, or raise your usage budget. Repository excludes add to global excludes. `mode: "advisory"` queues a check but allows the operation; `enabled: false` disables Sphinx for that repository. Existing `.sphinx.json` files remain supported when `.sphinxconfig` is absent.
+Supported repository overrides are `enabled`, `level`, `events`, `branches`, `remotes`, `exclude`, and `backgroundPreparation`, with `version: 1`. A repository cannot redirect source to another provider, supply credentials, or raise your usage budget. Repository excludes add to global excludes. `enabled: false` disables Sphinx for that repository. Existing `.sphinx.json` files remain supported when `.sphinxconfig` is absent.
 
 For commit checkpoints, enable `pre-commit` and run `sphinx check --staged`. Push policies match the **destination** branch, not the name of the local branch. For a manual push check, `--remote` and `--branch` select the destination; otherwise Sphinx uses the upstream. Actual pending push snapshots take precedence when resuming. Multiple destination refs are assessed separately. Tag-only pushes and deletions do not trigger v0.1 checks.
 

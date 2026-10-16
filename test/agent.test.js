@@ -17,7 +17,7 @@ for (const agent of ['codex', 'claude']) {
     assert.match(context, /MCP hook offers a native questionnaire after Git exits/);
     assert.match(context, /fallback forms do not resume an exited Git process/);
     assert.match(context, /verify that the original Git operation has exited with a Sphinx blocking failure before retrying/);
-    assert.match(context, /Never duplicate a waiting operation or repeat a successful or advisory operation/);
+    assert.match(context, /Never duplicate a waiting operation or repeat a successful operation/);
     assert.match(context, /waits up to 25 minutes, but the host may cancel the shell sooner/);
     assert.match(context, /supported yielding or background execution; do not terminate or duplicate/);
     assert.match(context, /Only the outcome is returned to you/);

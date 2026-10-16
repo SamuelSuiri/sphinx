@@ -269,7 +269,7 @@ test('CLI pre-commit gate assesses staged content without waiting for terminal i
 test('CLI init creates canonical main-branch policy without reinstalling hooks or overwriting files', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const ignoreBefore = await readFile(path.join(f.repo, '.sphinxignore'), 'utf8');
-  f.cli('init', '--yes', '--branches', 'main', '--events', 'pre-push', '--level', 'standard', '--mode', 'block');
+  f.cli('init', '--yes', '--branches', 'main', '--events', 'pre-push', '--level', 'standard');
   const configPath = path.join(f.repo, '.sphinxconfig');
   const saved = await readFile(configPath, 'utf8');
   const policy = JSON.parse(saved);

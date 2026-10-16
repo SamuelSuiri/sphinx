@@ -25,7 +25,7 @@ import { modelUsageText, modelLimitText } from './usage.js';
 import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
-const POLICY_FLAGS = ['branches', 'events', 'level', 'mode', 'remotes'];
+const POLICY_FLAGS = ['branches', 'events', 'level', 'remotes'];
 const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'max-output-tokens'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
@@ -160,7 +160,7 @@ function policyRows(config) {
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
     ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
-    ['Behavior', !enabled ? 'Disabled for this repository' : config.mode === 'block' ? 'The Git operation only goes through after you answer the understanding questions correctly' : 'Advisory: record a check and allow the Git operation'],
+    ['Behavior', !enabled ? 'Disabled for this repository' : 'The Git operation only goes through after you answer the understanding questions correctly'],
   ];
 }
 
@@ -284,7 +284,7 @@ async function initCommand(initial) {
     }
   }
   const overrides = {};
-  for (const key of ['level', 'mode']) if (values[key] !== undefined) overrides[key] = values[key];
+  for (const key of ['level']) if (values[key] !== undefined) overrides[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) overrides[key] = splitList(values[key]);
   let context = values.context;
   if (context === undefined && !initial.yes && !initial.json && process.stdin.isTTY && !(await loadProjectContext(repo.root)).text) {
@@ -316,7 +316,7 @@ function printSession(session, terminal = ui()) {
       : 'Approval saved for this exact change and destination. A waiting Git operation can now continue.');
     return;
   }
-  terminal.blank(); terminal.note(`${session.route.tier} change · ${routeText(session.route)} · ${modelUsageText(session.usage)}`);
+  terminal.blank(); terminal.note(`${session.route.tier} change · ${routeText(session.route)} · ${modelUsageText(session.usage, session.tokens)}`);
   if (!session.question) { terminal.paragraph('Assessment queued. Run sphinx check to begin.'); return; }
   terminal.section(`Question ${session.progress.completed + 1} of ${session.progress.total}`); terminal.paragraph(session.question.prompt);
   if (session.question.choices.length) { terminal.blank(); terminal.rows(session.question.choices.map((choice, index) => [`${index + 1}.`, choice])); }
@@ -380,7 +380,7 @@ function printPending(terminal, pending) {
   if (!pending.length) { terminal.success('No pending assessments.'); return; }
   for (const session of pending) {
     terminal.section(`${session.target} · ${session.status}`);
-    terminal.paragraph(`${session.route.tier} change · ${routeText(session.route)} · ${session.progress.completed}/${session.progress.total} concepts complete · ${modelUsageText(session.usage)}`);
+    terminal.paragraph(`${session.route.tier} change · ${routeText(session.route)} · ${session.progress.completed}/${session.progress.total} concepts complete · ${modelUsageText(session.usage, session.tokens)}`);
     terminal.command(`sphinx check --id ${session.id}`);
   }
 }
@@ -429,7 +429,7 @@ export async function main(argv) {
   }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, mode: { type: 'string' }, remotes: { type: 'string' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
@@ -511,7 +511,7 @@ export async function main(argv) {
     if (values.json) { json(result); return 0; }
     const where = result.scope === 'repo' ? `for ${result.repoRoot}` : 'globally (every repository without its own setting)';
     const terminal = ui();
-    if (result.enabled) { terminal.warning(`Yolo mode is ON ${where}. Git operations skip the understanding check; each skip is logged and the check stays pending.`); terminal.command('sphinx yolo   # run again to turn it off'); }
+    if (result.enabled) { terminal.warning(`Yolo mode is ON ${where}. Git operations skip the understanding check; each skip is logged.`); terminal.command('sphinx yolo   # run again to turn it off'); }
     else terminal.success(`Yolo mode is OFF ${where}. Understanding checks are back on.`);
     return 0;
   }

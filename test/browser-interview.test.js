@@ -252,4 +252,6 @@ test('Skip this time lets Git continue during review, logs the reason, and never
   assert.equal(await f.store.approved(f.snapshot, f.config), false);
   const [entry] = await recentOverrides({ env: f.env });
   assert.equal(entry.kind, 'skip'); assert.equal(entry.reason, 'prod is down'); assert.equal(entry.id, f.snapshot.id);
+  assert.equal((await f.store.read(f.snapshot.id)).status, 'skipped');
+  assert.deepEqual(await f.store.pending(f.snapshot.repoRoot), [], 'A skipped check never resurfaces as pending');
 });

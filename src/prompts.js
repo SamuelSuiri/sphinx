@@ -94,10 +94,6 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     { value: 'standard', label: 'Standard', description: `Caps: ${questionCapsText('standard')}. Behavior, failures, and system interactions.` },
     { value: 'thorough', label: 'Thorough', description: `Caps: ${questionCapsText('thorough')}. Also consider rollout, rollback, and compatibility.` },
   ] });
-  if (values.mode === undefined) values.mode = await prompts.choose({ title: 'What happens at a checkpoint?', current: config.mode, choices: [
-    { value: 'block', label: 'Pause until complete', description: 'The Git operation will only go through after you answer the understanding questions correctly.' },
-    { value: 'advisory', label: 'Remind and continue', description: 'Record a pending check and allow the Git operation to proceed.' },
-  ] });
   return values;
 }
 

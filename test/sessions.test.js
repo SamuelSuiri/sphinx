@@ -488,3 +488,19 @@ test('grading observes the extended cumulative limit and a later failure never s
   assert.equal(record.calls,5);assert.equal(record.callLimit,5);assert.equal(record.reviewRetries.length,1);
   assert.equal(await store.approved(snapshot,config),false);
 });
+
+test('transport-reported tokens and cost accumulate on the checkpoint and reach the public state', async t => {
+  const { reportUsage } = await import('../src/usage.js');
+  const { store, config } = await fixture(t, {
+    generate: async (_snapshot, _config, { beforeCall }) => {
+      await beforeCall(); reportUsage({ inputTokens: 1000, outputTokens: 200, cost: 0.002 });
+      await beforeCall(); reportUsage({ inputTokens: 500, outputTokens: 100, cost: 0.001 });
+      return { questions: [q], review: { version: 1, summary: 'Reviewed.', evidence: 'insert()', evidencePaths: ['src/order.js'], toolCalls: 1, compactions: 0 } };
+    },
+  });
+  await store.ensure(snapshot, config);
+  const state = await store.start(snapshot.id, config);
+  assert.deepEqual({ input: state.tokens.input, output: state.tokens.output }, { input: 1500, output: 300 });
+  assert.ok(Math.abs(state.tokens.cost - 0.003) < 1e-9);
+  assert.deepEqual(Object.keys(state.usage).sort(), ['calls', 'limit'], 'usage keeps its call-count shape');
+});

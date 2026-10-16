@@ -14,9 +14,12 @@ function capture({ width = 80, env = {}, tty = false } = {}) {
   return { stream, ui: createTerminal({ stream, env }), text: () => text };
 }
 
-test('human usage keeps uncapped calls visible without a numeric denominator', () => {
-  assert.equal(modelUsageText({ calls: 20, limit: null }), '20 model calls · no limit');
-  assert.equal(modelUsageText({ calls: 7, limit: 30 }), '7/30 model calls');
+test('human usage shows tokens and cost, and calls only when a cap is set', () => {
+  assert.equal(modelUsageText({ calls: 20, limit: null }, { input: 11800, output: 600, cost: 0.0031 }), '12.4k tokens · $0.0031');
+  assert.equal(modelUsageText({ calls: 7, limit: 30 }, { input: 900, output: 50, cost: null }), '950 tokens · 7/30 calls');
+  assert.equal(modelUsageText({ calls: 3, limit: null }, { input: 2_000_000, output: 0, cost: 1.5 }), '2.0M tokens · $1.50');
+  assert.equal(modelUsageText({ calls: 1, limit: null }, { input: 53, output: 6, cost: 0.00001116 }), '59 tokens · <$0.0001');
+  assert.equal(modelUsageText({ calls: 1, limit: null }, { input: 53, output: 6, cost: 0 }), '59 tokens · $0');
   assert.equal(modelLimitText(null), 'no limit');
   assert.equal(modelLimitText(30), '30 model calls per assessment');
 });

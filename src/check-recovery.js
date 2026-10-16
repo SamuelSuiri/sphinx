@@ -1,4 +1,5 @@
 import { questionLimit } from './routing.js';
+import { modelUsageText } from './usage.js';
 
 const setupCodes = new Set(['INVALID_CONFIG', 'INVALID_SNAPSHOT', 'STALE_SNAPSHOT', 'CONTEXT_LIMIT', 'TOOL_RESULT_LIMIT', 'OUTPUT_LIMIT', 'PROVIDER_NOT_FOUND', 'PROVIDER_START_FAILED', 'PROVIDER_FAILED']);
 const setupTypes = new Set(['authentication', 'permission_denied', 'payment_required', 'context_length_exceeded', 'max_tokens_exceeded', 'token_limit_exceeded', 'string_too_long', 'invalid_request', 'invalid_prompt', 'not_found', 'precondition_failed', 'payload_too_large', 'unprocessable', 'content_policy_violation', 'refusal']);
@@ -21,7 +22,7 @@ function diagnostic(error, state) {
   const hints = [
     ` Run sphinx check --id ${state.id} --retry-review to explicitly authorize a fresh review allowance; prior usage will be retained.`,
     ` ${state.usage.limit - state.usage.calls} model calls remain in the existing assessment allowance (${state.usage.calls}/${state.usage.limit} used). When ready, retry within that allowance: sphinx check --id ${state.id}.`,
-    ` ${state.usage.calls} model calls used; no assessment call limit is set. When ready, continue the check: sphinx check --id ${state.id}.`,
+    ` When ready, continue the check: sphinx check --id ${state.id}.`,
   ];
   let message = error.message || String(error);
   for (const hint of hints) if (message.endsWith(hint)) message = message.slice(0, -hint.length);
@@ -52,11 +53,11 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
       const remaining = unlimited ? Infinity : state.usage.limit - state.usage.calls;
       const choices = [];
       ui.warning(diagnostic(error, state));
-      ui.note(`${unlimited ? `${state.usage.calls} model calls used; no assessment call limit is set` : `${state.usage.calls}/${state.usage.limit} model calls used`}. No questions or approval were recorded.`);
+      ui.note(`Used so far: ${modelUsageText(state.usage, state.tokens)}. No questions or approval were recorded.`);
       if (retryable(error, before, state, minimum)) {
         if (remaining >= minimum) choices.push({
           value: 'retry', label: state.preparation.resumable ? 'Continue the saved review' : unlimited ? 'Retry the review' : 'Retry within the remaining allowance',
-          description: `${unlimited ? 'No assessment call limit is set; all calls remain counted.' : `${remaining} calls remain, including ${reserve} reserved for grading.`} ${state.preparation.resumable ? 'Reuse the evidence and investigation already saved.' : 'Keep the same evaluator route and spending settings.'}`,
+          description: `${unlimited ? 'All usage so far is kept.' : `${remaining} calls remain, including ${reserve} reserved for grading.`} ${state.preparation.resumable ? 'Reuse the evidence and investigation already saved.' : 'Keep the same evaluator route and spending settings.'}`,
         });
         else if (config.maxModelCalls >= minimum) choices.push({
           value: 'extend', label: `Allow up to ${config.maxModelCalls} more calls and retry`,

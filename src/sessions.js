@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { withUsageMeter, addUsage } from './usage.js';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
 import { selectRoute, evaluatorConfig, questionLimit } from './routing.js';
@@ -67,7 +68,7 @@ function reviewFailure(error, session, signal) {
   const limit = callLimit(session);
   if (limit === null) {
     if (!['OPENROUTER_PROVIDER_ERROR', 'REVIEWER_BUDGET'].includes(error?.code)) return error;
-    return withRecoveryMessage(error, `${error.message} ${session.calls} model calls used; no assessment call limit is set. When ready, continue the check: sphinx check --id ${session.id}.`);
+    return withRecoveryMessage(error, `${error.message} When ready, continue the check: sphinx check --id ${session.id}.`);
   }
   const remaining = limit - session.calls - questionLimit(session.config.level, session.route.tier);
   const minimum = minimumReviewerCalls(session);
@@ -78,6 +79,10 @@ function reviewFailure(error, session, signal) {
   if (error?.code !== 'REVIEWER_BUDGET' && remaining >= minimum) return error;
   return withRecoveryMessage(error, `${error.message} ${retryHint(session)}`);
 }
+// Accumulate reported tokens on the in-memory session; the next per-call save
+// or the final save persists them alongside the call count.
+const meterFor = session => usage => { session.tokens = addUsage(session.tokens, usage); };
+
 export function publicSession(session) {
   const q = session.questions[session.index];
   return {
@@ -85,6 +90,7 @@ export function publicSession(session) {
     target: session.snapshot.target.ref, route: session.route,
     progress: { completed: session.index, total: session.questions.length },
     usage: { calls: session.calls, limit: callLimit(session) },
+    tokens: { input: session.tokens?.input ?? 0, output: session.tokens?.output ?? 0, cost: session.tokens?.cost ?? null },
     ...(session.reviewRetries?.length ? { reviewAttempts: session.reviewRetries.length + 1 } : {}),
     ...(session.preparation ? { preparation: { status: session.preparation.status, ...(session.reviewerCheckpoint ? { resumable: true, minimumReviewerCalls: minimumReviewerCalls(session) } : {}), ...(session.review ? { toolCalls: session.review.toolCalls, compactions: session.review.compactions } : {}) } } : {}),
     // Concept labels are evaluator metadata and may themselves reveal the answer.
@@ -146,7 +152,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     await save(session); // Failed requests also consume the local attempt budget.
   }
   async function ensure(snapshot, config) {
-    const reusable = old => old && old.policy === policyHash(config) && (old.status !== 'passed' || validReceipt(old, config));
+    const reusable = old => old && old.status !== 'skipped' && old.policy === policyHash(config) && (old.status !== 'passed' || validReceipt(old, config));
     // Hook reads must remain fast while the worker holds the assessment lock.
     const cached = await readJson(sessionFile(snapshot.id, env), null);
     if (reusable(cached)) return cached;
@@ -254,7 +260,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           },
         };
         try {
-          const result = await generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env});
+          const result = await withUsageMeter(meterFor(session), () => generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env}));
           signal?.throwIfAborted();
           if (!Array.isArray(result.questions) || !result.questions.length) throw new Error('Evaluator returned no grounded questions. The check remains pending.');
           if (result.questions.length > reserve) throw new Error('Evaluator exceeded the question limit. The check remains pending.');
@@ -298,7 +304,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       }
       if (callLimit(session) !== null && session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.`);
       const beforeCall = async () => { signal?.throwIfAborted(); await budget(session); signal?.throwIfAborted(); };
-      const result = await grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env});
+      const result = await withUsageMeter(meterFor(session), () => grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env}));
       signal?.throwIfAborted();
       if (!['correct','incorrect','ambiguous'].includes(result.verdict)) throw new Error('Evaluator returned an invalid verdict. The check remains pending.');
       if ((learn || dispute) && result.verdict === 'correct') throw new Error('A learning request or dispute cannot complete a concept. The check remains pending.');
@@ -344,9 +350,19 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     const records = [];
     for (const f of files.filter(f => /^[a-f0-9]{64}\.json$/.test(f))) {
       const session = await readJson(path.join(getPaths(env).sessions,f));
-      if (session.snapshot.repoRoot === repoRoot && session.status !== 'passed') records.push(session);
+      if (session.snapshot.repoRoot === repoRoot && !['passed', 'skipped'].includes(session.status)) records.push(session);
     }
     return records.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   }
-  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,public:publicSession};
+  /** Close a check the human chose to skip. It never becomes a receipt or resurfaces. */
+  async function skip(id) {
+    return withLock(id, env, async () => {
+      const session = await read(id);
+      if (session.status === 'passed') return publicSession(session);
+      session.status = 'skipped'; session.updatedAt = now();
+      await save(session);
+      return publicSession(session);
+    });
+  }
+  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,public:publicSession};
 }
