@@ -1,5 +1,6 @@
 import { openRouterKey } from './config.js';
 import { reportUsage } from './usage.js';
+import { textStream, readCompletionStream } from './stream.js';
 import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
 
 const incomplete = 'No completion was recorded; Sphinx did not retry or switch models.';
@@ -142,7 +143,9 @@ async function requestOpenRouter({messages, schema, tools, toolChoice, config, e
   if (!free && !config.allowPaid) throw new Error(`Paid OpenRouter model ${model} is disabled. Select a free model or explicitly enable allowPaid in your global Sphinx config.`);
   const provider = { require_parameters: true };
   if (!config.allowPaid || free) provider.max_price = { prompt: 0, completion: 0, request: 0 };
-  const body = { model, provider, stream: false, max_completion_tokens: config.maxOutputTokens, messages };
+  // Stream only structured text responses someone is watching; tool turns stay whole.
+  const watcher = tools ? undefined : textStream();
+  const body = { model, provider, stream: Boolean(watcher), max_completion_tokens: config.maxOutputTokens, messages };
   if (tools) {
     body.tools = tools;
     // Anthropic thinking routes can reject forced tool selection. The response
@@ -171,9 +174,17 @@ async function requestOpenRouter({messages, schema, tools, toolChoice, config, e
   const bodyFailure = detail => !response.ok
     ? providerError(`OpenRouter HTTP ${response.status}: ${detail}`, undefined, response.status, response.headers)
     : new Error(`OpenRouter ${detail}. ${incomplete}`);
+  let data;
+  if (watcher && response.ok) {
+    try { data = await readCompletionStream(response.body, { onContent: watcher, signal: requestSignal }); }
+    catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw bodyFailure(timeoutSignal.aborted || error?.name === 'TimeoutError' ? 'timed out while streaming the response' : error?.oversized ? 'response exceeded the 1 MiB safety limit' : 'response stream was interrupted before it finished');
+    }
+  }
   const chunks=[];
   let oversized=false;
-  try {
+  if (!data) try {
     let bytes=0;
     for await(const chunk of response.body) {
       requestSignal.throwIfAborted();
@@ -189,8 +200,7 @@ async function requestOpenRouter({messages, schema, tools, toolChoice, config, e
       : oversized ? 'response exceeded the 1 MiB safety limit'
         : 'response body was interrupted before it finished');
   }
-  let data;
-  try { data=JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  if (!data) try { data=JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch {
     if (signal?.aborted) throw signal.reason;
     throw bodyFailure('returned malformed response JSON');

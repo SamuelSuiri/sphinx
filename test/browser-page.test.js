@@ -5,11 +5,12 @@ import { browserPage } from '../src/browser-page.js';
 
 function page(fetchImpl = () => assert.fail('No request expected')) {
   const element = () => ({ textContent: '', hidden: false, value: '', disabled: false, children: [], style: {}, className: '', title: '',
-    scrollHeight: 0, scrollTop: 0, clientHeight: 0, querySelectorAll() { return []; },
+    scrollHeight: 0, scrollTop: 0, clientHeight: 0, placeholder: '', querySelectorAll() { return []; },
+    classList: { values: new Set(), toggle(name, on) { if (on) this.values.add(name); else this.values.delete(name); }, contains(name) { return this.values.has(name); } },
     replaceChildren() { this.children = []; }, append(...items) { this.children.push(...items); }, focus() {},
     set innerHTML(_value) { assert.fail('Untrusted strings must not enter HTML'); },
   });
-  const nodes = Object.fromEntries(['meta', 'usage', 'conversation', 'messages', 'composer', 'submit', 'status', 'message', 'feedback', 'error', 'question', 'prompt', 'choices', 'form', 'response', 'recovery', 'pause', 'waiting', 'skip', 'skipbar', 'skipreason', 'skipconfirm', 'skipcancel'].map(id => [id, element()]));
+  const nodes = Object.fromEntries(['meta', 'usage', 'conversation', 'messages', 'composer', 'submit', 'status', 'message', 'feedback', 'error', 'question', 'prompt', 'choices', 'form', 'response', 'recovery', 'pause', 'waiting', 'skip', 'skipbar', 'skipreason', 'skipconfirm', 'skipcancel', 'label', 'dispute'].map(id => [id, element()]));
   const buttons = [nodes.pause, element(), { ...element(), dataset: { action: 'learn' } }, { ...element(), dataset: { action: 'dispute' } }];
   let events;
   const context = vm.createContext({ document: { visibilityState: 'visible', getElementById: id => nodes[id], createElement: element, querySelectorAll: selector => selector === '[data-action]' ? buttons.slice(2) : buttons }, fetch: fetchImpl,
@@ -144,4 +145,36 @@ test('a phase change scrolls the conversation so recovery choices are visible', 
   assert.equal(p.nodes.conversation.scrollTop, 5000);
   assert.equal(p.nodes.recovery.hidden, false);
   assert.equal(p.nodes.recovery.children.length, 1);
+});
+
+test('Dispute is a reversible mode: Enter sends a dispute, and Back to answering restores normal answers', async () => {
+  const bodies = [];
+  const p = page(async (_url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ ...question, sequence: 9, phase: 'working' }) }; });
+  p.update(question);
+  const enter = () => p.nodes.response.onkeydown({ key: 'Enter', shiftKey: false, isComposing: false, repeat: false, preventDefault() {} });
+  p.nodes.dispute.onclick();
+  assert.equal(p.nodes.submit.textContent, 'Send dispute');
+  assert.equal(p.nodes.dispute.textContent, 'Back to answering');
+  assert.equal(p.nodes.form.classList.contains('disputing'), true);
+  p.nodes.dispute.onclick();
+  assert.equal(p.nodes.submit.textContent, 'Send');
+  assert.equal(p.nodes.label.textContent, 'Your answer');
+  p.nodes.response.value = 'My actual answer.';
+  enter(); await new Promise(resolve => setImmediate(resolve));
+  p.update({ ...question, sequence: 10 });
+  p.nodes.dispute.onclick(); p.nodes.response.value = 'It assumes retries exist.';
+  enter(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(bodies.map(body => body.action), ['answer', 'dispute']);
+});
+
+test('a streaming reply renders with a live cursor and hides the generic working status', () => {
+  const p = page();
+  p.update({ ...question, phase: 'working', messages: [
+    { id: 'm1', role: 'human', kind: 'answer', text: 'Yes.', status: 'checking' },
+    { id: 'm2', role: 'sphinx', kind: 'feedback', streaming: true, text: 'Not quite. The constant' },
+  ] });
+  const row = p.nodes.messages.children[1];
+  assert.match(row.className, /streaming/);
+  assert.equal(row.children.at(-1).textContent, 'Not quite. The constant');
+  assert.equal(p.nodes.status.hidden, true);
 });
