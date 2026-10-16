@@ -397,7 +397,7 @@ test('without a call cap, valid investigation can pass the planning target and r
     await args.beforeCall(); calls++;
     if (calls <= 5) {
       assert.doesNotMatch(args.prompt, /planning target for this change size is reached/);
-      return action('read_file', { path: 'lib/guard.js' });
+      return action('read_file', { path: 'lib/guard.js', startLine: calls });
     }
     assert.match(args.prompt, /planning target for this change size is reached/);
     return finish();
@@ -417,4 +417,37 @@ test('without a call cap, three consecutive invalid responses stop the review', 
     return { action: 'nonsense' };
   } }), { code: 'REVIEWER_STALLED' });
   assert.equal(calls, 3);
+});
+
+test('without a call cap, identical reads are not re-run and repeated duplicates close investigation', async () => {
+  let calls = 0, closedAt;
+  const workspace = space();
+  const uncapped = { ...config, maxModelCalls: null, agentMaxTurns: null, changeTier: 'large' };
+  const result = await runReviewer({ ...base, config: uncapped, workspace, runModel: async args => {
+    await args.beforeCall(); calls++;
+    if (args.schema.properties.action.enum.length === 1) { closedAt ??= calls; return finish(); }
+    if (calls > 2) assert.match(args.prompt, /already made; its result is archived/);
+    return action('list_files', { prefix: 'src/' });
+  }, auditAssessment: async args => { await args.beforeCall(); return { questions: args.questions }; } });
+  assert.equal(workspace.reads.filter(read => read.name === 'list_files' && read.args.prefix === 'src/').length, 1, 'The identical listing ran once');
+  assert.equal(closedAt, 5, 'One real read, three duplicates, then finish-only');
+  assert.deepEqual(result.questions, [question]);
+});
+
+test('without a call cap, investigation closes at twice the planning target and must finish', async () => {
+  let calls = 0, closedAt;
+  const uncapped = { ...config, maxModelCalls: null, agentMaxTurns: null, changeTier: 'small' };
+  const result = await runReviewer({ ...base, config: uncapped, workspace: space(), runModel: async args => {
+    await args.beforeCall(); calls++;
+    if (args.schema.properties.action.enum.length === 1) { closedAt ??= calls; return finish(); }
+    return action('read_file', { path: 'lib/guard.js', startLine: calls });
+  }, auditAssessment: async args => { await args.beforeCall(); return { questions: args.questions }; } });
+  assert.equal(closedAt, 11, 'Small target is 5; investigation closes after 10 requests');
+  assert.deepEqual(result.questions, [question]);
+});
+
+test('the review deadline reports a readable timeout rather than a raw abort', async () => {
+  await assert.rejects(runReviewer({ ...base, config: { ...config, timeoutSeconds: 0.05 }, workspace: space(), runModel: async args => {
+    await new Promise((_resolve, reject) => args.signal.addEventListener('abort', () => reject(args.signal.reason), { once: true }));
+  } }), { code: 'REVIEWER_TIMEOUT', message: /did not finish within 0.05 seconds/ });
 });

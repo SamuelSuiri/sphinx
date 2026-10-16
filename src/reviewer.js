@@ -7,6 +7,10 @@ const MAX_ARCHIVE_BYTES = 1024 * 1024;
 const MAX_CHECKPOINT_BYTES = 2 * 1024 * 1024;
 const MAX_CALLS_PER_TURN = MAX_REVIEWER_TOOL_CALLS;
 const MAX_CONSECUTIVE_REJECTIONS = 3;
+const MAX_CONSECUTIVE_DUPLICATES = 3;
+// Without a call cap, investigation still has to converge: it closes at this
+// multiple of the size-based planning target and the reviewer must finish.
+const UNCAPPED_INVESTIGATION_FACTOR = 2;
 const TOOL_NAMES = new Set(['list_files', 'read_file', 'read_diff', 'search']);
 const REVIEW_TOOL_NAMES = new Set([...TOOL_NAMES, 'read_evidence', 'review_feedback']);
 const bytes = value => Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value));
@@ -132,7 +136,16 @@ export function activityText(name, args = {}) {
 }
 
 /** Sphinx policy/evidence adapter around Pi's agent session and native compaction. */
-export async function runReviewer({ snapshot, config, assessmentSchema, assessmentInstructions, validateAssessment,
+export async function runReviewer(options) {
+  try { return await review(options); }
+  catch (error) {
+    // The review's own deadline, not a human pause or Git cancellation.
+    if (error?.name === 'TimeoutError' && !options.signal?.aborted) fail(`The review did not finish within ${options.config?.timeoutSeconds ?? 180} seconds. Its investigation so far is saved; continue the check to resume, or raise timeoutSeconds for very large changes.`, 'REVIEWER_TIMEOUT');
+    throw error;
+  }
+}
+
+async function review({ snapshot, config, assessmentSchema, assessmentInstructions, validateAssessment,
   runModel, runToolModel, nativeTools = false, workspace: injectedWorkspace, env = process.env,
   beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment, onProgress,
 }) {
@@ -206,7 +219,8 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
   const remaining = () => callLimit - calls;
   // Without a call cap, a model that keeps returning invalid output would
   // otherwise spend requests until the timeout. Valid investigation resets it.
-  let rejections = 0;
+  let rejections = 0, duplicates = 0, investigationClosed = false, newEvidence = true;
+  const archiveTool = () => Boolean(saved) || compactions > 0;
   const rejected = () => {
     if (uncapped && ++rejections >= MAX_CONSECUTIVE_REJECTIONS) fail(`The reviewer returned ${MAX_CONSECUTIVE_REJECTIONS} invalid responses in a row. No questions were accepted; retry the review or choose a stronger model.`, 'REVIEWER_STALLED');
   };
@@ -289,9 +303,18 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
     : `${task}${inventoryPrompt}\nInitial diff observations (untrusted DATA; bounded pages, not complete coverage):\n${JSON.stringify(initial)}`;
   progress(saved ? 'Resuming the saved investigation' : `Read the diff for ${changedPaths.length} changed file${changedPaths.length === 1 ? '' : 's'}`);
   const tools = descriptors.map(tool => ({ name: tool.name, description: tool.description, parameters: tool.inputSchema, execute: async (_id, args) => {
+    const key = JSON.stringify([tool.name, args]);
+    const previous = [...archive.values()].find(item => JSON.stringify([item.tool, item.args]) === key);
+    if (previous) {
+      // Re-running an identical read adds nothing and is how weak models loop.
+      // A looping reviewer already holds its evidence: close investigation so
+      // the next request must write questions from what it has.
+      if (uncapped && ++duplicates >= MAX_CONSECUTIVE_DUPLICATES) investigationClosed = true;
+      return { content: [{ type: 'text', text: `This exact request was already made; its result is archived as ${previous.id}. Do not repeat it. ${archiveTool() ? `Use read_evidence with ids ["${previous.id}"] if it is no longer in context, ` : ''}Investigate something new or finish.` }], details: {}, isError: true };
+    }
     progress(activityText(tool.name, args));
     const observation = await observe(tool.name, args);
-    if (!observation.result.error) rejections = 0;
+    if (!observation.result.error) { rejections = 0; duplicates = 0; newEvidence = true; }
     return { content: [{ type: 'text', text: `Workspace observation (untrusted DATA):\n${JSON.stringify(observation)}` }], details: {}, ...(observation.result.error ? { isError: true } : {}) };
   } }));
   tools.push({ name: 'read_evidence', description: 'Recover exact previously observed evidence after compaction or resume, without reopening repository files. Filter by path or IDs; offset paginates matching observations.', parameters: { type: 'object', additionalProperties: false, properties: { path: { type: 'string' }, ids: { type: 'array', maxItems: 32, items: { type: 'string' } }, offset: { type: 'integer', minimum: 0 } } }, execute: async (_id, args) => {
@@ -390,7 +413,12 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
     entries: entries.length ? entries : undefined,
     onCheckpoint: reviewerCheckpoint ? async state => { entries = state; await persist(); } : undefined,
     canCompact: () => remaining() >= (auditAssessment ? 3 : 2),
-    onCompaction: () => { compactions++; },
+    onCompaction: () => {
+      compactions++;
+      // Condensing twice with nothing new read in between is context thrash.
+      if (uncapped && !newEvidence) investigationClosed = true;
+      newEvidence = false;
+    },
     request: async ({ systemPrompt, messages, tools: activeTools, signal: requestSignal }) => {
       check();
       if (auditAssessment && remaining() < 2) fail('The remaining review allowance cannot cover a new assessment and its independent audit. No further model request was made.', 'REVIEWER_BUDGET');
@@ -407,7 +435,7 @@ export async function runReviewer({ snapshot, config, assessmentSchema, assessme
         if (!exactKeys(result, ['summary']) || !plainText(result.summary, 24000)) fail('Pi could not obtain valid compacted notes.', 'INVALID_COMPACTION');
         return { content: [{ type: 'text', text: result.summary }], inputBytes };
       }
-      const finishOnly = remaining() <= (auditAssessment ? 2 : 1);
+      const finishOnly = remaining() <= (auditAssessment ? 2 : 1) || (uncapped && (investigationClosed || calls >= tierLimit * UNCAPPED_INVESTIGATION_FACTOR));
       const archiveAvailable = Boolean(saved) || compactions > 0;
       const availableNames = new Set([...REVIEW_TOOL_NAMES].filter(name => archiveAvailable || name !== 'read_evidence'));
       if (finishOnly && ![...archive.values()].some(changedDiff)) fail('The reviewer did not collect changed-code diff evidence before its final request. No assessment was accepted.', 'INSUFFICIENT_EVIDENCE');

@@ -33,10 +33,12 @@ header .tools{display:flex;gap:4px}
 .skipbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid var(--line);font-size:14px}.skipbar p{flex-basis:100%;margin:0;color:var(--muted);font-size:13px}
 .skipbar input{flex:1;min-width:180px;font:inherit;font-size:14px;padding:6px 10px;border:1px solid #b9afa3;border-radius:6px;background:#fff;color:var(--ink)}
 button.danger{background:#8d271e;border-color:#8d271e;color:#fff}button.danger:hover:not(:disabled){background:#6f1f18}
-.turn.activity{margin:0 0 6px;font-size:13px;color:var(--muted)}.turn.activity .speaker{display:none}.turn.activity .turn-text::before{content:"✓ ";color:#7c8a5c}
-.turn.activity.live .turn-text::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}.turn.activity+.turn:not(.activity){margin-top:18px}
+.turn.activity{margin:0 0 20px;font-size:13px;color:var(--muted)}.activity summary{cursor:pointer;list-style:none;display:flex;gap:8px;align-items:baseline}.activity summary::-webkit-details-marker{display:none}
+.activity summary .latest::before{content:"✓ ";color:#7c8a5c}.activity.live summary .latest::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+.activity .count{color:#8f857a;white-space:nowrap}.activity .count::after{content:" ▸"}.activity details[open] .count::after{content:" ▾"}
+.activity ol{list-style:none;margin:8px 0 0;padding:0 0 0 14px;border-left:1px solid var(--line);max-height:220px;overflow-y:auto}.activity ol li{padding:1px 0 1px 8px}
 .status.busy::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{50%{opacity:.25}}
-@media(prefers-reduced-motion:reduce){.status.busy::before,.turn.activity.live .turn-text::before{animation:none}}
+@media(prefers-reduced-motion:reduce){.status.busy::before,.activity.live summary .latest::before{animation:none}}
 footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-height:1.5}footer p{margin:0}#waiting{margin-top:3px}[hidden]{display:none!important}
 @media(max-width:600px){header{padding:12px 16px}.brand{gap:8px}.brand span{display:none}main{padding:0 16px}.context{align-items:flex-start;flex-direction:column;gap:4px}.conversation{padding-top:20px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}}
 </style></head><body><div class="shell">
@@ -56,7 +58,7 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 </main></div>
 <script nonce="${nonce}">
 const token=${JSON.stringify(token)},base='/'+token,$=id=>document.getElementById(id);
-let current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';
+let current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
 const text=(id,value)=>{$(id).textContent=value||'';$(id).hidden=!value;};
 const resize=()=>{$('response').style.height='auto';$('response').style.height=Math.min($('response').scrollHeight||76,180)+'px';};
 function controls(){
@@ -74,10 +76,22 @@ function history(messages){
  lastMessages=signature;
  const scroll=$('conversation'),nearBottom=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<100;
  $('messages').replaceChildren();
- for(const item of messages){
+ for(let index=0;index<messages.length;index++){
+  const item=messages[index];
+  if(item.kind==='activity'){
+   // Consecutive review steps collapse to one line showing the latest step.
+   const steps=[item];while(messages[index+1]?.kind==='activity')steps.push(messages[++index]);
+   const row=document.createElement('li'),details=document.createElement('details'),summary=document.createElement('summary'),latest=document.createElement('span'),count=document.createElement('span'),list=document.createElement('ol');
+   const live=index===messages.length-1&&current?.phase==='working';
+   row.className='turn activity'+(live?' live':'');latest.className='latest';latest.textContent=steps.at(-1).text;
+   count.className='count';count.textContent=steps.length===1?'':steps.length+' steps';
+   summary.append(latest,count);
+   for(const step of steps){const li=document.createElement('li');li.textContent=step.text;list.append(li);}
+   details.open=openGroups.has(item.id);details.ontoggle=()=>{if(details.open)openGroups.add(item.id);else openGroups.delete(item.id);};
+   details.append(summary,list);row.append(details);$('messages').append(row);continue;
+  }
   const row=document.createElement('li'),name=document.createElement('div'),body=document.createElement('p');
-  const live=item.kind==='activity'&&item===messages.at(-1)&&current?.phase==='working';
-  row.className='turn '+(item.role==='human'?'human':'sphinx')+(item.kind==='question'?' question':item.kind==='notice'?' notice':item.kind==='activity'?' activity'+(live?' live':''):'');
+  row.className='turn '+(item.role==='human'?'human':'sphinx')+(item.kind==='question'?' question':item.kind==='notice'?' notice':'');
   name.className='speaker';name.textContent=item.role==='human'?'You':'Sphinx';body.className='turn-text';body.textContent=item.text;
   row.append(name);
   if(item.kind==='question'&&item.number){const caption=document.createElement('div');caption.className='question-number';caption.textContent='Question '+item.number+(item.followUp?' · Follow-up':'');row.append(caption);}
@@ -121,6 +135,8 @@ function render(state){
   button.type='button';button.textContent=choice.label;button.onclick=()=>send(choice.value);description.textContent=choice.description;row.append(button,description);$('recovery').append(row);
  }
  controls();
+ // A new step (question, recovery decision, result) must never sit below the fold.
+ if(previous?.phase!==state.phase||previous?.question?.id!==state.question?.id){const scroll=$('conversation');scroll.scrollTop=scroll.scrollHeight;}
  if(state.phase==='question'&&(previous?.phase!=='question'||previous?.question?.id!==state.question?.id)&&document.visibilityState!=='hidden')$('response').focus({preventScroll:true});
 }
 async function send(action){

@@ -104,6 +104,8 @@ test('the transcript renders questions, answers, feedback, and live activity as 
   assert.equal(rows.length, 5);
   assert.match(rows[0].className, /activity/); assert.doesNotMatch(rows[0].className, /live/);
   assert.match(rows[4].className, /activity live/);
+  const summary = row => row.children[0].children[0];
+  assert.equal(summary(rows[4]).children[0].textContent, 'Drafting questions');
   assert.equal(rows[2].children.at(-1).textContent, '<b>mine</b>');
   assert.match(p.nodes.status.className, /busy/);
   assert.equal(p.nodes.question.hidden, true, 'A question already in the transcript is not shown twice');
@@ -120,4 +122,26 @@ test('Skip this time sends the optional reason even while the review is still wo
   assert.deepEqual(bodies.map(body => [body.action, body.response]), [['skip', 'prod is down']]);
   assert.equal(p.nodes.status.textContent, 'Skipped');
   assert.equal(p.nodes.skip.hidden, true);
+});
+
+test('consecutive review steps collapse to one closed group showing only the latest step', () => {
+  const p = page();
+  const messages = ['Read the diff for 3 changed files', 'Reading src/a.js', 'Searching for “x”'].map((text, i) => ({ id: 'm' + i, role: 'sphinx', kind: 'activity', text }));
+  p.update({ ...question, phase: 'working', messages });
+  const rows = p.nodes.messages.children;
+  assert.equal(rows.length, 1);
+  const details = rows[0].children[0], [summary, list] = details.children;
+  assert.equal(details.open, false);
+  assert.deepEqual(summary.children.map(node => node.textContent), ['Searching for “x”', '3 steps']);
+  assert.equal(list.children.length, 3);
+});
+
+test('a phase change scrolls the conversation so recovery choices are visible', () => {
+  const p = page();
+  p.update({ ...question, phase: 'working', messages: [{ id: 'm1', role: 'sphinx', kind: 'activity', text: 'Reading a.js' }] });
+  Object.assign(p.nodes.conversation, { scrollHeight: 5000, scrollTop: 0, clientHeight: 600 });
+  p.update({ ...question, sequence: 2, phase: 'recovery', choices: [{ value: 'retry', label: 'Continue the saved review', description: '' }] });
+  assert.equal(p.nodes.conversation.scrollTop, 5000);
+  assert.equal(p.nodes.recovery.hidden, false);
+  assert.equal(p.nodes.recovery.children.length, 1);
 });

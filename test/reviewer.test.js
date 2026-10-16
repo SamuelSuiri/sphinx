@@ -181,7 +181,7 @@ test('Pi sequentially executes bounded 3–8 read batches for native and structu
       await new Promise(resolve => setImmediate(resolve));
       try { return await execute(...args); } finally { active--; }
     };
-    const readCalls = Array.from({ length: count }, (_, index) => ({ id: `read-${index}`, name: index === 0 ? 'read_diff' : 'read_file', arguments: { path: index === 0 ? 'worker.js' : 'lib/once.js' } }));
+    const readCalls = Array.from({ length: count }, (_, index) => ({ id: `read-${index}`, name: index === 0 ? 'read_diff' : 'read_file', arguments: index === 0 ? { path: 'worker.js' } : { path: 'lib/once.js', startLine: index } }));
     const provider = async args => {
       await args.beforeCall(); requests++;
       assert.ok(requests <= 2);
@@ -373,8 +373,8 @@ test('small and medium reviews reserve synthesis within their size caps for both
           return { calls: [{ id: 'finish', name: 'finish_review', arguments: { assessment: { questions: [question] }, summary, evidenceIds: ['e1', 'e3'] } }] };
         }
         return { calls: [
-          { id: `diff-${requests}`, name: 'read_diff', arguments: { path: 'worker.js' } },
-          { id: `helper-${requests}`, name: 'read_file', arguments: { path: 'lib/once.js' } },
+          { id: `diff-${requests}`, name: 'read_diff', arguments: { path: 'worker.js', offset: requests } },
+          { id: `helper-${requests}`, name: 'read_file', arguments: { path: 'lib/once.js', startLine: requests } },
         ] };
       }
       const data = decode(args);
@@ -387,7 +387,7 @@ test('small and medium reviews reserve synthesis within their size caps for both
         assert.match(args.prompt, /Final synthesis: investigation is closed/);
         return finish();
       }
-      return toolAction([['read_diff', { path: 'worker.js' }], ['read_file', { path: 'lib/once.js' }]]);
+      return toolAction([['read_diff', { path: 'worker.js', offset: requests }], ['read_file', { path: 'lib/once.js', startLine: requests }]]);
     };
     const result = await runReviewer({ ...options, config: { ...config, changeTier: tier }, workspace: space, nativeTools,
       beforeCall: async () => { charges++; }, runModel: provider, runToolModel: provider });
@@ -468,7 +468,7 @@ test('whole-review deadline and cancellation stop an in-flight provider without 
   let providerSignal;
   const keepAlive = setTimeout(() => {}, 1000);
   try {
-    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.02 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { name: 'TimeoutError' });
+    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.02 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { code: 'REVIEWER_TIMEOUT' });
     assert.equal(providerSignal.aborted, true);
     const controller = new AbortController();
     const promise = runReviewer({ ...options, workspace: workspace(), signal: controller.signal, runModel: async args => { await args.beforeCall(); controller.abort(new Error('human cancelled')); return finish(); } });
