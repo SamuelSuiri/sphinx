@@ -34,6 +34,7 @@ export default function Home() {
 
       <main id="top">
         <section className="intro">
+          <ul className="chips" aria-label="Highlights"><li>Free</li><li><a href={REPO}>FOSS</a></li></ul>
           <figure className="quote">
             <blockquote><h1>“Outsource your thinking,<br />not your understanding.”</h1></blockquote>
             <figcaption>— <a href={QUOTE}>Sun Tzu</a></figcaption>

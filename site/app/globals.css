@@ -52,6 +52,10 @@ h1 { font-size: clamp(34px, 6vw, 54px); line-height: 1.12; letter-spacing: -0.02
 h2 { font-size: 26px; letter-spacing: -0.01em; font-weight: 600; margin: 0 0 24px; }
 h3 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
 p { margin: 0 0 14px; }
+.chips { list-style: none; display: flex; gap: 8px; margin: 0 0 28px; padding: 0; }
+.chips li { font: 13px/1 var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; }
+.chips a { text-decoration: none; }
+.chips a:hover { color: var(--ink); }
 .quote { margin: 0 0 26px; }
 .quote blockquote { margin: 0; }
 .quote h1 { margin: 0; text-indent: -0.42em; }
