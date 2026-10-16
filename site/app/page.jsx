@@ -2,6 +2,7 @@ import CopyCommand from './copy-command';
 
 const REPO = 'https://github.com/parthh01/sphinx';
 const NPM = 'https://www.npmjs.com/package/sphinx-understand';
+const QUOTE = 'https://x.com/yacineMTB/status/2018886083120153046?s=20';
 
 const steps = [
   ['You push', 'You, or the coding agent working for you, run git push to a branch you protect, like main.'],
@@ -33,26 +34,28 @@ export default function Home() {
 
       <main id="top">
         <section className="intro">
-          <h1>Outsource your thinking,<br />not your understanding.</h1>
+          <figure className="quote">
+            <blockquote><h1>“Outsource your thinking,<br />not your understanding.”</h1></blockquote>
+            <figcaption>— <a href={QUOTE}>Sun Tzu</a></figcaption>
+          </figure>
           <p className="lede">
-            Sphinx is a Git checkpoint for agent-assisted development. Before your agent’s code reaches
-            main, it asks you a few questions about what the change actually does.
+            Sphinx is a hook for agent-assisted development. Before your agent’s code ships, it asks you a question or two checking if you understand the code being shipped.
           </p>
           <CopyCommand command="npm install -g sphinx-understand" />
           <p className="links"><a href="#start">Get started</a> · <a href={REPO}>Read the source</a></p>
         </section>
 
         <figure className="demo" aria-label="Example Sphinx questionnaire">
-          <div className="demo-bar"><span>checkride-ai / main</span><span>4.1k tokens · $0.0009</span></div>
+          <div className="demo-bar"><span>billing-service / main</span><span>6.8k tokens · $0.0014</span></div>
           <div className="demo-body">
-            <p className="activity">✓ Checking the questions against the source <span>6 steps ▸</span></p>
+            <p className="activity">✓ Checking the questions against the source <span>7 steps ▸</span></p>
             <p className="who">Sphinx</p>
-            <p className="q">The card actions now use BUTTON_CARD instead of BUTTON_SM. If another screen still renders a small button, does its height change? Explain briefly.</p>
-            <div className="you"><p className="who">You</p><p>Yes, every small button gets taller.</p></div>
+            <p className="q">Your webhook handler now saves the event ID before calling charge(). Stripe times out waiting for your response and sends the same event again. What happens on the retry, and why?</p>
+            <div className="you"><p className="who">You</p><p>The handler runs twice, so the customer gets charged twice.</p></div>
             <p className="who">Sphinx</p>
-            <p>Not quite. BUTTON_CARD is a new constant used only by the card actions; BUTTON_SM is unchanged, so other small buttons keep their height.</p>
+            <p>Not quite. The retry finds the saved event ID and returns 200 without charging, so there’s no double charge. That ordering has a cost, though: the ID is recorded before the charge succeeds.</p>
             <p className="who">Sphinx <span className="tag">Follow-up</span></p>
-            <p className="q">A teammate adds a new card that imports BUTTON_SM directly. Which height does it get, and why?</p>
+            <p className="q">charge() fails with a network error right after the event ID is saved. What does the next retry do, and what happens to the customer?</p>
           </div>
           <figcaption>Git is waiting. Pass, and the push continues automatically.</figcaption>
         </figure>
