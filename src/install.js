@@ -112,9 +112,11 @@ async function sourceBeforeInstall({ repo, cwd, env, manifest }) {
 }
 
 function sourceShell(source) {
+  // git init runs reference-transaction while creating HEAD, before rev-parse
+  // accepts the new repository; Git still exports that repository as GIT_DIR.
   return source.kind === 'path'
     ? `hook_dir=${quote(source.value)}\n`
-    : 'hook_dir=$(git rev-parse --path-format=absolute --git-common-dir) || exit $?\nhook_dir="$hook_dir/hooks"\n';
+    : 'if ! hook_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then\n  if [ -z "${GIT_DIR:-}" ] || [ ! -d "$GIT_DIR" ]; then\n    git rev-parse --git-common-dir >/dev/null\n    exit 128\n  fi\n  hook_dir=$GIT_DIR\nfi\nhook_dir="$hook_dir/hooks"\n';
 }
 
 function hookScript({ event, source, cliPath, home, id }) {

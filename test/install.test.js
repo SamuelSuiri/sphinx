@@ -168,6 +168,30 @@ test('gated hooks preserve stdin and arguments and do not bypass an original rej
   assert.equal(await dispatchHook({ event: 'pre-commit', args: [], input: '', cwd: f.repo, env: { ...f.env, SPHINX_EVALUATOR: '1' }, gate: async () => 23 }), 0);
 });
 
+test('fresh repositories initialize and clone after global installation while existing reference hooks still reject', async t => {
+  const f = await fixture(t);
+  await install(f.options);
+  const run = (args, cwd = f.base) => execFileSync('git', args, { cwd, env: f.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  run(['init', '-q', 'fresh']);
+  run(['init', '-q', '--bare', 'fresh.git']);
+  for (const directory of ['fresh/.git', 'fresh.git']) assert.match(run(['--git-dir', directory, 'symbolic-ref', 'HEAD']), /^refs\/heads\//);
+  run(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'base'], path.join(f.base, 'fresh'));
+  run(['clone', '-q', 'fresh', 'cloned']);
+  run(['clone', '-q', '--bare', 'fresh', 'cloned.git']);
+  assert.equal(run(['rev-parse', 'HEAD'], path.join(f.base, 'cloned')), run(['rev-parse', 'HEAD'], path.join(f.base, 'fresh')));
+
+  const rejecting = '#!/bin/sh\ncat >/dev/null\n[ "$1" = prepared ] && { echo rejected by original hook >&2; exit 9; }\nexit 0\n';
+  const template = path.join(f.base, 'template');
+  await executable(path.join(template, 'hooks/reference-transaction'), rejecting);
+  // Older Git creates the initial HEAD without running reference-transaction.
+  let initRunsHook = true;
+  try { run(['-c', `core.hooksPath=${path.join(template, 'hooks')}`, 'init', '-q', 'probe']); initRunsHook = false; } catch {}
+  if (initRunsHook) assert.throws(() => run(['init', '-q', `--template=${template}`, 'templated']), error => /rejected by original hook/.test(error.stderr));
+  f.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'base');
+  await executable(path.join(f.repo, '.git/hooks/reference-transaction'), rejecting);
+  assert.throws(() => f.git('update-ref', 'refs/heads/blocked', 'HEAD'), error => /rejected by original hook/.test(error.stderr));
+});
+
 test('generated gate dispatcher safely quotes the Node, CLI and state paths', async t => {
   const f = await fixture(t);
   await install(f.options);
