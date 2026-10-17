@@ -9,6 +9,7 @@ import { parseCommandLine } from '../src/cli.js';
 
 const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const README = fileURLToPath(new URL('../README.md', import.meta.url));
+const DOCS = ['configuration.md', 'integrations.md', 'architecture.md'].map(name => fileURLToPath(new URL(`../docs/${name}`, import.meta.url)));
 
 // Splits a documented shell line into argv: single-quoted strings, trailing comments,
 // and <placeholders> (which a reader replaces) are the only shell syntax the README uses.
@@ -21,8 +22,8 @@ function shellWords(line) {
   return words;
 }
 
-async function documentedCommands() {
-  const text = await readFile(README, 'utf8');
+async function documentedCommands(file = README) {
+  const text = await readFile(file, 'utf8');
   const blocks = [...text.matchAll(/^```(?:sh|bash|shell)\n([\s\S]*?)^```/gmu)].map(match => match[1]);
   return blocks.flatMap(block => block.split('\n')).map(line => line.trim()).filter(line => line.startsWith('sphinx '));
 }
@@ -39,7 +40,13 @@ test('every README sphinx command uses options the CLI accepts', async () => {
   for (const line of commands) assert.doesNotThrow(() => parseCommandLine(shellWords(line).slice(1)), `README command is rejected by the CLI: ${line}`);
 });
 
-test('README noninteractive init examples succeed when copied into a fresh repository', { timeout: 30000 }, async t => {
+test('every reference-doc sphinx command uses options the CLI accepts', async () => {
+  for (const file of DOCS) {
+    for (const line of await documentedCommands(file)) assert.doesNotThrow(() => parseCommandLine(shellWords(line).slice(1)), `${path.basename(file)} command is rejected by the CLI: ${line}`);
+  }
+});
+
+test('README and reference-doc noninteractive init examples succeed when copied into a fresh repository', { timeout: 30000 }, async t => {
   const base = await mkdtemp(path.join(tmpdir(), 'sphinx-readme-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const home = path.join(base, 'home');
@@ -47,8 +54,10 @@ test('README noninteractive init examples succeed when copied into a fresh repos
   const env = { ...process.env, CI: '1', HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, 'sphinx'),
     GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'SPHINX_EVALUATOR', 'OPENROUTER_API_KEY']) delete env[key];
-  const examples = (await documentedCommands()).filter(line => line.startsWith('sphinx init --yes'));
-  assert.ok(examples.length > 0);
+  const readmeExamples = (await documentedCommands()).filter(line => line.startsWith('sphinx init --yes'));
+  assert.ok(readmeExamples.length > 0);
+  const docExamples = (await Promise.all(DOCS.map(file => documentedCommands(file)))).flat().filter(line => line.startsWith('sphinx init --yes'));
+  const examples = [...readmeExamples, ...docExamples];
   for (const [index, line] of examples.entries()) {
     // Each example gets its own repository because init deliberately preserves existing files.
     const repo = path.join(base, `repo-${index}`);
