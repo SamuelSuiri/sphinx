@@ -27,6 +27,7 @@ textarea:disabled{background:#f6f2ed;color:var(--muted)}textarea::placeholder{co
 button{border:1px solid #c3b8aa;border-radius:6px;padding:7px 12px;background:transparent;color:var(--ink);font-size:14px;line-height:1.5}
 button.primary{background:var(--amber);color:#fff;border-color:var(--amber);margin-left:auto;min-width:72px}
 button:hover:not(:disabled){background:#eee7dc}button.primary:hover:not(:disabled){background:#8b4208}
+.disputing textarea{border-color:#8d271e}.disputing #submit{background:#8d271e;border-color:#8d271e}
 button.quiet{border-color:transparent;color:var(--muted)}button.quiet:hover:not(:disabled){color:var(--ink)}
 .hint{font-size:12px;color:var(--muted);margin:10px 0 0}.recovery{display:grid;gap:12px;margin:0 0 20px}.recovery button{text-align:left;width:100%}.recovery p{margin:4px 0 0;font-size:13px;color:var(--muted)}
 header .tools{display:flex;gap:4px}
@@ -37,6 +38,7 @@ button.danger{background:#8d271e;border-color:#8d271e;color:#fff}button.danger:h
 .activity summary .latest::before{content:"✓ ";color:#7c8a5c}.activity.live summary .latest::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}
 .activity .count{color:#8f857a;white-space:nowrap}.activity .count::after{content:" ▸"}.activity details[open] .count::after{content:" ▾"}
 .activity ol{list-style:none;margin:8px 0 0;padding:0 0 0 14px;border-left:1px solid var(--line);max-height:220px;overflow-y:auto}.activity ol li{padding:1px 0 1px 8px}
+.turn.streaming .turn-text::after{content:"▍";color:var(--amber);animation:pulse 1s steps(2) infinite}
 .status.busy::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}.status.phase-question,.status.phase-passed,.status.phase-paused,.status.phase-error,.status.phase-skipped{display:inline-block;font-size:13px;font-weight:600;line-height:1;padding:6px 10px;border:1px solid currentColor;border-radius:999px}.status.phase-question{color:var(--amber)}.status.phase-question::before{content:"◆ "}.status.phase-question.retry{color:var(--retry)}.status.phase-question.retry::before{content:"↺ "}.status.phase-passed{color:var(--pass)}.status.phase-passed::before{content:"✓ "}.status.phase-paused,.status.phase-skipped{color:var(--muted)}.status.phase-paused::before{content:"‖ "}.status.phase-skipped::before{content:"↷ "}.status.phase-error{color:var(--retry)}.status.phase-error::before{content:"! "}@keyframes pulse{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.status.busy::before,.activity.live summary .latest::before{animation:none}}
 footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-height:1.5}footer p{margin:0}#waiting{margin-top:3px}[hidden]{display:none!important}
@@ -51,14 +53,14 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 <p id="message" class="message" hidden></p><div id="status" class="status" role="status" aria-live="polite">Connecting to your local checkpoint…</div><div id="recovery" class="recovery" hidden></div>
 </div>
 <div id="composer" class="composer"><p id="error" class="error" role="alert" hidden></p>
-<form id="form"><label for="response">Your answer</label><textarea id="response" rows="2" maxlength="8000" autocomplete="off" spellcheck="true" placeholder="Your prediction and a short reason…"></textarea>
-<div class="actions"><button type="button" class="quiet" data-action="learn">Explain this</button><button type="button" class="quiet" data-action="dispute">Dispute question</button><button id="submit" class="primary" type="submit">Send</button></div>
+<form id="form"><label id="label" for="response">Your answer</label><textarea id="response" rows="2" maxlength="8000" autocomplete="off" spellcheck="true" placeholder="Your prediction and a short reason…"></textarea>
+<div class="actions"><button type="button" class="quiet" data-action="learn">Explain this</button><button type="button" class="quiet" id="dispute">Dispute question</button><button id="submit" class="primary" type="submit">Send</button></div>
 <p class="hint">Enter to send · Shift+Enter for a new line. Open-book—inspect the code whenever useful.</p></form></div>
 <footer><p>Your answers go directly to Sphinx. The coding agent receives status only.</p><p id="waiting">Closing this tab leaves the check waiting. Use Pause check to stop.</p></footer>
 </main></div>
 <script nonce="${nonce}">
 const token=${JSON.stringify(token)},base='/'+token,$=id=>document.getElementById(id);
-let current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
+let disputing=false,current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
 const text=(id,value)=>{$(id).textContent=value||'';$(id).hidden=!value;};
 const compact=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n);
 const usageText=(u,t)=>{if(!t)return '';const total=(t.input||0)+(t.output||0);if(!total&&t.cost==null)return '';
@@ -94,7 +96,7 @@ function history(messages){
    details.append(summary,list);row.append(details);$('messages').append(row);continue;
   }
   const row=document.createElement('li'),name=document.createElement('div'),body=document.createElement('p');
-  row.className='turn '+(item.role==='human'?'human':'sphinx')+(item.kind==='question'?' question':item.kind==='notice'?' notice':'');
+  row.className='turn '+(item.role==='human'?'human':'sphinx')+(item.kind==='question'?' question':item.kind==='notice'?' notice':'')+(item.streaming?' streaming':'');
   name.className='speaker';name.textContent=item.role==='human'?'You':'Sphinx';body.className='turn-text';body.textContent=item.text;
   row.append(name);
   if(item.kind==='question'&&item.number){const caption=document.createElement('div');caption.className='question-number';caption.textContent='Question '+item.number+(item.followUp?' · Follow-up':'');row.append(caption);}
@@ -117,7 +119,7 @@ function render(state){
  text('status',label+(retry?' · Needs another answer':''));$('status').className='status phase-'+state.phase+(state.phase==='working'?' busy':'')+(retry?' retry':'');text('message',state.message);text('error',state.error);
  history(messages);
  // Live activity already shows progress; avoid stacking generic spinners under it.
- if(state.phase==='working'&&messages.at(-1)?.kind==='activity'){$('status').hidden=true;$('message').hidden=true;}
+ if(state.phase==='working'&&(messages.at(-1)?.kind==='activity'||messages.at(-1)?.streaming)){$('status').hidden=true;$('message').hidden=true;}
  text('feedback',messages.length?'':state.feedback);
  $('question').hidden=state.phase!=='question'||messages.some(item=>item.kind==='question'&&item.questionId===state.question?.id);
  $('composer').hidden=!['question','working'].includes(state.phase)&&!state.error;
@@ -128,10 +130,10 @@ function render(state){
   for(const choice of state.question.choices||[]){const li=document.createElement('li');li.textContent=choice;$('choices').append(li);}
   $('choices').hidden=!(state.question.choices||[]).length;
   const key=state.id+':'+state.question.id;
-  if(lastQuestion!==key){$('response').value='';lastQuestion=key;resize();}
+  if(lastQuestion!==key){$('response').value='';lastQuestion=key;resize();if(disputing)setDispute(false);}
  }
  const graded=[...messages].reverse().find(item=>item.role==='human'&&item.status==='graded');
- if(graded&&lastGraded!==graded.id){lastGraded=graded.id;$('response').value='';resize();}
+ if(graded&&lastGraded!==graded.id){lastGraded=graded.id;$('response').value='';resize();if(disputing)setDispute(false);}
  $('recovery').replaceChildren();
  if(state.phase==='recovery')for(const choice of state.choices||[]){
   if(choice.value==='pause')continue;
@@ -155,11 +157,21 @@ async function send(action){
  }catch{if(!finished)text('error','Connection interrupted. Your response is not resent automatically. Wait for the current state before trying again.');}
  finally{submitting=false;controls();}
 }
-$('form').onsubmit=event=>{event.preventDefault();send('answer');};
+// Dispute is a reversible mode: the same box and Send button carry the reason.
+function setDispute(on){
+ disputing=on;$('form').classList.toggle('disputing',on);
+ $('label').textContent=on?'What is ambiguous or wrong about this question?':'Your answer';
+ $('response').placeholder=on?'Explain the missing assumption or the evidence that contradicts it…':'Your prediction and a short reason…';
+ $('submit').textContent=on?'Send dispute':'Send';$('dispute').textContent=on?'Back to answering':'Dispute question';
+ text('error','');$('response').focus();
+}
+$('dispute').onclick=()=>setDispute(!disputing);
+const submit=()=>send(disputing?'dispute':'answer');
+$('form').onsubmit=event=>{event.preventDefault();submit();};
 $('response').oninput=resize;
 $('response').onkeydown=event=>{
  if(event.key!=='Enter'||event.shiftKey||event.isComposing||event.keyCode===229)return;
- event.preventDefault();if(!event.repeat)send('answer');
+ event.preventDefault();if(!event.repeat)submit();
 };
 for(const button of document.querySelectorAll('[data-action]'))button.onclick=()=>send(button.dataset.action);
 $('pause').onclick=()=>send('pause');

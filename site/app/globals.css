@@ -94,7 +94,15 @@ section { padding: var(--s8) 0; border-top: 1px solid var(--line); }
 
 /* Hero */
 .hero { border-top: 0; padding: var(--s7) 0 var(--s8); display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: var(--s7); align-items: center; }
-.eyebrow { font: var(--meta); color: var(--muted); margin-bottom: var(--s4); }
+.chips { list-style: none; display: flex; gap: var(--s2); margin: 0 0 var(--s5); padding: 0; }
+.chips li { font: 13px/1 var(--mono); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 999px; padding: 6px 12px; }
+.chips a { text-decoration: none; }
+.chips a:hover { color: var(--ink); }
+.quote { margin: 0 0 var(--s5); }
+.quote blockquote { margin: 0; }
+.quote h1 { margin: 0; text-indent: -0.42em; }
+.quote figcaption { margin-top: var(--s3); font-size: 18px; color: var(--muted); }
+.quote figcaption a { color: var(--ink); }
 .lede { font-size: 19px; line-height: 1.55; color: var(--muted); max-width: 32em; margin-bottom: var(--s6); }
 .actions { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s4); }
 .button {

@@ -2,6 +2,7 @@ import CopyCommand from './copy-command';
 
 const REPO = 'https://github.com/parthh01/sphinx';
 const NPM = 'https://www.npmjs.com/package/sphinx-understand';
+const QUOTE = 'https://x.com/yacineMTB/status/2018886083120153046?s=20';
 
 const steps = [
   ['You push', 'You, or the coding agent working for you, push to a branch you protect, like main.'],
@@ -22,7 +23,7 @@ const extras = [
   ['Open source', 'MIT licensed, runs locally, no account or hosted service.'],
 ];
 
-const reviewSteps = ['Reading the diff', 'Opening src/ui/sizes.ts', 'Opening src/cards/actions.tsx', 'Searching for other uses of BUTTON_SM', 'Drafting a question', 'Checking the question against the source'];
+const reviewSteps = ['Reading the diff', 'Opening src/webhooks/stripe.js', 'Opening src/billing/charge.js', 'Searching for other callers of markSeen', 'Reading the webhook retry tests', 'Drafting a question', 'Checking the question against the source'];
 
 function Mark() {
   return <span className="mark" aria-hidden="true">◆</span>;
@@ -42,9 +43,9 @@ function HeroPreview() {
         <span className="dim">Sphinx: understanding check needed for refs/heads/main (small change).{'\n'}Sphinx: Git is waiting for your answers in the local Sphinx questionnaire.</span>
       </code></pre>
       <div className="card">
-        <div className="card-bar"><span>example-app / main</span><Chip kind="waiting">Question 1 of 1</Chip></div>
+        <div className="card-bar"><span>billing-service / main</span><Chip kind="waiting">Question 1 of 1</Chip></div>
         <p className="who">Sphinx</p>
-        <p className="q">The card actions now use BUTTON_CARD instead of BUTTON_SM. If another screen still renders a small button, does its height change?</p>
+        <p className="q">Your webhook handler now saves the event ID before calling charge(). Stripe times out waiting for your response and sends the same event again. What happens on the retry, and why?</p>
         <p className="hint">Answer in your own words. Open-book: inspect the code whenever useful.</p>
       </div>
     </figure>
@@ -62,12 +63,11 @@ function Example() {
         <li>
           <p className="stage">The change</p>
           <pre className="diff"><code>
-            <span className="file">src/ui/sizes.ts</span>{'\n'}
-            {'  export const BUTTON_SM = 32;\n'}
-            <span className="add">{'+ export const BUTTON_CARD = 40;'}</span>{'\n\n'}
-            <span className="file">src/cards/actions.tsx</span>{'\n'}
-            <span className="del">{'- <Button height={BUTTON_SM}>Save</Button>'}</span>{'\n'}
-            <span className="add">{'+ <Button height={BUTTON_CARD}>Save</Button>'}</span>
+            <span className="file">src/webhooks/stripe.js</span>{'\n'}
+            {'  export async function handle(event) {\n'}
+            <span className="add">{'+   if (await seen(event.id)) return ok();'}</span>{'\n'}
+            <span className="add">{'+   await markSeen(event.id);'}</span>{'\n'}
+            {'    await charge(event.data);\n    return ok();\n  }'}
           </code></pre>
         </li>
         <li>
@@ -80,33 +80,33 @@ function Example() {
         <li>
           <p className="stage">Question</p>
           <p className="who">Sphinx <span className="meta">Question 1 of 1</span></p>
-          <p className="q">The card actions now use BUTTON_CARD instead of BUTTON_SM. If another screen still renders a small button, does its height change? Explain briefly.</p>
+          <p className="q">Your webhook handler now saves the event ID before calling charge(). Stripe times out waiting for your response and sends the same event again. What happens on the retry, and why?</p>
         </li>
         <li>
           <p className="stage">Your answer</p>
-          <div className="you"><p className="who">You</p><p>Yes, every small button gets taller.</p></div>
+          <div className="you"><p className="who">You</p><p>The handler runs twice, so the customer gets charged twice.</p></div>
           <Chip kind="retry">Needs another answer</Chip>
         </li>
         <li>
           <p className="stage">Explanation</p>
           <p className="who">Sphinx</p>
-          <p>Not quite. BUTTON_CARD is a new constant used only by the card actions; BUTTON_SM is unchanged, so other small buttons keep their height.</p>
+          <p>Not quite. The retry finds the saved event ID and returns 200 without charging, so there’s no double charge. That ordering has a cost, though: the ID is recorded before the charge succeeds.</p>
         </li>
         <li>
           <p className="stage">New scenario</p>
           <p className="who">Sphinx <span className="meta">Question 1 · Follow-up</span></p>
-          <p className="q">A teammate adds a new card that imports BUTTON_SM directly. Which height does it get, and why?</p>
+          <p className="q">charge() fails with a network error right after the event ID is saved. What does the next retry do, and what happens to the customer?</p>
         </li>
         <li>
           <p className="stage">Your answer</p>
-          <div className="you"><p className="who">You</p><p>The original small height. BUTTON_SM didn’t change; only the card actions moved to BUTTON_CARD.</p></div>
+          <div className="you"><p className="who">You</p><p>The retry sees the saved ID and returns 200 without charging. The customer is never charged, and nothing retries the payment.</p></div>
           <Chip kind="passed">Passed</Chip>
         </li>
         <li>
           <p className="stage">Git continues</p>
           <pre className="terminal small"><code>
             <span className="dim">Sphinx: understanding check complete. Continuing this Git operation.</span>{'\n'}
-            {'To github.com:you/example-app.git\n   4f1c2a9..8be03d1  main -> main'}
+            {'To github.com:you/billing-service.git\n   4f1c2a9..8be03d1  main -> main'}
           </code></pre>
         </li>
       </ol>
@@ -130,11 +130,15 @@ export default function Home() {
       <main id="main">
         <section className="hero" id="top">
           <div className="hero-copy">
-            <p className="eyebrow"><Mark />A Git checkpoint for agent-assisted code</p>
-            <h1>Outsource your thinking, not your understanding.</h1>
+            <ul className="chips" aria-label="Highlights"><li>Free</li><li><a href={REPO}>FOSS</a></li></ul>
+            <figure className="quote">
+              <blockquote><h1>“Outsource your thinking, not your understanding.”</h1></blockquote>
+              <figcaption>— <a href={QUOTE}>Sun Tzu</a></figcaption>
+            </figure>
             <p className="lede">
-              Before your agent’s code reaches main, Sphinx asks you a few questions about what the change actually
-              does. Miss one and it explains, then asks again with a new scenario. Pass and the push continues.
+              Sphinx is a hook for agent-assisted development. Before your agent’s code ships, it asks you a question
+              or two checking if you understand the code being shipped. Miss one and it explains, then asks again with
+              a new scenario. Pass and the push continues.
             </p>
             <div className="actions">
               <a className="button primary" href="#start">Get started <span aria-hidden="true">→</span></a>

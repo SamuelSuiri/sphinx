@@ -5,7 +5,7 @@ import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
+import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
 import { initializeRepository } from './repo-config.js';
 import * as git from './git.js';
 import { install, uninstall, doctor, dispatchHook, installedAgents, detectAgents } from './install.js';
@@ -26,14 +26,14 @@ import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'remotes'];
-const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'max-output-tokens'];
+const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'max-output-tokens', 'cli-billing'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
   init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: [], uninstall: ['repo'],
+  status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
   mcp: [], yolo: ['json', 'reason'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -142,6 +142,7 @@ export function applyInstallOptions(current, values) {
   }
   for (const tier of ['small', 'medium', 'large']) if (values[tier] !== undefined) config.models[tier] = parseRoute(values[tier]);
   if (values['allow-paid']) config.allowPaid = true;
+  if (values['cli-billing'] !== undefined) config.cliBilling = values['cli-billing'];
   validateConfig(config);
   if (values.agents !== undefined && !['auto', 'none'].includes(values.agents)) {
     const selected = values.agents.split(',');
@@ -169,6 +170,7 @@ function printConfiguration(terminal, config, { routes = true } = {}) {
   if (routes) {
     terminal.section('Evaluator routes');
     terminal.rows(['small', 'medium', 'large'].map(tier => [tier[0].toUpperCase() + tier.slice(1), routeText(config.models[tier])]));
+    if (Object.values(config.models).some(route => ['codex', 'claude'].includes(route.provider))) terminal.rows([['Codex/Claude billing', config.cliBilling === 'api' ? 'API keys from your environment, when set' : 'Your signed-in plan; API keys in your environment are ignored']]);
     terminal.blank(); terminal.note(`Model calls: ${modelLimitText(config.maxModelCalls)}. Review, compaction, grading, learning, and failed requests stay counted. Completion lasts ${config.receiptHours} hours unless code, destination, or policy changes.`);
     terminal.note(`Review planning targets: ${reviewCapsText(config)} calls. These are soft targets; only explicitly configured request limits stop further calls. Context limits and deadlines still apply.`);
     terminal.note('A call cap is optional. Set one with sphinx config --max-model-calls 30, or clear it with --max-model-calls unlimited.');
@@ -203,6 +205,26 @@ async function activateCommand(values) {
   const result = await withProgress('Opening configured coding agents', () => activateIntegrations({ agents }), { enabled: !values.json });
   if (values.json) json(result); else printActivationResult(ui(), result);
   return result.results.some(item => item.status !== 'opened') ? 1 : 0;
+}
+
+async function readHidden(prompt) {
+  const hidden = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  process.stdout.write(prompt);
+  try { return await withReadline(ask => ask(''), { output: hidden, terminal: true }); } finally { process.stdout.write('\n'); }
+}
+
+async function authOpenAI(baseUrlFlag) {
+  if (!process.stdin.isTTY) throw new Error('Set SPHINX_OPENAI_BASE_URL and SPHINX_OPENAI_API_KEY in noninteractive environments; sphinx auth requires a terminal.');
+  const terminal = ui();
+  terminal.section('OpenAI-compatible endpoint');
+  terminal.paragraph('Any server with an OpenAI chat-completions API: OpenAI, Groq, Together, vLLM, Ollama, LM Studio, and others. It must support tool calls and JSON-schema structured output. The key is only ever sent to this URL.');
+  const baseUrl = baseUrlFlag ?? await withReadline(ask => ask('\nBase URL [https://api.openai.com/v1]: '));
+  terminal.note('Input is hidden. Leave it empty only for a localhost server without a key.');
+  const key = await readHidden('\nAPI key: ');
+  const saved = await saveOpenAIEndpoint({ baseUrl: baseUrl.trim() || 'https://api.openai.com/v1', apiKey: key }); 
+  terminal.success(`Endpoint saved: ${saved}`); terminal.note(getPaths().credentials);
+  terminal.paragraph('Route reviews to it with a model ID your endpoint serves, for example:');
+  terminal.command('sphinx config --provider openai --model gpt-5-mini');
 }
 
 async function auth() {
@@ -431,7 +453,7 @@ export async function main(argv) {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
-    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' },
+    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
@@ -460,7 +482,12 @@ export async function main(argv) {
     }
     return 0;
   }
-  if (command === 'auth') { await auth(); return 0; }
+  if (command === 'auth') {
+    if (values.provider === 'openai') { await authOpenAI(values['base-url']); return 0; }
+    if (values.provider !== undefined && values.provider !== 'openrouter') throw new Error('sphinx auth saves credentials for --provider openrouter (default) or --provider openai. Codex and Claude use their own sign-in.');
+    if (values['base-url'] !== undefined) throw new Error('--base-url applies to --provider openai.');
+    await auth(); return 0;
+  }
   if (command === 'uninstall') { printInstallationResult(ui(), await uninstall({ repo: !!values.repo })); return 0; }
   if (command === 'doctor') {
     const result = await doctor();
@@ -488,6 +515,7 @@ export async function main(argv) {
         terminal.note('Changing evaluator routes applies to fresh checkpoints. Existing checkpoints remain bound to their original assessment policy.');
       }
       terminal.note(result.path);
+      if (Object.values(config.models).some(route => route.provider === 'openai') && !(await openAIEndpoint().catch(() => null))) terminal.warning('No OpenAI-compatible endpoint is saved yet. Run sphinx auth --provider openai before the next check.');
       terminal.paragraph(`Model calls: ${modelLimitText(maxModelCalls)}. Review, compaction, grading, learning follow-ups, and failed requests stay counted. Saving configuration makes no model request.`);
       terminal.note(`Review planning targets: ${reviewCapsText(config)} calls. Explicit request caps, context limits, and deadlines still apply.`);
       return 0;
@@ -512,6 +540,7 @@ export async function main(argv) {
     const where = result.scope === 'repo' ? `for ${result.repoRoot}` : 'globally (every repository without its own setting)';
     const terminal = ui();
     if (result.enabled) { terminal.warning(`Yolo mode is ON ${where}. Git operations skip the understanding check; each skip is logged.`); terminal.command('sphinx yolo   # run again to turn it off'); }
+    else if (result.reposStillOn) { terminal.success(`Yolo mode is OFF ${where}.`); terminal.warning(`Checks are still skipped in ${result.reposStillOn.length === 1 ? 'a repository' : `${result.reposStillOn.length} repositories`} with ${result.reposStillOn.length === 1 ? 'its' : 'their'} own yolo setting: ${result.reposStillOn.join(', ')}. Run sphinx yolo inside each to turn it off.`); }
     else terminal.success(`Yolo mode is OFF ${where}. Understanding checks are back on.`);
     return 0;
   }
