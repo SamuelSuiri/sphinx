@@ -1,14 +1,18 @@
 import './globals.css';
 import { Analytics } from '@vercel/analytics/next';
+import { Instrument_Serif, JetBrains_Mono } from 'next/font/google';
+
+const serif = Instrument_Serif({ subsets: ['latin'], weight: '400', style: ['normal', 'italic'], variable: '--serif' });
+const mono = JetBrains_Mono({ subsets: ['latin'], weight: ['400', '500'], variable: '--mono' });
 
 export const metadata = {
-  title: 'Sphinx — your agent wrote it. Can you explain it?',
-  description: 'A comprehension checkpoint for AI-assisted code. Sphinx asks you to reason about your code changes before a commit or push continues.',
+  title: 'Sphinx — outsource your thinking, not your understanding',
+  description: 'A Git hook for agent-assisted development. Before your agent’s code ships, Sphinx asks you a question about what it actually does.',
 };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${serif.variable} ${mono.variable}`}>
       <body>
         {children}
         <Analytics />
