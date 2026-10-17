@@ -432,6 +432,26 @@ async function statusCommand(command, values) {
   terminal.blank(); terminal.note('Status uses local Git state only. Agent hook trust is not verified here.'); return 0;
 }
 
+// Parses and validates a command line before any command runs; exported so documented commands can be checked.
+export function parseCommandLine(argv) {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
+    help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
+    remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
+    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
+    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
+  } });
+  const [command, id] = positionals;
+  if (values.version || values.help || !command || command === 'help') return { values, command, id };
+  if (!HELP[command]) throw new Error(`Unknown command ${command}. Run sphinx --help.`);
+  for (const key of Object.keys(values)) if (!OPTIONS[command].includes(key)) throw new Error(`--${key} is not an option for ${command}. Run sphinx ${command} --help.`);
+  const needsId = ['answer', 'explain', 'dispute'].includes(command);
+  if (positionals.length > (needsId ? 2 : 1)) throw new Error(`Unexpected argument. Usage: ${HELP[command].usage}`);
+  if (needsId && !id) throw new Error(`An assessment ID is required. Run sphinx pending to find it. Usage: ${HELP[command].usage}`);
+  if (['answer', 'dispute'].includes(command) && !values.text?.trim()) throw new Error(`--text is required. Usage: ${HELP[command].usage}`);
+  return { values, command, id };
+}
+
 export async function main(argv) {
   if (argv[0] === 'mcp' && argv.length === 1) {
     const { runMcpServer } = await import('./mcp.js');
@@ -449,22 +469,9 @@ export async function main(argv) {
     }
     throw new Error('Unknown hook entry point.');
   }
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
-    help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
-    remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
-    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
-    launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
-  } });
-  const [command, id] = positionals;
+  const { values, command, id } = parseCommandLine(argv);
   if (values.version) { if (values.json) json({ version: '0.1.0' }); else console.log('0.1.0'); return 0; }
   if (values.help || !command || command === 'help') { printHelp(ui(), command === 'help' ? id : command, { json: values.json }); return 0; }
-  if (!HELP[command]) throw new Error(`Unknown command ${command}. Run sphinx --help.`);
-  for (const key of Object.keys(values)) if (!OPTIONS[command].includes(key)) throw new Error(`--${key} is not an option for ${command}. Run sphinx ${command} --help.`);
-  const needsId = ['answer', 'explain', 'dispute'].includes(command);
-  if (positionals.length > (needsId ? 2 : 1)) throw new Error(`Unexpected argument. Usage: ${HELP[command].usage}`);
-  if (needsId && !id) throw new Error(`An assessment ID is required. Run sphinx pending to find it. Usage: ${HELP[command].usage}`);
-  if (['answer', 'dispute'].includes(command) && !values.text?.trim()) throw new Error(`--text is required. Usage: ${HELP[command].usage}`);
   if (command === 'install') return installCommand(values);
   if (command === 'activate') return activateCommand(values);
   if (command === 'init') return initCommand(values);
@@ -545,7 +552,7 @@ export async function main(argv) {
     return 0;
   }
   if (['pending', 'status'].includes(command)) return statusCommand(command, values);
-  if (needsId) {
+  if (['answer', 'explain', 'dispute'].includes(command)) {
     const { repo, config } = await repoConfig(), existing = await store.read(id);
     if (existing.snapshot.repoRoot !== repo.root) throw new Error('This checkpoint belongs to a different repository.');
     const learn = command === 'explain', dispute = command === 'dispute';
