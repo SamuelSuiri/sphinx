@@ -159,6 +159,18 @@ async function* addLines(source, prefix) {
   if (!lineStart) yield Buffer.from('\n\\ No newline at end of file\n');
 }
 
+/** The exact text that read_diff paginates for one path. The questionnaire
+ * regenerates it to verify retained observations before showing line ranges. */
+export async function* workspaceDiffText(root, file, before, after, env) {
+  if (before?.mode !== after?.mode) yield Buffer.from(`File modes: ${before?.mode || '(absent)'} -> ${after?.mode || '(absent)'}\n`);
+  if (before && after) {
+    if (before.oid !== after.oid) yield* gitChunks(root, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', '--full-index', '--unified=3', before.oid, after.oid, '--'], env);
+  } else {
+    yield Buffer.from(`--- ${before ? JSON.stringify(`a/${file}`) : '/dev/null'}\n+++ ${after ? JSON.stringify(`b/${file}`) : '/dev/null'}\n`);
+    yield* addLines(gitChunks(root, ['cat-file', 'blob', (after || before).oid], env), after ? '+' : '-');
+  }
+}
+
 // JSON escaping and long path names count against the page budget too. Trimming
 // only the returned page preserves a byte offset into the immutable source.
 function fitPage(result, budget) {
@@ -258,16 +270,7 @@ export async function createReviewWorkspace(snapshot, config, { env = process.en
     if ((before && !REGULAR.has(before.mode)) || (after && !REGULAR.has(after.mode))) fail('UNSUPPORTED_FILE_TYPE', 'Links and submodules are not read by the text reviewer.');
     const provenance = { path: file, revision: 'base..head', baseOid: before?.oid || null, headOid: after?.oid || null, baseMode: before?.mode || null, headMode: after?.mode || null };
     if (snapshot.binaryFiles?.includes(file)) return { ...provenance, binary: true, text: 'Binary content changed; the text reviewer cannot inspect its contents.', truncated: false, nextOffset: null, evidencePaths: [file] };
-    async function* source() {
-      if (before?.mode !== after?.mode) yield Buffer.from(`File modes: ${before?.mode || '(absent)'} -> ${after?.mode || '(absent)'}\n`);
-      if (before && after) {
-        if (before.oid !== after.oid) yield* gitChunks(root, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', '--full-index', '--unified=3', before.oid, after.oid, '--'], env);
-      } else {
-        yield Buffer.from(`--- ${before ? JSON.stringify(`a/${file}`) : '/dev/null'}\n+++ ${after ? JSON.stringify(`b/${file}`) : '/dev/null'}\n`);
-        yield* addLines(gitChunks(root, ['cat-file', 'blob', (after || before).oid], env), after ? '+' : '-');
-      }
-    }
-    return fitPage({ ...provenance, ...(await readPage(source(), { offset: args.offset || 0, limit: args.limit || 100, bytes: toolBytes, rejectBinary: true })), evidencePaths: [file] }, toolBytes);
+    return fitPage({ ...provenance, ...(await readPage(workspaceDiffText(root, file, before, after, env), { offset: args.offset || 0, limit: args.limit || 100, bytes: toolBytes, rejectBinary: true })), evidencePaths: [file] }, toolBytes);
   }
   async function search(args) {
     const rev = args.revision || 'head';

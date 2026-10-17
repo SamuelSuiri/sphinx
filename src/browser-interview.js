@@ -10,6 +10,7 @@ import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTermina
 import { browserPage } from './browser-page.js';
 import { recordOverride } from './overrides.js';
 import { withTextStream, partialField } from './stream.js';
+import { loadChangeView } from './change-view.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -36,7 +37,7 @@ export async function openQuestionnaireBrowser(url, { env = process.env, platfor
 function publicFields(state) {
   if (!state) return {};
   return {
-    id: state.id, target: state.target,
+    id: state.id, target: state.target, event: state.event,
     route: state.route && { provider: state.route.provider, model: state.route.model, tier: state.route.tier },
     progress: state.progress, usage: state.usage, tokens: state.tokens,
     ...(state.question ? { question: { id: state.question.id, prompt: state.question.prompt, choices: state.question.choices || [] } } : {}),
@@ -51,6 +52,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   store: providedStore, readConfig = loadConfig, revalidate = revalidateSnapshot,
   reserve = claimCheckpointDialog, release = finishCheckpointDialog, waitForExisting = waitForCheckpointTerminal,
   openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`), logOverride = recordOverride,
+  loadView = loadChangeView,
 } = {}) {
   const token = randomBytes(32).toString('base64url'), nonce = randomBytes(24).toString('base64');
   let server, origin, url, opened = false, closed = false, active, skip, resolver, sequence = 0, waitingGit = false;
@@ -61,6 +63,12 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // The chat transcript for the current checkpoint lives only in this process.
   // It contains public questions, feedback, and the human's own text.
   let transcript = [], turns = 0;
+  // Read-only display of the checkpoint's frozen comparison. It is loaded
+  // beside the questionnaire and can never block, grade, or approve it.
+  let view, evidence, evidenceKey;
+  const viewState = () => !view ? undefined : view.status === 'ready'
+    ? { status: 'ready', header: view.model.header, totals: view.model.totals }
+    : { status: view.status, ...(view.reason ? { reason: view.reason } : {}) };
   const say = item => { transcript = [...transcript, { id: `m${++turns}`, ...item }]; };
   const settle = status => { transcript = transcript.map(item => item.role === 'human' && item.status === 'checking' ? { ...item, status } : item); };
   const showQuestion = visible => {
@@ -79,8 +87,10 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       else stream.write(event);
     } catch { stream.destroy(); streams.delete(stream); }
   };
-  const publish = next => {
-    state = { ...next, messages: transcript, waitingGit, operationClosed: closed, revision: randomUUID(), sequence: ++sequence };
+  // Display-only updates (change view, evidence) keep the revision, so they
+  // never turn an answer already in flight into a stale submission.
+  const publish = (next, { display = false } = {}) => {
+    state = { ...next, messages: transcript, change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -104,11 +114,20 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (req.headers.host !== new URL(origin).host || (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site']))) return send(res, 403, { error: 'Forbidden request.' });
     const route = req.url?.split('?')[0];
     const segments = route?.split('/') || [];
-    if (!equal(segments[1], token) || segments.length > 3 || (segments[2] && !['state', 'events', 'action'].includes(segments[2]))) return send(res, 404, { error: 'Not found.' });
+    if (!equal(segments[1], token) || segments.length > 3 || (segments[2] && !['state', 'events', 'action', 'change', 'diff'].includes(segments[2]))) return send(res, 404, { error: 'Not found.' });
     if (req.method === 'GET' && !segments[2]) {
       res.writeHead(200, { ...headers, 'Content-Type': 'text/html; charset=utf-8' }); res.end(browserPage({ token, nonce })); return;
     }
     if (req.method === 'GET' && segments[2] === 'state') return send(res, 200, state);
+    if (req.method === 'GET' && ['change', 'diff'].includes(segments[2])) {
+      const query = new URL(req.url, origin).searchParams, current = view;
+      if (!current || query.get('id') !== current.id || state.id !== current.id) return send(res, 409, { error: 'This checkpoint changed. Reload the current change.' });
+      if (current.status !== 'ready') return send(res, current.status === 'loading' ? 202 : 200, viewState());
+      try { await current.check(); } catch { return send(res, 409, { error: 'The code or settings changed. This view no longer describes the checkpoint.' }); }
+      if (segments[2] === 'change') return send(res, 200, { status: 'ready', id: current.id, ...current.model.summary() });
+      try { return send(res, 200, await current.model.diff(query.get('path') ?? '', { context: query.get('context') ?? '3' })); }
+      catch (error) { return send(res, 404, { error: error.code === 'CHANGE_VIEW_UNAVAILABLE' ? error.message : 'This file diff is unavailable.' }); }
+    }
     if (req.method === 'GET' && segments[2] === 'events') {
       if (streams.size >= 8) return send(res, 429, { error: 'Too many open questionnaire pages.' });
       res.writeHead(200, { ...headers, 'Content-Type': 'text/event-stream; charset=utf-8', Connection: 'keep-alive' });
@@ -168,6 +187,37 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       output(automatic ? 'Sphinx: questionnaire opened in a background browser tab. Your coding window stays in place.' : 'Sphinx: open the local URL above to answer. No application was brought to the foreground.');
     }
   }
+  function startView(request, snapshot, config, operationEnv, store) {
+    evidence = undefined; evidenceKey = undefined;
+    const current = view = { id: request.id, status: 'loading', store, check: async () => {
+      const latest = await readConfig(snapshot.repoRoot, operationEnv);
+      if (policyHash(latest) !== policyHash(config) || !(await revalidate(snapshot, latest, { env: operationEnv }))) throw new Error('stale');
+    } };
+    Promise.resolve().then(() => loadView(snapshot, config, { env: operationEnv })).then(model => {
+      if (view !== current) return;
+      current.status = 'ready'; current.model = model; publish(state, { display: true }); refreshEvidence(request.id);
+    }, error => {
+      if (view !== current) return;
+      current.status = 'unavailable';
+      current.reason = error?.code === 'CHANGE_VIEW_UNAVAILABLE' ? error.message : 'The changed files could not be loaded for display.';
+      publish(state, { display: true });
+    });
+  }
+  function refreshEvidence(id) {
+    const current = view;
+    if (current?.status !== 'ready' || current.id !== id || !current.store) return;
+    current.store.read(id).then(async session => {
+      const question = session.questions?.[session.index];
+      if (!question || session.status === 'passed') return;
+      const key = `${id}:${question.id}`;
+      if (evidenceKey === key) return;
+      evidenceKey = key;
+      const refs = await current.model.evidenceFor(question, session.review).catch(() => []);
+      if (view !== current || evidenceKey !== key) return;
+      evidence = { checkpoint: id, questionId: question.id, refs };
+      publish(state, { display: true });
+    }).catch(() => {});
+  }
   async function present({ request, env: operationEnv = env, signal: requestSignal = signal } = {}) {
     if (offLimits(operationEnv)) return { status: 'unavailable', reason: 'noninteractive', id: request?.id };
     if (closed || active) return { status: 'unavailable', id: request?.id };
@@ -203,6 +253,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       const session = await store.read(request.id), config = await readConfig(request.repoRoot, operationEnv);
       if (session.snapshot.repoRoot !== request.repoRoot) throw new Error('This checkpoint belongs to another repository.');
       await validate(session.snapshot, config);
+      startView(request, session.snapshot, config, operationEnv, store);
       let visible = store.public(session);
       publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'working', message: 'Preparing your understanding check…' });
       await ensureServer(operationEnv);
@@ -230,7 +281,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       if (!visible) return skip ? skipped() : { status: 'pending', id: request.id };
       while (visible.status !== 'passed') {
         localSignal.throwIfAborted();
-        showQuestion(visible);
+        showQuestion(visible); refreshEvidence(request.id);
         const action = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'question', ...(visible.browserError ? { error: visible.browserError } : {}) }, ['answer', 'learn', 'dispute']);
         try {
           await validate(session.snapshot, config);
@@ -264,7 +315,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       }
       localSignal.throwIfAborted(); await validate(session.snapshot, config);
       finalStatus = 'passed';
-      publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'passed', message: 'Understanding check complete. Return to the original Git output for the operation’s result.' });
+      publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'passed', message: 'Understanding check passed for this checkpoint. It records your answers to these questions; it is not a review of every changed line or a claim that the code is correct. Return to the original Git output for the operation’s result.' });
       return { status: 'passed', id: request.id };
     } catch (error) {
       settle('not-graded');

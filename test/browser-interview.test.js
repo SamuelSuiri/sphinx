@@ -274,3 +274,59 @@ test('grader feedback streams into the page while grading, then the saved feedba
   const feedback = f.interview.state.messages.filter(item => item.kind === 'feedback');
   assert.deepEqual(feedback.map(item => [item.text, Boolean(item.streaming)]), [['There is no durable deduplication.', false]]);
 });
+
+test('the page serves the frozen change and verified question evidence without disturbing an answer in flight', async t => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { writeFile } = await import('node:fs/promises');
+  const { pushSnapshots } = await import('../src/git.js');
+  const { createReviewWorkspace } = await import('../src/review-workspace.js');
+  const exec = promisify(execFile);
+  const home = await mkdtemp(path.join(tmpdir(), 'sphinx-browser-change-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const repoRoot = path.join(home, 'repo'); await mkdir(repoRoot);
+  const env = { ...process.env, SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+  const git = async (...args) => (await exec('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: repoRoot, env })).stdout.trim();
+  await git('init', '-b', 'main'); await git('config', 'user.name', 'Fixture'); await git('config', 'user.email', 'fixture@example.invalid');
+  await writeFile(path.join(repoRoot, 'app.js'), 'const seen = new Set();\nexport function add(id) {\n  seen.add(id);\n}\n');
+  await git('add', '.'); await git('commit', '-qm', 'base'); const base = await git('rev-parse', 'HEAD');
+  await writeFile(path.join(repoRoot, 'app.js'), 'const seen = new Set();\nexport function add(id) {\n  if (seen.has(id)) return false;\n  seen.add(id);\n  return true;\n}\n');
+  await writeFile(path.join(repoRoot, 'notes.md'), 'hello\n'); await writeFile(path.join(repoRoot, '.env'), 'SECRET=1\n');
+  await git('add', '.'); await git('commit', '-qm', 'change'); const head = await git('rev-parse', 'HEAD');
+  const config = { ...structuredClone(DEFAULT_CONFIG), events: ['pre-push'] };
+  const [snapshot] = await pushSnapshots({ cwd: repoRoot, config, env, remote: 'origin', remoteUrl: 'https://example.invalid/r', input: `refs/heads/main ${head} refs/heads/main ${base}\n` });
+  const workspace = await createReviewWorkspace(snapshot, config, { env });
+  const result = await workspace.execute('read_diff', { path: 'app.js' });
+  const review = { version: 1, snapshotId: snapshot.id, summary: 'Fixture.', evidence: [{ id: 'read-1', tool: 'read_diff', args: { path: 'app.js' }, result, paths: ['app.js'] }], evidencePaths: ['app.js'] };
+  const store = createSessionStore({ env, generate: async (_s, _c, options) => { await options.beforeCall(); return { questions: [{ ...q, evidence: [{ path: 'app.js', reason: 'PRIVATE_REASON' }] }], review }; },
+    grade: async request => { await request.beforeCall(); return { verdict: 'correct', feedback: 'Correct.', followUp: null }; } });
+  await store.ensure(snapshot, config);
+  const controller = new AbortController();
+  const interview = createBrowserInterview({ env, signal: controller.signal, store, readConfig: async () => config, revalidate: async () => true, openBrowser: async () => false, output: () => {} });
+  const done = interview.present({ request: { id: snapshot.id, token: randomUUID(), repoRoot: snapshot.repoRoot, delivery: 'hook', createdAt: Date.now() } });
+  t.after(async () => { controller.abort(); await done.catch(() => {}); await interview.close(); });
+  let first;
+  for (let i = 0; i < 300 && interview.state.phase !== 'question'; i++) await delay(10);
+  first = interview.state;
+  for (let i = 0; i < 300 && !interview.state.evidence; i++) await delay(10);
+  const current = interview.state;
+  assert.equal(current.change?.status, 'ready', JSON.stringify(current));
+  assert.deepEqual(current.change.totals, { files: 2, additions: 3, deletions: 0, binaryFiles: 0, uncountedFiles: 0 });
+  assert.equal(current.change.header.excludedFiles, 1);
+  assert.deepEqual(current.evidence, { questionId: q.id, refs: [{ path: 'app.js', inChange: true, viewPath: 'app.js', ranges: [{ side: 'new', start: 1, end: 6 }] }] });
+  assert.doesNotMatch(JSON.stringify(current), /PRIVATE_REASON|PRIVATE_KEY/);
+  const summary = await (await fetch(`${interview.url}/change?id=${snapshot.id}`)).json();
+  assert.deepEqual(summary.files.map(file => [file.path, file.status, file.additions, file.deletions]), [['app.js', 'modified', 2, 0], ['notes.md', 'added', 1, 0]]);
+  const diff = await (await fetch(`${interview.url}/diff?id=${snapshot.id}&path=app.js&context=all`)).json();
+  assert.deepEqual(diff.hunks[0].rows.filter(row => row.type === 'addition').map(row => row.new), [3, 5]);
+  assert.equal((await fetch(`${interview.url}/diff?id=${snapshot.id}&path=.env`)).status, 404);
+  assert.equal((await fetch(`${interview.url}/diff?id=${'b'.repeat(64)}&path=app.js`)).status, 409);
+  assert.equal((await fetch(`${new URL(interview.url).origin}/wrong/change?id=${snapshot.id}`)).status, 404);
+  // Display-only updates keep the actionable revision used by a draft answer.
+  assert.equal(current.revision, first.revision);
+  const answered = await fetch(`${interview.url}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(interview.url).origin, 'X-Sphinx-Token': new URL(interview.url).pathname.slice(1) },
+    body: JSON.stringify({ id: first.id, revision: first.revision, action: 'answer', questionId: q.id, response: 'It returns false for a repeated id.' }) });
+  assert.equal(answered.status, 202);
+  assert.equal((await done).status, 'passed');
+  assert.match(interview.state.message, /not a review of every changed line/);
+});
