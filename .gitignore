@@ -8,3 +8,6 @@ coverage/
 !.env.example
 WORKFLOW.md.bak
 .WORKFLOW.md.lock
+
+# Local Itervox handoff notes
+/.itervox/handoff/
