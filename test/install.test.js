@@ -364,7 +364,8 @@ test('native questionnaire hooks register host MCP servers without changing unre
     for (const event of events) {
       const group = document.hooks[event][0];
       assert.equal(group.matcher, 'Bash');
-      assert.deepEqual(group.hooks[0], { type: 'mcp_tool', server: 'sphinx', tool: 'sphinx_checkpoint', input: { cwd: '${cwd}', host: name, hookEvent: '${hook_event_name}', hostSession: '${session_id}' }, timeout: 1800, statusMessage: 'Sphinx understanding check' });
+      // A command hook needs no MCP connection, so sessions opened before install never error.
+      assert.deepEqual(group.hooks[0], { type: 'command', command: document.hooks.SessionStart[0].hooks[0].command, timeout: 1800, statusMessage: 'Sphinx understanding check' });
     }
   }
   const toml = await readFile(tomlFile, 'utf8');

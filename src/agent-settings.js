@@ -99,11 +99,9 @@ function assertNoCodexConflict(text, file) {
 }
 
 export function nativeHookSpecs(name, sessionHandler) {
-  const handler = {
-    type: 'mcp_tool', server: 'sphinx', tool: 'sphinx_checkpoint',
-    input: { cwd: '${cwd}', host: name, hookEvent: '${hook_event_name}', hostSession: '${session_id}' },
-    timeout: 1800, statusMessage: 'Sphinx understanding check',
-  };
+  // A plain command, not an MCP tool call: it needs no MCP connection, so it works
+  // in sessions opened before installation and exits silently when nothing is queued.
+  const handler = { type: 'command', command: sessionHandler.command, timeout: 1800, statusMessage: 'Sphinx understanding check' };
   return [
     // Codex uses the handler's statusMessage as its /hooks display name too.
     { event: 'SessionStart', group: { hooks: [{ ...sessionHandler, statusMessage: 'Sphinx session setup' }] } },
