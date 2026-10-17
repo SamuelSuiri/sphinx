@@ -25,6 +25,15 @@ flowchart LR
   Q -->|unavailable| H[Native or manual fallback]
 ```
 
+## Checkpoint sequence
+
+1. Git supplies the exact source and destination commits. Sphinx applies branch/event policy and filters paths before reading contents.
+2. If the exact change already passed, the operation continues. Otherwise the hook saves a pending checkpoint and keeps the original Git process waiting.
+3. The hook serves a private questionnaire on loopback and prints its URL. Git's stdin and the coding agent's shell are never used for questionnaire input.
+4. Sphinx reuses matching prepared questions, waits for an in-progress review, or starts a fresh reviewer. The reviewer reads relevant diffs and follows related source and tests before committing questions, private answer keys, and supporting evidence. A separate model request audits the questions against that evidence before display.
+5. Correct answers clear concepts. An incorrect answer gets an explanation and replaces that concept's question with a different transfer scenario, which receives its own source audit without the human answer or grading conversation. Ambiguity or evaluator failure never creates a completion record.
+6. Sphinx revalidates every original snapshot and completion record, then returns control to the same Git process without replaying its command. Completion is bound to the exact repository, commits/index, destination, ignore policy, project context, assessment policy, and expiry.
+
 ## Modules
 
 | Module | Responsibility |
@@ -105,6 +114,10 @@ OpenRouter supplies model responses with native function calls. For explicitly s
 Every request includes bounded project context (maximum 16,000 bytes). Context is descriptive data, not evaluator policy, and its claims must be checked against code. The current project file is hashed into checkpoint identity; an excluded context file is not opened.
 
 Before Pi validates a `finish_review` call, Sphinx normalizes two lossless representation differences: a valid JSON-object string in `assessment` becomes an object, and `summary` or `evidenceIds` nested inside it moves to the envelope only when that outer field is absent. Questions, keys and citations are never rewritten by this step. Duplicate metadata, unknown properties and malformed JSON remain subject to strict rejection. The original native provider message and opaque continuation are retained separately from Pi's normalized arguments. Recorded response replays cover both native tool calls and structured CLI transports without spending another inference request.
+
+The reviewer requests further diff pages, source ranges, file listings, and literal searches through Sphinx's tools. It can inspect unchanged callers, dependencies, and tests at the same pinned revision. File names are navigation hints; only inspected source can support a question. Sphinx enforces ignores and tool access locally and never grants an unrestricted shell or the developer's working files. Large patches are inspected incrementally rather than bundled into one prompt.
+
+Pi session entries, the evidence archive, and an assessment awaiting its independent audit are saved privately under the checkpoint lock, so an interrupted review resumes without repeating the investigation. After compaction, the reviewer can recover archived observations with `read_evidence`.
 
 Pi's [native compaction](https://pi.dev/docs/latest/compaction) summarizes older conversation history and rebuilds the active context. Sphinx separately archives exact observations with IDs, paths, revisions, and ranges under a fixed byte budget. Compaction can shorten Pi's transcript without changing this archive; a model summary cannot replace code evidence. Final questions must cite inspected paths backed by archived observations. Grading receives the question's selected original evidence, rubric, project context, and verbatim human answer.
 
