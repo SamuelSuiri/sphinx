@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { VERSION } from './version.js';
 import { fileURLToPath } from 'node:url';
 import { lstat } from 'node:fs/promises';
 import { parseArgs, promisify } from 'node:util';
@@ -470,7 +471,7 @@ export async function main(argv) {
     throw new Error('Unknown hook entry point.');
   }
   const { values, command, id } = parseCommandLine(argv);
-  if (values.version) { if (values.json) json({ version: '0.1.0' }); else console.log('0.1.0'); return 0; }
+  if (values.version) { if (values.json) json({ version: VERSION }); else console.log(VERSION); return 0; }
   if (values.help || !command || command === 'help') { printHelp(ui(), command === 'help' ? id : command, { json: values.json }); return 0; }
   if (command === 'install') return installCommand(values);
   if (command === 'activate') return activateCommand(values);

@@ -1,6 +1,8 @@
-# Sphinx
+<p align="center"><img src="docs/logo.svg" width="96" alt="Sphinx logo"></p>
 
-Outsource your thinking, not your understanding.
+<h1 align="center">Sphinx</h1>
+
+<p align="center"><em>Outsource your thinking, not your understanding.</em></p>
 
 Sphinx adds an understanding check to agent-assisted development. When you push to a protected branch, Git waits while Sphinx asks you to predict what your change will do. If you miss something, it explains and gives you a new scenario to try. Once you pass, the same push continues. This works whether you or a coding agent ran `git push`.
 
