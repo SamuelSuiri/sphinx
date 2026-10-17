@@ -38,19 +38,21 @@ export function wrapText(value, width = 80, indent = '') {
   }).join('\n');
 }
 
-// A human face and striped nemes above the lion's body and outstretched paws.
+// The Sphinx mark in half-blocks, matching the SVG logo: crowned nemes with a
+// forehead band, striped lappets, eyes, mouth, and the false beard.
 export const SPHINX = [
-  '        .-====-.',
-  '       /  .--.  \\',
-  '      /  /    \\  \\',
-  '      |  |o  o|  |',
-  '      |  | __ |  |',
-  "     /|  '----'  |\\",
-  '    /_|__/|  |\\__|_\\',
-  '   /      |__|      \\____',
-  "  /   ___/____\\___       `-.",
-  ' /___/            \\________\\',
-  ' \\___\\____________/___/____/',
+  '      ▄██████████▄',
+  '    ▄██████████████▄',
+  '    ████████████████',
+  '   ███▄▄▄▄▄▄▄▄▄▄▄▄███',
+  '  ▀▀▀▀▀██      ██▀▀▀▀▀',
+  '   ▀▀▀▀██ ▀  ▀ ██▀▀▀▀',
+  '   ▀▀▀▀██      ██▀▀▀▀',
+  '   ▀▀▀▀██  ▀▀  ██▀▀▀▀',
+  '   ▀▀▀▀██▄    ▄██▀▀▀▀',
+  '   ▀▀▀▀███ ▄▄ ███▀▀▀▀',
+  '   ▀▀▀▀███ ██ ███▀▀▀▀',
+  '   ██████████████████',
 ];
 
 export function createTerminal({ stream = process.stdout, env = process.env, width } = {}) {
@@ -79,8 +81,8 @@ export function createTerminal({ stream = process.stdout, env = process.env, wid
   const banner = () => {
     write('');
     if (size >= 65) {
-      const side = { 2: style.strong('sphinx'), 4: 'Outsource your thinking,', 5: 'not your understanding.' };
-      SPHINX.forEach((line, index) => write(style.amber(line.padEnd(32)) + (side[index] || '')));
+      const side = { 4: style.strong('sphinx'), 6: 'Outsource your thinking,', 7: 'not your understanding.' };
+      SPHINX.forEach((line, index) => write(style.amber(line.padEnd(28)) + (side[index] || '')));
     } else {
       if (size >= 30) SPHINX.forEach(line => write(style.amber(line)));
       paragraph(style.strong('sphinx'));
