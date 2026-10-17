@@ -9,7 +9,7 @@ const stages = [
   ['An independent reviewer reads the change', 'A separate model investigates the diff and the code it touches with read-only tools, without the conversation that wrote it.'],
   ['You answer and apply feedback', <>
     Answer in a local browser page. On macOS it opens in a background tab; on Linux, WSL, or over SSH, Sphinx prints
-    a link for you to open (<a href={`${REPO}#what-happens-when-you-push`}>remote setup</a>). Miss a concept and you
+    a link for you to open (<a href={`${REPO}/blob/main/docs/integrations.md#remote-machines-ssh-and-ci`}>remote setup</a>). Miss a concept and you
     get an explanation and a new scenario.
   </>],
   ['The same Git operation continues', 'Once you pass, Git verifies the exact change and the original commit or push continues. Nothing to retry.'],
