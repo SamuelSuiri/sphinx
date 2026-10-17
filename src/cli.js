@@ -540,6 +540,7 @@ export async function main(argv) {
     const where = result.scope === 'repo' ? `for ${result.repoRoot}` : 'globally (every repository without its own setting)';
     const terminal = ui();
     if (result.enabled) { terminal.warning(`Yolo mode is ON ${where}. Git operations skip the understanding check; each skip is logged.`); terminal.command('sphinx yolo   # run again to turn it off'); }
+    else if (result.reposStillOn) { terminal.success(`Yolo mode is OFF ${where}.`); terminal.warning(`Checks are still skipped in ${result.reposStillOn.length === 1 ? 'a repository' : `${result.reposStillOn.length} repositories`} with ${result.reposStillOn.length === 1 ? 'its' : 'their'} own yolo setting: ${result.reposStillOn.join(', ')}. Run sphinx yolo inside each to turn it off.`); }
     else terminal.success(`Yolo mode is OFF ${where}. Understanding checks are back on.`);
     return 0;
   }
