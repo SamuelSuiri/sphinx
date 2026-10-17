@@ -4,12 +4,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { mkdir, open, writeFile, rename, chmod, lstat, unlink } from 'node:fs/promises';
 
+// openai means any OpenAI chat-completions-compatible endpoint the user saves.
+export const PROVIDERS = Object.freeze(['openrouter', 'codex', 'claude', 'openai', 'auto']);
+
 export const DEFAULT_CONFIG = {
   version: 1, enabled: true, provider: 'openrouter', model: 'openrouter/free',
   level: 'standard', mode: 'block', events: ['pre-push'],
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
-  maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false,
+  maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false, cliBilling: 'plan',
   agentMaxTurns: null, toolResultBytes: 16000,
   backgroundPreparation: true, preparationDebounceMs: 1500,
   models: {
@@ -70,7 +73,7 @@ export function validateConfig(config) {
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
   for (const key of ['enabled', 'allowPaid', 'backgroundPreparation']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
-  for (const [key, values] of Object.entries({ provider: ['openrouter','codex','claude','auto'], level: ['relaxed','standard','thorough'], mode: ['block'] })) {
+  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], mode: ['block'], cliBilling: ['plan','api'] })) {
     if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
@@ -87,7 +90,8 @@ export function validateConfig(config) {
   if (!config.models || typeof config.models !== 'object') fail('models must define small, medium, and large routes');
   for (const tier of ['small','medium','large']) {
     const route = config.models[tier];
-    if (!route || !['openrouter','codex','claude','auto'].includes(route.provider)) fail(`models.${tier}.provider is invalid`);
+    if (!route || !PROVIDERS.includes(route.provider)) fail(`models.${tier}.provider is invalid`);
+    if (route.provider === 'openai' && !route.model) fail(`models.${tier} needs a model ID from your endpoint, for example openai:gpt-5-mini`);
     if (route.model !== null && (typeof route.model !== 'string' || !route.model.trim())) fail(`models.${tier}.model must be a string or null`);
     if (Object.keys(route).some(k => !['provider','model'].includes(k))) fail(`unexpected field in models.${tier}`);
   }
@@ -178,12 +182,21 @@ export function policyHash(config) {
   // checkpoint identity within the same assessment contract.
   // Version the contract when assessment semantics change: older questions and
   // receipts must not stand in for an assessment under the new requirements.
-  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, agentMaxTurns: 8, assessmentContract: 3 })).digest('hex');
+  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, agentMaxTurns: 8, cliBilling: 'plan', assessmentContract: 3 })).digest('hex');
+}
+
+const isRecord = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+// Saving one credential keeps the others.
+async function updateCredentials(env, update) {
+  const file = getPaths(env).credentials;
+  let current = {};
+  try { const value = await readJson(file, {}); if (isRecord(value)) current = value; } catch {}
+  await writeJson(file, update({ ...current }));
 }
 
 export async function saveOpenRouterKey(key, env = process.env) {
   if (typeof key !== 'string' || !key.trim() || /\s/.test(key.trim())) throw new Error('Enter a valid OpenRouter API key.');
-  await writeJson(getPaths(env).credentials, { openrouter: key.trim() });
+  await updateCredentials(env, credentials => ({ ...credentials, openrouter: key.trim() }));
 }
 export async function openRouterKey(env = process.env) {
   if (env.OPENROUTER_API_KEY) return env.OPENROUTER_API_KEY;
@@ -193,4 +206,43 @@ export async function openRouterKey(env = process.env) {
     if (key !== undefined && (typeof key !== 'string' || !key.trim() || /\s/.test(key))) throw new Error('Invalid key');
     return key || null;
   } catch { throw new Error('Could not read Sphinx credentials. Run sphinx auth to save your key again.'); }
+}
+
+// OpenAI-compatible endpoints. The URL and key are stored together, so a saved
+// key is only ever sent to the URL it was saved with. OPENAI_API_KEY is never read.
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+export function normalizeBaseUrl(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  let url;
+  try { url = new URL(text); } catch { throw new Error('Enter a base URL such as https://api.openai.com/v1.'); }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK.has(url.hostname))) throw new Error('The base URL must use https://. Plain http:// is allowed only for localhost.');
+  if (url.username || url.password || url.search || url.hash) throw new Error('Enter the base URL without credentials, a query string, or a fragment.');
+  // Accept a pasted full endpoint; requests always go to <base URL>/chat/completions.
+  return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/u, '').replace(/\/chat\/completions$/u, '')}`;
+}
+const validKey = key => typeof key === 'string' && /^[\x21-\x7e]{1,4096}$/u.test(key);
+
+/** A key is optional only for a localhost server such as Ollama or LM Studio. */
+export async function saveOpenAIEndpoint({ baseUrl, apiKey }, env = process.env) {
+  const url = normalizeBaseUrl(baseUrl), key = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : null;
+  if (key && !validKey(key)) throw new Error('Enter the API key as a single token without spaces.');
+  if (!key && !LOOPBACK.has(new URL(url).hostname)) throw new Error('This endpoint needs an API key. Only localhost endpoints may omit it.');
+  await updateCredentials(env, credentials => ({ ...credentials, openai: { baseUrl: url, ...(key ? { apiKey: key } : {}) } }));
+  return url;
+}
+
+/** SPHINX_OPENAI_BASE_URL and SPHINX_OPENAI_API_KEY replace the saved endpoint as a pair. */
+export async function openAIEndpoint(env = process.env) {
+  if (env.SPHINX_OPENAI_BASE_URL || env.SPHINX_OPENAI_API_KEY) {
+    if (!env.SPHINX_OPENAI_BASE_URL) throw new Error('Set SPHINX_OPENAI_BASE_URL together with SPHINX_OPENAI_API_KEY.');
+    const key = env.SPHINX_OPENAI_API_KEY?.trim() || null;
+    if (key && !validKey(key)) throw new Error('SPHINX_OPENAI_API_KEY must be a single token without spaces.');
+    return { baseUrl: normalizeBaseUrl(env.SPHINX_OPENAI_BASE_URL), apiKey: key };
+  }
+  try {
+    const value = (await readJson(getPaths(env).credentials, {}))?.openai;
+    if (value === undefined) return null;
+    if (!isRecord(value) || (value.apiKey !== undefined && !validKey(value.apiKey))) throw new Error('invalid');
+    return { baseUrl: normalizeBaseUrl(value.baseUrl), apiKey: value.apiKey ?? null };
+  } catch { throw new Error('Could not read the saved OpenAI-compatible endpoint. Run sphinx auth --provider openai to save it again.'); }
 }

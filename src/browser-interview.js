@@ -9,6 +9,7 @@ import { prepareInteractiveCheck } from './check-recovery.js';
 import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTerminal } from './terminal-launch.js';
 import { browserPage } from './browser-page.js';
 import { recordOverride } from './overrides.js';
+import { withTextStream, partialField } from './stream.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -233,9 +234,23 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         const action = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'question', ...(visible.browserError ? { error: visible.browserError } : {}) }, ['answer', 'learn', 'dispute']);
         try {
           await validate(session.snapshot, config);
-          visible = await store.answer(request.id, action.action === 'learn' ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : action.response.trim(), config, {
+          // Type the grader's feedback into the conversation as it streams.
+          // Only the first streamed feedback is shown; the saved result replaces it.
+          let draft, frozen = false, lastPublish = 0;
+          const onText = raw => {
+            if (frozen) return;
+            const field = partialField(raw, 'feedback');
+            if (!field?.text) return;
+            if (!draft) { say({ role: 'sphinx', kind: 'feedback', streaming: true, text: field.text }); draft = transcript.at(-1).id; }
+            else transcript = transcript.map(item => item.id === draft ? { ...item, text: field.text } : item);
+            if (field.complete) frozen = true;
+            const now = Date.now();
+            if (field.complete || now - lastPublish > 60) { lastPublish = now; publish(state); }
+          };
+          const dropDraft = () => { if (draft) transcript = transcript.filter(item => item.id !== draft); };
+          visible = await withTextStream(onText, () => store.answer(request.id, action.action === 'learn' ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : action.response.trim(), config, {
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
-          });
+          })).finally(dropDraft);
           settle('graded');
           if (visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
         } catch (error) {

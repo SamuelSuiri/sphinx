@@ -191,8 +191,14 @@ export function parseModelJSON(value, label = 'Evaluator') {
   }
 }
 
-function childEnvironment(env) {
+// Credentials that make a CLI bill API usage instead of the signed-in plan.
+const API_BILLING_KEYS = {
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'],
+  codex: ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL'],
+};
+export function childEnvironment(env, { provider, billing = 'plan' } = {}) {
   const result = { ...env, SPHINX_EVALUATOR: '1', NO_COLOR: '1' };
+  if (billing === 'plan') for (const key of API_BILLING_KEYS[provider] ?? []) delete result[key];
   // Keep authentication and PATH, but never pass parent conversation identifiers
   // or a waiting Git operation's directory/index into an isolated CLI reviewer.
   for (const key of Object.keys(result)) {
@@ -204,6 +210,21 @@ function childEnvironment(env) {
       || key === 'CLAUDECODE') delete result[key];
   }
   return result;
+}
+
+/** After a failed plan-billed call, explain a missing plan sign-in precisely. */
+async function planSignInProblem(provider, { runner, cwd, env, signal }) {
+  const args = provider === 'claude' ? ['auth', 'status', '--json'] : ['login', 'status'];
+  let result;
+  try { result = await runner({ command: provider, args, cwd, env, input: '', timeoutMs: 10000, maxOutputBytes: 64 * 1024, signal }); } catch { return null; }
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  if (provider === 'claude') {
+    let status; try { status = JSON.parse(result.stdout); } catch { return null; }
+    if (status?.loggedIn && status.authMethod === 'claude.ai') return null;
+    return 'Claude Code is not signed in with a Claude plan, and Sphinx ignores API keys in your environment so reviews bill your plan. Run claude and use /login, or run sphinx config --cli-billing api to use API keys instead.';
+  }
+  if (/ChatGPT/u.test(output)) return null;
+  return 'Codex is not signed in with a ChatGPT plan, and Sphinx ignores API keys in your environment so reviews bill your plan. Run codex login, or run sphinx config --cli-billing api to use API keys instead.';
 }
 
 async function findExecutable(command, env) {
@@ -219,7 +240,7 @@ async function findExecutable(command, env) {
 
 async function providerFor(config, env) {
   const provider = config.provider ?? 'auto';
-  if (['codex', 'claude', 'openrouter'].includes(provider)) return provider;
+  if (['codex', 'claude', 'openrouter', 'openai'].includes(provider)) return provider;
   if (provider !== 'auto') fail(`Unsupported evaluator provider: ${provider}.`, 'INVALID_CONFIG');
   const candidates = env.CLAUDECODE ? ['claude', 'codex'] : ['codex', 'claude'];
   for (const candidate of candidates) if (await findExecutable(candidate, env)) return candidate;
@@ -281,7 +302,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
   async function runModel({ prompt, schema, config, systemPrompt = SYSTEM_PROMPT, beforeCall, signal, env: requestEnv = env }) {
     signal?.throwIfAborted();
     const provider = await providerFor(config, requestEnv);
-    if (provider === 'openrouter') {
+    if (provider === 'openrouter' || provider === 'openai') {
       const callOpenRouter = openRouter ?? (await import('./openrouter.js')).callOpenRouter;
       return callOpenRouter({ prompt: `${systemPrompt}\n\n${prompt}`, schema, config, env: requestEnv, beforeCall, signal });
     }
@@ -294,7 +315,8 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       const outputPath = join(directory, 'response.json');
       await writeFile(schemaPath, JSON.stringify(schema), { mode: 0o600 });
       await writeFile(instructionsPath, systemPrompt, { mode: 0o600 });
-      const childEnv = childEnvironment(requestEnv);
+      const billing = config.cliBilling ?? 'plan';
+      const childEnv = childEnvironment(requestEnv, { provider, billing });
       let args;
       if (provider === 'codex') {
         args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--color', 'never', '--output-schema', schemaPath, '--output-last-message', outputPath];
@@ -321,6 +343,10 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       const result = await runner({ command: provider, args, cwd: directory, env: childEnv, input: prompt, timeoutMs: timeoutSeconds * 1000, maxOutputBytes: provider === 'codex' ? 4 * MAX_OUTPUT_BYTES : MAX_OUTPUT_BYTES, signal });
       signal?.throwIfAborted();
       if (result.exitCode !== 0) {
+        if (billing === 'plan') {
+          const problem = await planSignInProblem(provider, { runner, cwd: directory, env: childEnv, signal });
+          if (problem) fail(problem, 'PROVIDER_AUTH');
+        }
         fail(`${provider} exited ${result.signal ? `with signal ${result.signal}` : `with code ${result.exitCode}`}. Check CLI sign-in, model access, and that the CLI supports the isolation flags (update it if needed). No completion was recorded.`, 'PROVIDER_FAILED');
       }
       if (provider === 'codex') {
@@ -395,7 +421,7 @@ Use evidence paths from exact workspace observations only. Follow relevant uncha
     const validateAssessment = (response, paths) => validateAssessmentQuestions(response, paths, budget);
     const audit = args => auditAssessment({ ...args, snapshot, env: requestEnv });
     return runReviewer({ snapshot, config: { ...config, provider }, assessmentSchema: schema, assessmentInstructions: prompt, validateAssessment,
-      runModel: args => runModel({ ...args, env: requestEnv }), nativeTools: provider === 'openrouter',
+      runModel: args => runModel({ ...args, env: requestEnv }), nativeTools: provider === 'openrouter' || provider === 'openai',
       runToolModel: async args => (openRouterTurn ?? (await import('./openrouter.js')).callOpenRouterTurn)({ ...args, env: requestEnv }),
       workspace: workspace ?? (workspaceFactory ? await workspaceFactory(snapshot, config) : undefined), env: requestEnv, beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment: audit, onProgress,
     });

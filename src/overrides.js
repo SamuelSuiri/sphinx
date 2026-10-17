@@ -17,25 +17,36 @@ async function readState(env) {
     : { global: null, repos: {} };
 }
 
+// A repository entry with enabled: false is an explicit OFF that shadows global yolo.
+const isOn = entry => Boolean(entry) && entry.enabled !== false;
+
 /** The active yolo entry for a repository: its own toggle first, then the global one. */
 export async function yoloStatus(repoRoot, env = process.env) {
   const state = await readState(env);
-  if (repoRoot && state.repos[repoRoot]) return { scope: 'repo', repoRoot, ...state.repos[repoRoot] };
+  const own = repoRoot ? state.repos[repoRoot] : null;
+  if (own) return isOn(own) ? { scope: 'repo', repoRoot, ...own } : null;
   if (state.global) return { scope: 'global', ...state.global };
   return null;
 }
 
-/** Toggle yolo for one repository, or globally when repoRoot is null. */
+/**
+ * Toggle yolo for one repository, or globally when repoRoot is null. A repository
+ * toggle flips its effective state: turning it off while global yolo is on records
+ * an explicit OFF so the global bypass cannot silently keep applying.
+ */
 export async function toggleYolo({ repoRoot = null, reason, env = process.env, now = () => new Date() } = {}) {
   const state = await readState(env);
-  const current = repoRoot ? state.repos[repoRoot] : state.global;
+  const current = repoRoot ? (state.repos[repoRoot] ? isOn(state.repos[repoRoot]) : isOn(state.global)) : isOn(state.global);
   const entry = current ? null : { since: now().toISOString(), ...(reasonText(reason) ? { reason: reasonText(reason) } : {}) };
   if (repoRoot) {
-    if (entry) state.repos[repoRoot] = entry; else delete state.repos[repoRoot];
+    if (entry) state.repos[repoRoot] = entry;
+    else if (state.global) state.repos[repoRoot] = { enabled: false, since: now().toISOString() };
+    else delete state.repos[repoRoot];
   } else state.global = entry;
   await writeJson(files(env).state, state);
   await recordOverride({ kind: entry ? 'yolo-on' : 'yolo-off', repoRoot, reason }, env, now);
-  return { scope: repoRoot ? 'repo' : 'global', repoRoot, enabled: Boolean(entry), ...(entry || {}) };
+  const reposStillOn = repoRoot || entry ? [] : Object.keys(state.repos).filter(root => isOn(state.repos[root]));
+  return { scope: repoRoot ? 'repo' : 'global', repoRoot, enabled: Boolean(entry), ...(entry || {}), ...(reposStillOn.length ? { reposStillOn } : {}) };
 }
 
 export async function recordOverride({ kind, repoRoot = null, target, id, head, reason }, env = process.env, now = () => new Date()) {
