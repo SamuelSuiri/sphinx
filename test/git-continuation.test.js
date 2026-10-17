@@ -27,13 +27,15 @@ async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
   t.after(async () => {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
     await Promise.all([...children].map(child => child.finished));
-    await rm(base, { recursive: true, force: true });
+    await rm(base, { recursive: true, force: true, maxRetries: 5 });
   });
   const git = async (...args) => (await exec('git', args, { cwd: repo, env, maxBuffer: 1024 * 1024 })).stdout.trimEnd();
   const bare = async (...args) => git('--git-dir', remote, ...args);
   const setup = (...args) => git('-c', 'core.hooksPath=/dev/null', ...args);
   await setup('init', '-q', '-b', 'main');
   await setup('config', 'user.name', 'Sphinx fixture'); await setup('config', 'user.email', 'fixture@example.invalid');
+  // Git's detached auto-maintenance can still be writing objects/pack when cleanup removes the fixture.
+  await setup('config', 'maintenance.auto', 'false'); await setup('config', 'gc.auto', '0');
   await setup('init', '--bare', '-q', remote);
   await setup('remote', 'add', 'origin', remote);
   await writeFile(path.join(repo, 'a.txt'), 'base a\n'); await writeFile(path.join(repo, 'b.txt'), 'base b\n');
