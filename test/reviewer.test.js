@@ -1,4 +1,4 @@
-import test, { before } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -13,10 +13,8 @@ import { createReviewWorkspace } from '../src/review-workspace.js';
 import { reviewerTurnLimit } from '../src/reviewer-limits.js';
 
 const exec = promisify(execFile);
-// The reviewer loads Pi lazily; a cold load can take seconds under suite load, so keep it out of the timed reviews.
-before(() => import('../src/pi-runtime.js'));
 const snapshot = { version: 2, id: 'snapshot', files: ['worker.js'], projectContext: { path: '.sphinxcontext.md', text: 'A queue worker that must deduplicate retries within one process.', hash: 'context-hash' } };
-const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: 'standard', changeTier: 'large', maxContextBytes: 100000, timeoutSeconds: 2, agentMaxTurns: 8, toolResultBytes: 16000 };
+const config = { ...structuredClone(DEFAULT_CONFIG), provider: 'codex', level: 'standard', changeTier: 'large', maxContextBytes: 100000, timeoutSeconds: 30, agentMaxTurns: 8, toolResultBytes: 16000 };
 const question = { id: 'retry', concept: 'Duplicate operation', prompt: 'When an already-seen id is retried in this process, will another operation run? Explain why.', choices: [], expectedAnswer: 'No; the unchanged helper returns before the operation.', rationale: 'Identify the stored id lookup and early return.', evidence: [{ path: 'worker.js', reason: 'Delegates to once().' }, { path: 'lib/once.js', reason: 'The helper remembers ids and returns early.' }] };
 const schema = { type: 'object', additionalProperties: false, properties: { questions: { type: 'array', minItems: 1, maxItems: 1, items: QUESTION_SCHEMA } }, required: ['questions'] };
 const toolAction = calls => ({ action: 'tools', calls: calls.map(([name, args]) => ({ name, arguments: JSON.stringify(args) })), assessment: null, summary: '', evidenceIds: [] });

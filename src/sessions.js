@@ -364,5 +364,14 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       return publicSession(session);
     });
   }
-  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,public:publicSession};
+  /** Remove a check that never made a model call or produced a question. Anything with progress is kept. */
+  async function discard(id) {
+    return withLock(id, env, async () => {
+      const session = await readJson(sessionFile(id, env), null);
+      if (!session || session.status !== 'pending' || session.calls || session.questions.length || session.reviewerCheckpoint) return false;
+      await unlink(sessionFile(id, env)).catch(e => { if (e.code !== 'ENOENT') throw e; });
+      return true;
+    });
+  }
+  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,public:publicSession};
 }
