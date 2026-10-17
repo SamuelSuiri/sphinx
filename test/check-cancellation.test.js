@@ -34,7 +34,8 @@ process.stdin.on('end',()=>{
   }
   const finish=()=>process.stdout.write(JSON.stringify({type:'result',subtype:'success',structured_output:result}));
   if(phase!==process.env.SPHINX_TEST_HOLD){finish();return;}
-  // Handle SIGTERM before announcing readiness; the test cancels as soon as it sees the ready file.
+  // Install the handler before announcing readiness; otherwise a prompt
+  // cancellation can arrive first and the default action skips the late result.
   process.on('SIGTERM',()=>{fs.writeFileSync(path.join(process.env.SPHINX_TEST_STATE,phase+'-terminated'),'yes');finish();process.exit(0);});
   fs.writeFileSync(path.join(process.env.SPHINX_TEST_STATE,phase+'-ready'),String(process.pid));
   setTimeout(()=>{finish();},60000);

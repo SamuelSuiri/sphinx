@@ -79,7 +79,7 @@ agent:
 
     existing PR and record a machine-readable verdict. The release controller handles
 
-    implementation redispatch, merging, deployment verification, and issue completion.
+    implementation redispatch, merging, and issue completion.
 
 
     {% if issue.description %}## Issue description
@@ -286,7 +286,7 @@ backup behavior, not the primary contract.
 - The fallback is English-oriented; non-English or unusual phrasing may not be detected.
 
 ## Setup script: issue completion
-<!-- itervox-setup: autonomous-release-v5 -->
+<!-- itervox-setup: autonomous-release-v5-3 -->
 
 This section defines the current autonomous delivery policy. It supersedes older
 issue comments telling workers to wait for a PR number order, ask the operator
@@ -334,11 +334,14 @@ conflicts return to you automatically with evidence from the release controller.
 For a repair run, use the existing branch and PR, refresh the target branch,
 resolve the reported problem, rerun verification, and push the new result.
 
-The release controller owns automatic merging and production verification. It
-allows parallel implementation but processes one merge and deployment at a time
-per repository. Do not merge, enable GitHub auto-merge, change Linear to Done, or
-wait inside a coding session for another PR, CI, or production deployment. Return
-the worker slot once the PR and handoff are pushed; the controller keeps working.
+The release controller owns automatic merging and issue completion. It allows
+parallel implementation and processes one merge at a time per repository. Once
+GitHub confirms that merge, the next eligible PR can proceed while the controller
+finishes the Linear Done acknowledgement separately. Do not merge, enable GitHub
+auto-merge, change Linear to Done, or wait inside a coding session for another PR
+or CI. Return the worker slot once the PR and handoff are pushed; the controller
+keeps working. An already merged PR ends implementation for that issue. Do not
+reopen it or start another implementation run for consumed work.
 
 ### Actual prerequisites
 
@@ -370,8 +373,8 @@ implementation to In Review. The release controller schedules the native code
 reviewer when a review is needed and its persistent budget permits it. Review
 findings return to implementation automatically; a passing review is tied to
 the actual pushed commit. The release controller checks that review and CI,
-queues repairs when needed, merges when eligible, waits for a successful GitHub
-production deployment for the actual merge commit, then marks the issue Done.
+queues repairs when needed, merges when eligible, and marks the issue Done after
+GitHub confirms the merge. That confirmed merge completes the issue lifecycle.
 
 Ask a focused question only for a genuine missing requirement, inaccessible
 credential, required human approval, or conflict whose intended behavior cannot
