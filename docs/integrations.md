@@ -76,7 +76,7 @@ Agent guidance tells the coding agent not to start a duplicate Git command while
 
 The installation covers your local machine. Remote machines, containers, and hosted coding agents need their own installation.
 
-Over SSH, Sphinx prints the loopback URL instead of opening a browser. Forward the port (for example `ssh -L <port>:127.0.0.1:<port> host`) or run `sphinx check` on the remote machine. A remote connection may time out sooner than Sphinx's 25-minute wait.
+Sphinx opens the browser automatically only on macOS. On Linux, WSL, and over SSH it prints the loopback URL instead. From a remote session, forward the same port number (for example `ssh -L <port>:127.0.0.1:<port> host`) and open the printed URL unchanged in your local browser; the page rejects other hosts and ports. Or run `sphinx check` on the remote machine. A remote connection may time out sooner than Sphinx's 25-minute wait.
 
 CI never starts a questionnaire. The check stays pending and Git stops.
 

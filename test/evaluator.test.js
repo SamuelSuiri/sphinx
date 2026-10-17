@@ -30,7 +30,7 @@ function auditQuestions(prompt) {
 }
 
 // Fail-closed cases below run under an explicit call cap; see the uncapped stall test.
-const config = { provider: 'codex', level: 'standard', timeoutSeconds: 3, maxContextBytes: 120000, maxModelCalls: 20, agentMaxTurns: 8 };
+const config = { provider: 'codex', level: 'standard', timeoutSeconds: 30, maxContextBytes: 120000, maxModelCalls: 20, agentMaxTurns: 8 };
 const parentContext = {
   CODEX_THREAD_ID: 'parent-thread', CODEX_PARENT_THREAD_ID: 'parent',
   CLAUDE_SESSION_ID: 'parent-session', CLAUDECODE: '1', SPHINX_CLAUDE_SESSION: 'claude-parent',

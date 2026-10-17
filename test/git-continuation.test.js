@@ -23,6 +23,8 @@ async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
   const repo = path.join(base, 'repo'), remote = path.join(base, 'remote.git'), home = path.join(base, 'home');
   const state = path.join(base, 'fixture-state');
   await Promise.all([repo, home, state].map(directory => mkdir(directory)));
+  // Newer Git detaches post-commit/receive maintenance, which can write packs while cleanup removes the fixture.
+  await writeFile(path.join(home, '.gitconfig'), '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n');
   const env = { ...process.env, HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, '.sphinx'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', SPHINX_TEST_STATE: state, CI: '1' };
   for (const key of Object.keys(env)) if (/^(?:GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|CONFIG(?:_|$))|SPHINX_(?:INSTALL_ID|EVALUATOR|HOOK_DEPTH)$|CODEX_THREAD_ID$|PI_SESSION_ID$|OPENROUTER_API_KEY$|OPENAI_API_KEY$|ANTHROPIC_API_KEY$)/.test(key) && !['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'].includes(key)) delete env[key];
   const children = new Set();
