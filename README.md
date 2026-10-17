@@ -119,7 +119,7 @@ Without a supplied description, setup creates an editable template. In a reposit
 Branch defaults come from your effective configuration, initially `main` and `master`. They do not change because you happen to be working on a feature branch. To set up checks only when pushing to `main`, without prompts:
 
 ```sh
-sphinx init --yes --branches main --events pre-push --level standard --mode block
+sphinx init --yes --branches main --events pre-push --level standard
 ```
 
 Commit `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md` to share repository settings and background with collaborators. Rerunning `init` preserves them; edit the files directly to update existing settings. If a legacy `.sphinx.json` exists, `init` creates `.sphinxconfig` from that policy and leaves the old file intact. When both exist, `.sphinxconfig` takes precedence; their policies are not merged.
