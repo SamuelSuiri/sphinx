@@ -14,7 +14,7 @@ const steps = [
 const details = [
   ['Works with your agent', 'Codex, Claude Code, Cursor, OpenCode, and Pi. One install covers every repository on your machine.'],
   ['Your answers stay yours', 'You answer in the browser. The coding agent only learns whether the check passed.'],
-  ['Secrets are never read', '.env files, keys, and anything in .sphinxignore are filtered out before any file is opened.'],
+  ['Sensitive files are excluded', 'Known credential files like .env, private keys, and .npmrc, plus any path in .sphinxignore, are never opened or sent to a reviewer. Matching is by path, so a secret pasted into ordinary source is not caught.'],
   ['Cheap by default', 'Small changes go to small models. Tokens and running cost are shown as the review happens.'],
   ['Urgent? Skip it', 'Skip a single check from the page, or run sphinx yolo to bypass checks for a repo. Every skip is logged.'],
   ['Open source', 'MIT licensed, runs locally, no account or hosted service.'],
