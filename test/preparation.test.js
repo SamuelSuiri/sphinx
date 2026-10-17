@@ -6,7 +6,8 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, getPaths } from '../src/config.js';
-import { pushSnapshots } from '../src/git.js';
+import { pushSnapshots, repository } from '../src/git.js';
+import { toggleYolo } from '../src/overrides.js';
 import { preparationStatus, runPreparation, schedulePreparation } from '../src/preparation.js';
 
 async function fixture(t) {
@@ -138,6 +139,27 @@ test('evaluator subprocesses, disabled policy, missing tracking refs, and detach
   assert.equal((await schedulePreparation(f.options)).status, 'skipped');
   f.git('update-ref', 'refs/remotes/origin/main', f.base); f.git('checkout', '--detach', '-q');
   assert.equal((await schedulePreparation(f.options)).status, 'skipped'); assert.equal(f.launches.length, 0);
+});
+
+test('repository and global yolo pause background review without launching workers or creating checks', async t => {
+  const f = await fixture(t), { root } = await repository(f.cwd);
+  for (const repoRoot of [root, null]) {
+    await toggleYolo({ repoRoot, env: f.env });
+    const skipped = await schedulePreparation(f.options);
+    assert.equal(skipped.status, 'skipped'); assert.match(skipped.reason, /Yolo mode is on/);
+    assert.equal(await preparationStatus(f.options), null);
+    await toggleYolo({ repoRoot, env: f.env });
+  }
+  assert.equal(f.launches.length, 0);
+  assert.equal((await schedulePreparation(f.options)).status, 'scheduled');
+});
+
+test('turning yolo on supersedes an already scheduled worker before any reviewer call', async t => {
+  const f = await fixture(t), scheduled = await schedulePreparation(f.options);
+  await toggleYolo({ env: f.env });
+  const result = await runPreparation({ ...f.options, store: f.store, env: { ...f.env, SPHINX_PREPARATION_JOB: scheduled.jobId } });
+  assert.notEqual(result.status, 'ready');
+  assert.equal(f.ensured.length, 0); assert.equal(f.generated.length, 0);
 });
 
 test('push remote configuration predicts a destination independently of the upstream remote', async t => {

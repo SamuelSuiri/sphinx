@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { getPaths, loadConfig, policyHash, readJson, writeJson } from './config.js';
 import { matches, pushSnapshots, repository, revalidateSnapshot } from './git.js';
+import { yoloStatus } from './overrides.js';
 import { createSessionStore } from './sessions.js';
 
 const exec = promisify(execFile);
@@ -124,6 +125,9 @@ async function planFor({ cwd, env, config }) {
   const repo = await repository(cwd);
   config ??= await loadConfig(repo.root, env);
   if (config.backgroundPreparation === false || !config.enabled || !config.events.includes('pre-push')) return { reason: 'Background push preparation is disabled.', repo };
+  // Yolo skips the push check, so preparing its questions would only spend model calls.
+  const yolo = await yoloStatus(repo.root, env);
+  if (yolo) return { reason: `Yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'}; background review is paused.`, repo };
   const sourceRef = await git(repo.root, ['symbolic-ref', '--quiet', 'HEAD'], env, true);
   const head = await git(repo.root, ['rev-parse', '--verify', 'HEAD'], env, true);
   if (!sourceRef || !OID.test(head)) return { reason: 'No committed branch is checked out.', repo };
