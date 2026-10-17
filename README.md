@@ -85,6 +85,19 @@ The Git hook serves a local browser questionnaire for the exact checkpoint and w
 
 On macOS, Sphinx opens the questionnaire in a background browser tab without activating Terminal or minimizing your coding window. Other environments print the loopback URL for you to open; a remote session needs access to that machine's loopback listener. CI does not start a questionnaire. One page handles all checkpoints in a Git operation, and unrelated tool calls do not reopen paused checks. Closing the tab leaves Git waiting until its deadline; Pause stops it and saves progress. `sphinx check` remains an explicit terminal alternative. A new Git attempt can queue another presentation. Cursor's installed user hooks cover local sessions, not cloud agents.
 
+### Bring your own endpoint, or use your plan
+
+**Any OpenAI-compatible endpoint** (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, and others) can run reviews. It must support tool calls and JSON-schema structured output.
+
+```sh
+sphinx auth --provider openai --base-url https://api.openai.com/v1   # prompts for the key (hidden)
+sphinx config --provider openai --model gpt-5-mini                    # or per size: --large openai:<model>
+```
+
+The key is stored next to its URL and only ever sent there. Plain `http://` is allowed only for localhost, where a key is optional. For scripts, set `SPHINX_OPENAI_BASE_URL` and `SPHINX_OPENAI_API_KEY` together. Sphinx never reads `OPENAI_API_KEY`.
+
+**Codex and Claude routes bill your signed-in plan by default.** Sphinx removes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, and similar variables from the reviewer CLI's environment, so a key in your shell cannot silently switch reviews to API credits. If the CLI is not signed in with a Claude or ChatGPT plan, the check stops with instructions. To let the CLIs use API keys instead, run `sphinx config --cli-billing api`.
+
 ## Set up a repository
 
 After installing Sphinx once, run this in a repository:

@@ -1,3 +1,4 @@
+import { PROVIDERS } from './config.js';
 export const QUESTION_LIMITS = Object.freeze({
   relaxed: Object.freeze({ small: 1, medium: 2, large: 2 }),
   standard: Object.freeze({ small: 1, medium: 2, large: 3 }),
@@ -33,6 +34,7 @@ export function parseRoute(value) {
   const separator = value.indexOf(':');
   const provider = separator < 0 ? value : value.slice(0,separator);
   const model = separator < 0 ? null : value.slice(separator + 1);
-  if (!['openrouter','codex','claude','auto'].includes(provider) || model === '') throw new Error('Use provider:model, for example openrouter:openrouter/free or claude:sonnet.');
+  if (!PROVIDERS.includes(provider) || model === '') throw new Error('Use provider:model, for example openrouter:openrouter/free, claude:sonnet, or openai:gpt-5-mini.');
+  if (provider === 'openai' && !model) throw new Error('An openai route needs the model ID your endpoint expects, for example openai:gpt-5-mini.');
   return { provider, model };
 }
