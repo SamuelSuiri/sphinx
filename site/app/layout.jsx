@@ -2,8 +2,8 @@ import './globals.css';
 import { Analytics } from '@vercel/analytics/next';
 
 export const metadata = {
-  title: 'Sphinx — outsource your thinking, not your understanding',
-  description: 'A Git checkpoint for agent-assisted development. Before your agent’s code ships, Sphinx asks you a few questions about what it actually does.',
+  title: 'Sphinx — your agent wrote it. Can you explain it?',
+  description: 'A comprehension checkpoint for AI-assisted code. Sphinx asks you to reason about your code changes before a commit or push continues.',
 };
 
 export default function RootLayout({ children }) {
