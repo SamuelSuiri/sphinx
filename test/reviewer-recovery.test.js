@@ -447,7 +447,11 @@ test('without a call cap, investigation closes at twice the planning target and 
 });
 
 test('the review deadline reports a readable timeout rather than a raw abort', async () => {
-  await assert.rejects(runReviewer({ ...base, config: { ...config, timeoutSeconds: 0.05 }, workspace: space(), runModel: async args => {
-    await new Promise((_resolve, reject) => args.signal.addEventListener('abort', () => reject(args.signal.reason), { once: true }));
-  } }), { code: 'REVIEWER_TIMEOUT', message: /did not finish within 0.05 seconds/ });
+  // AbortSignal.timeout does not hold the event loop open; a real model call would.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(runReviewer({ ...base, config: { ...config, timeoutSeconds: 0.05 }, workspace: space(), runModel: async args => {
+      await new Promise((_resolve, reject) => args.signal.addEventListener('abort', () => reject(args.signal.reason), { once: true }));
+    } }), { code: 'REVIEWER_TIMEOUT', message: /did not finish within 0.05 seconds/ });
+  } finally { clearInterval(keepAlive); }
 });
