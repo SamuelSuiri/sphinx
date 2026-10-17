@@ -168,7 +168,7 @@ test('turning yolo on supersedes an already scheduled worker before any reviewer
   const f = await fixture(t), scheduled = await schedulePreparation(f.options);
   await toggleYolo({ env: f.env });
   const result = await runPreparation({ ...f.options, store: f.store, env: { ...f.env, SPHINX_PREPARATION_JOB: scheduled.jobId } });
-  assert.notEqual(result.status, 'ready');
+  assert.equal(result.status, 'stale');
   assert.equal(f.ensured.length, 0); assert.equal(f.generated.length, 0);
 });
 
