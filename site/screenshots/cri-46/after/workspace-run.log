@@ -1,0 +1,24 @@
+light 360 {"sw":360,"iw":360,"h":6085} no horizontal scroll
+  targets under 44px: []
+light 390 {"sw":390,"iw":390,"h":5909} no horizontal scroll
+  targets under 44px: []
+light 768 {"sw":768,"iw":768,"h":4401} no horizontal scroll
+  targets under 44px: []
+light 1173 {"sw":1173,"iw":1173,"h":3205} no horizontal scroll
+  targets under 44px: []
+light 1440 {"sw":1440,"iw":1440,"h":3164} no horizontal scroll
+  targets under 44px: []
+  1440 fold: {"action":866,"question":529,"fileRows":3,"diffBottom":896}
+dark 1440 {"sw":1440,"iw":1440,"h":3164} no horizontal scroll
+  targets under 44px: []
+dark 390 {"sw":390,"iw":390,"h":5909} no horizontal scroll
+  targets under 44px: []
+focus after Explore: checkpoint
+step 1: Question 1 of 2 · Retries and external side effects → Show sample answer
+step 2: Question 1 of 2 · Retries and external side effects → See the explanation
+step 3: Question 1 of 2 · Retries and external side effects → Show a stronger answer
+step 4: Question 1 of 2 · Retries and external side effects → Try the follow-up
+step 5: Question 2 of 2 · A lost response → Show sample answer
+step 6: Question 2 of 2 · A lost response → Finish the checkpoint
+highlighted lines for client.js ref: 8
+clipboard: "sphinx install"

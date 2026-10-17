@@ -120,7 +120,7 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
     for (;;) {
       const choice = await prompts.choose({
         title: 'Choose your evaluator models',
-        description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode integrations need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. There is no model-call cap by default. You can optionally set one later with sphinx config --max-model-calls 30, or clear a saved cap with --max-model-calls unlimited. Setup makes no model calls.',
+        description: 'A separate evaluator reads filtered code without your coding conversation. Codex and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode need a separate evaluator route. Paid OpenRouter presets use API credits; choosing one enables paid requests. There is no model-call cap by default; set one later with sphinx config --max-model-calls. Setup makes no model calls.',
         current, requireSelection: !current,
         choices: [
           ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` }] : []),
@@ -153,5 +153,29 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
       values = { ...values, ...custom }; break;
     }
   }
+  // Offer the saved (or default) policy as one choice; branch, remote, and depth details stay optional.
+  if (['events', 'branches', 'remotes', 'level'].every(key => values[key] === undefined)) {
+    const policy = await prompts.choose({
+      title: 'When should Sphinx check your understanding?',
+      description: 'Each repository can override this later with sphinx init.',
+      current: 'keep',
+      choices: [
+        { value: 'keep', label: hasExistingConfig ? 'Keep current checkpoints' : 'Recommended checkpoints', description: policyText(config) },
+        { value: 'custom', label: 'Customize', description: 'Choose Git events, branches, remotes, and question depth now.' },
+      ],
+    });
+    if (policy === 'keep') return values;
+  }
   return askPolicy(config, values, prompts, { scope: 'global' });
+}
+
+export function policyText(config) {
+  if (!config.events.length) return 'Checkpoints stay disabled.';
+  const branches = config.branches.length ? config.branches.join(', ') : 'no branches';
+  const remotes = config.remotes.includes('*') ? 'any remote' : config.remotes.length ? config.remotes.join(', ') : 'no remotes';
+  const parts = [];
+  if (config.events.includes('pre-push')) parts.push(`before pushes to ${branches} on ${remotes}`);
+  if (config.events.includes('pre-commit')) parts.push(`before commits on ${branches}`);
+  const text = parts.join(' and ');
+  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth.`;
 }

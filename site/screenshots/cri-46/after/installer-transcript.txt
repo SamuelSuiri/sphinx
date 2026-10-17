@@ -1,0 +1,110 @@
+
+        .-====-.                
+       /  .--.  \               
+      /  /    \  \              sphinx
+      |  |o  o|  |              
+      |  | __ |  |              Outsource your thinking,
+     /|  '----'  |\             not your understanding.
+    /_|__/|  |\__|_\            
+   /      |__|      \____       
+  /   ___/____\___       `-.    
+ /___/            \________\    
+ \___\____________/___/____/    
+
+Connect Git and your coding agents once for this machine. Existing hooks and
+unrelated agent settings are preserved.
+Which coding agents do you use?
+Connect any combination. Detected agents are preselected; clear all for
+Git-only use. Previously connected agents remain installed.
+
+> [ ] All supported agents
+  [ ] Codex
+  [ ] Claude Code
+  [ ] Pi
+  [ ] Cursor
+  [ ] OpenCode
+
+Select or clear every supported agent. Leave everything unchecked for Git and
+terminal only.
+Arrows move · Space toggles · A all · Enter confirms · Esc cancels
+Git and terminal only.
+
+Choose your evaluator models
+A separate evaluator reads filtered code without your coding conversation. Codex
+and Claude use their signed-in CLI and usage allowance. Pi, Cursor, and OpenCode
+need a separate evaluator route. Paid OpenRouter presets use API credits;
+choosing one enables paid requests. There is no model-call cap by default; set
+one later with sphinx config --max-model-calls. Setup makes no model calls.
+
+  1. Codex · low usage
+    GPT-6 Luna for every change size. Uses your Codex sign-in and allowance;
+    account access is required. Review size and reasoning effort still scale
+    with the change.
+  2. Claude Code · low usage
+    Haiku for every change size. Uses your Claude CLI sign-in and allowance. The
+    haiku alias follows your provider’s available Haiku model; no automatic
+    Sonnet or Opus upgrade.
+  3. OpenRouter · Haiku 5.5 (experimental, paid)
+    Lower-cost option: Haiku 5.5 for every change size, with an 8,192-token
+    output ceiling including reasoning. Tests found false rejections of
+    sufficient answers; see eval/RESULTS.md. Reference input/output prices per
+    1M tokens start at $0.10/$0.50 below 100k input tokens; higher context tiers
+    cost more. Uses OpenRouter API credits, not your coding-agent allowance.
+  4. OpenRouter · DeepSeek V3.2 (experimental, paid)
+    An open-weight alternative for every change size. Synthetic tests found
+    question-quality and grading failures; see eval/RESULTS.md. Requires an
+    OpenRouter key and credits; billed separately from your coding agent.
+  5. OpenRouter · free router (best effort)
+    Explicit opt-in to openrouter/free. Requires a key. Model selection varies
+    by request, and tool-call failures or rate limits can interrupt checks.
+    Sphinx does not switch to a paid route automatically.
+  6. Choose by change size
+    Set separate provider:model routes for small, medium, and large changes.
+
+Choose: 2
+
+When should Sphinx check your understanding?
+Each repository can override this later with sphinx init.
+
+  1. Recommended checkpoints (default)   Before pushes to main, master on any
+                                         remote, at standard depth.
+  2. Customize                           Choose Git events, branches, remotes,
+                                         and question depth now.
+
+Choose [1]: 
+
+Machine-wide defaults
+Each repository can override these branches and remotes in .sphinxconfig to
+match its own production setup.
+  Push checkpoints     Destination branches: main, master. Remotes: *.
+  Commit checkpoints   Off. Local commits are not checked by this policy.
+  Depth                standard · question caps: small 1, medium 2, large 3
+  Preparation          Background review after commits and branch updates
+  Behavior             The Git operation only goes through after you answer the
+                       understanding questions correctly
+
+Evaluator routes
+  Small    claude:haiku
+  Medium   claude:haiku
+  Large    claude:haiku
+
+Model calls: no limit. Review, compaction, grading, learning, and failed
+requests stay counted. Completion lasts 24 hours unless code, destination, or
+policy changes.
+Review planning targets: small 5, medium 7, large 8 calls. These are soft
+targets; only explicitly configured request limits stop further calls. Context
+limits and deadlines still apply.
+A call cap is optional. Set one with sphinx config --max-model-calls 30, or
+clear it with --max-model-calls unlimited.
+  Agent integrations   none
+
+✓ Git hooks installed for this user. Existing hooks are chained.
+
+Repository setup
+  sphinx init
+Choose repository policy, project context, and excluded paths. Use sphinx status
+to check Git coverage.
+
+Global settings:
+/var/folders/j1/570wycvs28s_dxlcpfnj66vm0000gp/T/tmp.8z9L6D5WnK/.sphinx/config.j
+son
