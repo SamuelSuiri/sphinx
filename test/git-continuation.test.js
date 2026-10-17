@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rename, rm, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ import { toggleYolo, yoloStatus, recentOverrides } from '../src/overrides.js';
 const exec = promisify(execFile);
 const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
 const json = async file => JSON.parse(await readFile(file, 'utf8'));
+// Both sides poll these files, so a reader must never see a partly written one.
+const publish = async (file, data) => { await writeFile(`${file}.tmp`, data); await rename(`${file}.tmp`, file); };
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
@@ -56,7 +58,7 @@ process.stdout.write(JSON.stringify({valid:await revalidateSnapshot(snapshot,con
   const launcher = path.join(base, 'hook-launcher.mjs');
   await writeFile(launcher, `import { dispatchHook } from ${JSON.stringify(modulePath('install'))};
 import { runGitGate } from ${JSON.stringify(modulePath('git-gate'))};
-import { readFile,writeFile } from 'node:fs/promises';
+import { readFile,writeFile,rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -65,6 +67,7 @@ if(process.argv[2]!=='hook')process.exit(0);
 const state=process.env.SPHINX_TEST_STATE,controller=new AbortController();
 process.on('SIGINT',()=>controller.abort(new Error('fixture interrupted')));
 process.on('SIGTERM',()=>controller.abort(new Error('fixture terminated')));
+const publish=async(file,data)=>{await writeFile(file+'.tmp',data);await rename(file+'.tmp',file);};
 const read=async(file,fallback)=>{try{return JSON.parse(await readFile(file,'utf8'));}catch(e){if(e.code==='ENOENT')return fallback;throw e;}};
 const event=process.argv[4];let input='';
 if(event==='pre-push')for await(const chunk of process.stdin)input+=chunk;
@@ -81,7 +84,7 @@ const present=async({request,env,signal})=>{
     const result=await promisify(execFile)(process.execPath,[${JSON.stringify(validator)},candidate],{cwd:request.repoRoot,env});
     payload.externalValidation=JSON.parse(result.stdout);
   }
-  await writeFile(file,JSON.stringify(payload));
+  await publish(file,JSON.stringify(payload));
   while(true){signal?.throwIfAborted();const decision=await read(join(state,request.id+'.decision'),null);if(decision)return decision;await delay(10,undefined,{signal});}
 };
 try{process.exitCode=await dispatchHook({event,args:process.argv.slice(5),input,gate:args=>runGitGate({...args,store,present,signal:controller.signal})});}
@@ -106,8 +109,8 @@ catch(error){process.stderr.write(error.message+'\\n');process.exitCode=1;}
     assert.fail('Git did not reach the fixture questionnaire');
   };
   const release = async (checkpoint, { status = 'passed', approve = status === 'passed' } = {}) => {
-    if (approve) await writeFile(path.join(state, `${checkpoint.request.id}.approval`), JSON.stringify({ id: checkpoint.request.id }));
-    await writeFile(path.join(state, `${checkpoint.request.id}.decision`), JSON.stringify({ status }));
+    if (approve) await publish(path.join(state, `${checkpoint.request.id}.approval`), JSON.stringify({ id: checkpoint.request.id }));
+    await publish(path.join(state, `${checkpoint.request.id}.decision`), JSON.stringify({ status }));
   };
   const pending = async () => readdir(path.join(env.SPHINX_HOME, 'presentations')).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
   const oldCalls = async () => (await readFile(path.join(state, 'old-hooks'), 'utf8')).trim().split('\n');
