@@ -137,18 +137,19 @@ export function activityText(name, args = {}) {
 
 /** Sphinx policy/evidence adapter around Pi's agent session and native compaction. */
 export async function runReviewer(options) {
-  try { return await review(options); }
+  const deadline = {};
+  try { return await review(options, deadline); }
   catch (error) {
     // The review's own deadline, not a human pause or Git cancellation.
     if (error?.name === 'TimeoutError' && !options.signal?.aborted) fail(`The review did not finish within ${options.config?.timeoutSeconds ?? 180} seconds. Its investigation so far is saved; continue the check to resume, or raise timeoutSeconds for very large changes.`, 'REVIEWER_TIMEOUT');
     throw error;
-  }
+  } finally { clearTimeout(deadline.timer); }
 }
 
 async function review({ snapshot, config, assessmentSchema, assessmentInstructions, validateAssessment,
   runModel, runToolModel, nativeTools = false, workspace: injectedWorkspace, env = process.env,
   beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment, onProgress,
-}) {
+}, timers) {
   // Live status for the human's questionnaire. Progress can never affect review.
   const progress = text => { try { onProgress?.(text); } catch {} };
   if (!snapshot || !Array.isArray(snapshot.files) || !snapshot.files.length) fail('The snapshot contains no assessable changed paths.', 'INVALID_SNAPSHOT');
@@ -169,7 +170,11 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
   if (!Number.isSafeInteger(cap) || cap < 1000) fail('The active reviewer context budget is invalid.', 'CONTEXT_LIMIT');
   const timeoutMs = Math.max(1, Math.floor((config.timeoutSeconds ?? 180) * 1000));
   const deadline = Date.now() + timeoutMs;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  // Unlike AbortSignal.timeout, a referenced timer still fires when nothing else
+  // keeps the process alive. runReviewer clears it when the review settles.
+  const timeout = new AbortController();
+  timers.timer = setTimeout(() => timeout.abort(new DOMException('The operation timed out.', 'TimeoutError')), timeoutMs);
+  const timeoutSignal = timeout.signal;
   const reviewSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const check = () => reviewSignal.throwIfAborted();
   const runtime = () => ({ ...config, timeoutSeconds: Math.max(0.001, (deadline - Date.now()) / 1000) });

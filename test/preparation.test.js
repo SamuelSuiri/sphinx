@@ -6,7 +6,8 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, getPaths } from '../src/config.js';
-import { pushSnapshots } from '../src/git.js';
+import { pushSnapshots, repository } from '../src/git.js';
+import { toggleYolo } from '../src/overrides.js';
 import { preparationStatus, runPreparation, schedulePreparation } from '../src/preparation.js';
 
 async function fixture(t) {
@@ -138,6 +139,80 @@ test('evaluator subprocesses, disabled policy, missing tracking refs, and detach
   assert.equal((await schedulePreparation(f.options)).status, 'skipped');
   f.git('update-ref', 'refs/remotes/origin/main', f.base); f.git('checkout', '--detach', '-q');
   assert.equal((await schedulePreparation(f.options)).status, 'skipped'); assert.equal(f.launches.length, 0);
+});
+
+test('repository and global yolo pause background review without launching workers or creating checks', async t => {
+  const f = await fixture(t), { root } = await repository(f.cwd);
+  for (const repoRoot of [root, null]) {
+    await toggleYolo({ repoRoot, env: f.env });
+    const skipped = await schedulePreparation(f.options);
+    assert.equal(skipped.status, 'skipped'); assert.match(skipped.reason, /Yolo mode is on/);
+    assert.equal(await preparationStatus(f.options), null);
+    await toggleYolo({ repoRoot, env: f.env });
+  }
+  assert.equal(f.launches.length, 0);
+  assert.equal((await schedulePreparation(f.options)).status, 'scheduled');
+});
+
+test('an explicit repository yolo OFF keeps background review on while global yolo is on', async t => {
+  const f = await fixture(t), { root } = await repository(f.cwd);
+  await toggleYolo({ repoRoot: null, env: f.env });
+  assert.equal((await schedulePreparation(f.options)).status, 'skipped');
+  await toggleYolo({ repoRoot: root, env: f.env });
+  assert.equal((await schedulePreparation(f.options)).status, 'scheduled');
+  assert.equal((await runPreparation({ ...f.options, store: f.store })).status, 'ready');
+  assert.equal(f.launches.length, 1); assert.equal(f.generated.length, 1);
+});
+
+test('turning yolo on supersedes an already scheduled worker before any reviewer call', async t => {
+  const f = await fixture(t), scheduled = await schedulePreparation(f.options);
+  await toggleYolo({ env: f.env });
+  const result = await runPreparation({ ...f.options, store: f.store, env: { ...f.env, SPHINX_PREPARATION_JOB: scheduled.jobId } });
+  assert.equal(result.status, 'stale');
+  assert.equal(f.ensured.length, 0); assert.equal(f.generated.length, 0);
+});
+
+// The production validator compares against loaded settings, so persist them instead of injecting a config.
+async function loadedOptions(f) {
+  const file = getPaths(f.env).config;
+  await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify({ preparationDebounceMs: 0 }));
+  return { ...f.options, config: undefined };
+}
+
+const QUESTION = { id: 'count', concept: 'observable behavior', prompt: 'Does the exported count change from one to two?', expectedAnswer: 'Yes', rationale: 'The export changed.', evidence: [{ path: 'app.js', reason: 'The count is exported as two.' }] };
+
+test('turning yolo on during a background review stops further reviewer requests', async t => {
+  for (const scope of ['repo', 'global']) {
+    const f = await fixture(t), { root } = await repository(f.cwd), repoRoot = scope === 'repo' ? root : null;
+    let requests = 0;
+    const generate = async (_snapshot, _config, { beforeCall }) => {
+      await beforeCall(); requests++;
+      await toggleYolo({ repoRoot, env: f.env });
+      await beforeCall(); requests++;
+      await beforeCall(); requests++;
+      return { questions: [QUESTION] };
+    };
+    const options = await loadedOptions(f);
+    await schedulePreparation(options);
+    const result = await runPreparation({ ...options, generate });
+    assert.equal(result.status, 'stale', scope); assert.equal(requests, 1, scope);
+    const { createSessionStore } = await import('../src/sessions.js');
+    const [session, ...others] = await createSessionStore({ env: f.env }).pending(root);
+    assert.equal(others.length, 0, scope);
+    // The started request is kept as resumable progress, never as a ready check.
+    assert.equal(session.calls, 1, scope); assert.equal(session.questions.length, 0, scope); assert.notEqual(session.status, 'active', scope);
+  }
+});
+
+test('turning yolo on after a check is created removes it before any reviewer request', async t => {
+  const { createSessionStore } = await import('../src/sessions.js');
+  const f = await fixture(t), { root } = await repository(f.cwd);
+  const real = createSessionStore({ env: f.env, generate: async () => assert.fail('No reviewer request is expected.') });
+  const store = { ...real, ensure: async (...args) => { const session = await real.ensure(...args); await toggleYolo({ repoRoot: root, env: f.env }); return session; } };
+  const options = await loadedOptions(f);
+  await schedulePreparation(options);
+  assert.equal((await runPreparation({ ...options, store })).status, 'stale');
+  assert.deepEqual(await real.pending(root), []);
 });
 
 test('push remote configuration predicts a destination independently of the upstream remote', async t => {
