@@ -14,7 +14,7 @@ import { toggleYolo, yoloStatus, recentOverrides } from '../src/overrides.js';
 const exec = promisify(execFile);
 const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
 const json = async file => JSON.parse(await readFile(file, 'utf8'));
-// Polled handoff files are renamed into place so a reader never sees a partial write.
+// Both sides poll these files, so a reader must never see a partly written one.
 const publish = async (file, data) => { await writeFile(`${file}.tmp`, data); await rename(`${file}.tmp`, file); };
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
