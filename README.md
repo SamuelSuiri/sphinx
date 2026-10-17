@@ -169,7 +169,7 @@ Pausing, cancellation, stale code/policy, or the 25-minute interview deadline st
 ## When it's urgent
 
 - **Skip this time:** the questionnaire has a *Skip this time* button, available even while the review is still running. Git continues immediately.
-- **Yolo mode:** `sphinx yolo` toggles skipping checks. Inside a Git repository it applies to that repository; outside one it applies globally (repositories with their own setting win). Run it again to turn it off. `--reason "prod hotfix"` is optional.
+- **Yolo mode:** `sphinx yolo` toggles skipping checks. Inside a Git repository it applies to that repository; outside one it applies globally (repositories with their own setting win, including an explicit off inside a repository while global yolo is on). Run it again to turn it off. `--reason "prod hotfix"` is optional.
 
 Skips never count as understanding: no receipt is written and nothing resurfaces later. Every skip or toggle is appended with its optional reason to `~/.config/sphinx/overrides.jsonl`. `sphinx status` shows whether yolo is on and lists recent overrides.
 
