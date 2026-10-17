@@ -7,7 +7,11 @@ const QUOTE = 'https://x.com/yacineMTB/status/2018886083120153046?s=20';
 const steps = [
   ['You push', 'You, or the coding agent working for you, run git push to a branch you protect, like main.'],
   ['A reviewer investigates', 'An independent model reads the diff and the code it touches, without the conversation that wrote it, and writes questions about consequences rather than trivia.'],
-  ['You answer', 'A local page opens in a background tab while Git waits. Miss something and you get an explanation plus a fresh scenario to apply it to.'],
+  ['You answer', <>
+    Answer in a local browser page while Git waits. On macOS it opens in a background tab; on Linux, WSL, or over SSH,
+    Sphinx prints a link for you to open (<a href={`${REPO}#what-happens-when-you-push`}>remote setup</a>). Miss
+    something and you get an explanation plus a fresh scenario to apply it to.
+  </>],
   ['The push continues', 'Pass, and the same push goes through on its own. Nothing to retry.'],
 ];
 
