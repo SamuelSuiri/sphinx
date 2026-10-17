@@ -1,112 +1,183 @@
 import CopyCommand from './copy-command';
+import CheckpointDemo, { FocusLink } from './checkpoint-demo';
 
 const REPO = 'https://github.com/parthh01/sphinx';
 const NPM = 'https://www.npmjs.com/package/sphinx-understand';
-const QUOTE = 'https://x.com/yacineMTB/status/2018886083120153046?s=20';
 
-const steps = [
-  ['You push', 'You, or the coding agent working for you, run git push to a branch you protect, like main.'],
-  ['A reviewer investigates', 'An independent model reads the diff and the code it touches, without the conversation that wrote it, and writes questions about consequences rather than trivia.'],
-  ['You answer', <>
-    Answer in a local browser page while Git waits. On macOS it opens in a background tab; on Linux, WSL, or over SSH,
-    Sphinx prints a link for you to open (<a href={`${REPO}/blob/main/docs/integrations.md#remote-machines-ssh-and-ci`}>remote setup</a>). Miss
-    something and you get an explanation plus a fresh scenario to apply it to.
+const stages = [
+  ['A configured Git operation starts', 'You, or the coding agent working for you, commit or push in a way your policy covers, like a push to main. Git waits.'],
+  ['An independent reviewer reads the change', 'A separate model investigates the diff and the code it touches with read-only tools, without the conversation that wrote it.'],
+  ['You answer and apply feedback', <>
+    Answer in a local browser page. On macOS it opens in a background tab; on Linux, WSL, or over SSH, Sphinx prints
+    a link for you to open (<a href={`${REPO}/blob/main/docs/integrations.md#remote-machines-ssh-and-ci`}>remote setup</a>). Miss a concept and you
+    get an explanation and a new scenario.
   </>],
-  ['The push continues', 'Pass, and the same push goes through on its own. Nothing to retry.'],
+  ['The same Git operation continues', 'Once you pass, Git verifies the exact change and the original commit or push continues. Nothing to retry.'],
 ];
 
-const details = [
-  ['Works with your agent', 'Codex, Claude Code, Cursor, OpenCode, and Pi. One install covers every repository on your machine.'],
-  ['Your answers stay yours', 'You answer in the browser. The coding agent only learns whether the check passed.'],
-  ['Sensitive files are excluded', 'Known credential files like .env, private keys, and .npmrc, plus any path in .sphinxignore, are never opened or sent to a reviewer. Matching is by path, so a secret pasted into ordinary source is not caught.'],
-  ['Cheap by default', 'Small changes go to small models. Tokens and running cost are shown as the review happens.'],
-  ['Urgent? Skip it', 'Skip a single check from the page, or run sphinx yolo to bypass checks for a repo. Every skip is logged.'],
-  ['Open source', 'MIT licensed, runs locally, no account or hosted service.'],
+const fits = [
+  {
+    title: 'Works with your agent',
+    items: [
+      'Codex, Claude Code, Cursor, OpenCode, and Pi, or plain Git with no agent.',
+      'One install covers every repository on your machine.',
+    ],
+  },
+  {
+    title: 'Your answers stay private',
+    items: [
+      'You answer in a local browser page. The coding agent only learns whether the check passed.',
+      'Skip one check from the page when it is urgent, or run sphinx yolo for a repository. Every skip is logged.',
+    ],
+  },
+  {
+    title: 'Local and open source',
+    items: [
+      'MIT licensed. No account or hosted Sphinx service.',
+      'The reviewer receives filtered evidence from the change through the route you pick: your Codex or Claude sign-in, or OpenRouter and its model provider.',
+      'Known credential files like .env, private keys, and .npmrc, plus any path in .sphinxignore, are never opened or sent to a reviewer. Matching is by path, so a secret pasted into ordinary source is not caught.',
+    ],
+  },
 ];
+
+function Mark() {
+  return <span className="mark" aria-hidden="true">◆</span>;
+}
 
 export default function Home() {
   return (
     <>
+      <a className="skip-link" href="#main">Skip to content</a>
       <header className="bar">
-        <a className="wordmark" href="#top">sphinx</a>
-        <nav>
-          <a href="#how">How it works</a>
-          <a href="#start">Get started</a>
-          <a href={REPO}>GitHub</a>
-        </nav>
+        <div className="wrap bar-inner">
+          <a className="wordmark" href="#top"><Mark />Sphinx</a>
+          <nav aria-label="Primary">
+            <a href="#how">How it works</a>
+            <a href="#start">Get started</a>
+            <a href={REPO}>GitHub</a>
+          </nav>
+        </div>
       </header>
 
-      <main id="top">
-        <section className="intro">
-          <ul className="chips" aria-label="Highlights"><li>Free</li><li><a href={REPO}>FOSS</a></li></ul>
-          <figure className="quote">
-            <blockquote><h1>“Outsource your thinking,<br />not your understanding.”</h1></blockquote>
-            <figcaption>— <a href={QUOTE}>Sun Tzu</a></figcaption>
-          </figure>
-          <p className="lede">
-            Sphinx is a hook for agent-assisted development. Before your agent’s code ships, it asks you a question or two checking if you understand the code being shipped.
-          </p>
-          <CopyCommand command="npm install -g sphinx-understand" />
-          <p className="links"><a href="#start">Get started</a> · <a href={REPO}>Read the source</a></p>
+      <main id="main">
+        <section className="hero wrap" id="top">
+          <div className="hero-title">
+            <p className="eyebrow">A comprehension checkpoint for AI-assisted code</p>
+            <h1>Your agent wrote it. Can you explain it?</h1>
+          </div>
+          <div className="hero-copy">
+            <p className="lede">
+              Sphinx asks you to reason about your code changes before a commit or push continues. Understand the
+              decisions, work through what you missed, and keep going.
+            </p>
+            <div className="actions">
+              <FocusLink target="checkpoint" className="button primary">Explore a checkpoint</FocusLink>
+              <a className="button secondary" href="#how">How it works</a>
+            </div>
+          </div>
         </section>
 
-        <figure className="demo" aria-label="Example Sphinx questionnaire">
-          <div className="demo-bar"><span>billing-service / main</span><span>6.8k tokens · $0.0014</span></div>
-          <div className="demo-body">
-            <p className="activity">✓ Checking the questions against the source <span>7 steps ▸</span></p>
-            <p className="who">Sphinx</p>
-            <p className="q">Your webhook handler now saves the event ID before calling charge(). Stripe times out waiting for your response and sends the same event again. What happens on the retry, and why?</p>
-            <div className="you"><p className="who">You</p><p>The handler runs twice, so the customer gets charged twice.</p></div>
-            <p className="who">Sphinx</p>
-            <p>Not quite. The retry finds the saved event ID and returns 200 without charging, so there’s no double charge. That ordering has a cost, though: the ID is recorded before the charge succeeds.</p>
-            <p className="who">Sphinx <span className="tag">Follow-up</span></p>
-            <p className="q">charge() fails with a network error right after the event ID is saved. What does the next retry do, and what happens to the customer?</p>
-          </div>
-          <figcaption>Git is waiting. Pass, and the push continues automatically.</figcaption>
-        </figure>
+        <section className="demo wrap" id="checkpoint" tabIndex={-1} aria-label="Example checkpoint">
+          <CheckpointDemo />
+          <p className="demo-note">
+            Synthetic example with scripted answers. The real questionnaire shows the checkpoint's changed files and the
+            diff lines the reviewer read for each question; that view is in the GitHub source and not yet in the
+            published npm package (0.1.0). The example says nothing about reviewer coverage, speed, or accuracy.
+          </p>
+        </section>
 
-        <section id="how">
+        <section className="wrap section" id="how">
           <h2>How it works</h2>
-          <ol className="steps">
-            {steps.map(([title, body], index) => (
-              <li key={title}><span className="n">{index + 1}</span><div><h3>{title}</h3><p>{body}</p></div></li>
+          <ol className="stages">
+            {stages.map(([title, body], index) => (
+              <li key={title}><span className="n" aria-hidden="true">{index + 1}</span><h3>{title}</h3><p>{body}</p></li>
             ))}
           </ol>
         </section>
 
-        <section>
-          <h2>Built to stay out of the way</h2>
-          <dl className="details">
-            {details.map(([title, body]) => (
-              <div key={title}><dt>{title}</dt><dd>{body}</dd></div>
-            ))}
-          </dl>
+        <section className="wrap section why">
+          <h2>Why the question matters</h2>
+          <div className="prose">
+            <p>
+              A large change can be correct line by line and still carry a decision you never made, like letting a
+              queue retry a payment. Sphinx asks about consequences: what happens on a retry, a timeout, or a crash.
+              Questions come from a reviewer that never saw the conversation that wrote the code, so they test what
+              the change does rather than what you asked for.
+            </p>
+            <p>
+              It does not review every line or promise to catch defects. It checks that you can explain the parts that
+              matter before the change moves on.
+            </p>
+          </div>
         </section>
 
-        <section id="start">
+        <section className="wrap section">
+          <h2>Fits your workflow</h2>
+          <div className="fits">
+            {fits.map(group => (
+              <div key={group.title}>
+                <h3>{group.title}</h3>
+                <ul>{group.items.map(item => <li key={item}>{item}</li>)}</ul>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="wrap section" id="start">
           <h2>Get started</h2>
-          <p>Requires Node.js 22.19+ and Git on macOS, Linux, or WSL.</p>
-          <pre className="terminal"><code>
-<span className="c"># 1. Install the CLI</span>{'\n'}
-npm install -g sphinx-understand{'\n\n'}
-<span className="c"># 2. Connect Git and your coding agents, pick reviewer models</span>{'\n'}
-sphinx install{'\n\n'}
-<span className="c"># 3. Optional: describe the project and choose protected branches</span>{'\n'}
-cd your-repo && sphinx init{'\n\n'}
-<span className="c"># 4. Push as usual</span>{'\n'}
-git push
-          </code></pre>
-          <p>
-            Reviewers can run on your existing Codex or Claude Code sign-in, or on OpenRouter with an API key.
-            See the <a href={`${REPO}#readme`}>README</a> for configuration, privacy, and model options.
-          </p>
+
+          <div className="start-grid">
+            <div>
+              <h3 className="subhead">Before you start</h3>
+              <ul className="prereqs">
+                <li>Node.js 22.19 or newer, and Git.</li>
+                <li>macOS, Linux, or WSL.</li>
+                <li>A reviewer model. Setup asks you to pick one of these:</li>
+              </ul>
+              <div className="choices">
+                <div>
+                  <h4>Codex or Claude Code</h4>
+                  <p>If you are already signed in to either CLI, the reviewer runs on that sign-in and its usage allowance. No API key.</p>
+                </div>
+                <div>
+                  <h4>OpenRouter</h4>
+                  <p>For Pi, Cursor, OpenCode, or Git-only use. Needs an API key, even for free models; setup asks for it with hidden input. Paid models are opt-in.</p>
+                </div>
+              </div>
+            </div>
+
+            <ol className="setup">
+              <li>
+                <h3>Install the CLI <span className="tag">Required</span></h3>
+                <CopyCommand command="npm install -g sphinx-understand" label="Copy install command" />
+              </li>
+              <li>
+                <h3>Run guided setup <span className="tag">Required</span></h3>
+                <p>Pick the coding agents you use and a reviewer, then accept the recommended checkpoint (before pushes to main or master) or customize it. Setup makes no model calls.</p>
+                <CopyCommand command="sphinx install" label="Copy setup command" />
+                <p className="note">Using Codex? Approve the Sphinx hooks in <code>/hooks</code> when it opens.</p>
+              </li>
+              <li>
+                <h3>Tune a repository <span className="tag optional">Optional</span></h3>
+                <p>Run inside a repository to set its protected branches, describe the project for the reviewer, and exclude paths.</p>
+                <CopyCommand command="sphinx init" label="Copy repository setup command" />
+              </li>
+              <li>
+                <h3>Push as usual</h3>
+                <p>When a push matches, Git waits and Sphinx prints a local questionnaire link. On macOS it also opens that page in a background tab.</p>
+                <CopyCommand command="git push" label="Copy git push" />
+              </li>
+            </ol>
+          </div>
         </section>
       </main>
 
-      <footer>
-        <span>MIT licensed</span>
+      <footer className="wrap">
+        <span><Mark />Sphinx · MIT licensed</span>
         <a href={REPO}>GitHub</a>
         <a href={NPM}>npm</a>
+        <a href={`${REPO}#readme`}>Documentation</a>
+        <a href={`${REPO}/blob/main/LICENSE`}>License</a>
       </footer>
     </>
   );

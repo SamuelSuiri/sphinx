@@ -40,7 +40,7 @@ test('late POST working response cannot overwrite a newer passed SSE update', as
   p.update({ ...question, sequence: 3, phase: 'passed', message: 'Complete.' });
   respond({ ok: true, json: async () => ({ ...question, sequence: 2, phase: 'working' }) });
   await submitted;
-  assert.equal(p.nodes.status.textContent, 'Complete');
+  assert.equal(p.nodes.status.textContent, 'Passed');
   assert.equal(p.nodes.question.hidden, true);
 });
 
@@ -76,7 +76,7 @@ test('the page stops reconnecting only after an explicit operation-close update'
   assert.ok(p.buttons.every(button => button.disabled));
   p.events.onerror();
   assert.equal(p.nodes.error.hidden, true);
-  assert.equal(p.nodes.status.textContent, 'Complete');
+  assert.equal(p.nodes.status.textContent, 'Passed');
 });
 
 test('Enter submits an answer while Shift+Enter and IME composition do not', async () => {
@@ -146,6 +146,18 @@ test('a phase change scrolls the conversation so recovery choices are visible', 
   assert.equal(p.nodes.conversation.scrollTop, 5000);
   assert.equal(p.nodes.recovery.hidden, false);
   assert.equal(p.nodes.recovery.children.length, 1);
+});
+
+test('state line names follow-ups and finished checks stop describing a waiting Git operation', () => {
+  const p = page(); const asked = { role: 'sphinx', kind: 'question', questionId: 'q1', number: 1, text: 'First?' };
+  p.update({ ...question, messages: [asked] });
+  assert.equal(p.nodes.status.textContent, 'Question 1 of 1'); assert.match(p.nodes.status.className, /phase-question/);
+  p.update({ ...question, sequence: 2, question: { id: 'q2', prompt: 'Again?' }, messages: [asked, { role: 'sphinx', kind: 'question', questionId: 'q2', number: 1, followUp: true, text: 'Again?' }] });
+  assert.equal(p.nodes.status.textContent, 'Question 1 of 1 · Needs another answer'); assert.match(p.nodes.status.className, /retry/);
+  assert.match(p.nodes.waiting.textContent, /Git continues after you pass/);
+  p.update({ ...question, sequence: 3, phase: 'passed' });
+  assert.match(p.nodes.status.className, /phase-passed/);
+  assert.equal(p.nodes.waiting.hidden, true);
 });
 
 test('Dispute is a reversible mode: Enter sends a dispute, and Back to answering restores normal answers', async () => {
