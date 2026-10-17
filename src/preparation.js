@@ -196,7 +196,7 @@ export async function schedulePreparation({ cwd = process.cwd(), env = process.e
   });
 }
 
-export async function runPreparation({ cwd = process.cwd(), env = process.env, config, store, wait = delay } = {}) {
+export async function runPreparation({ cwd = process.cwd(), env = process.env, config, store, generate, wait = delay } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return { status: 'skipped', prepared: [], reason: 'Evaluator subprocesses do not prepare assessments.' };
   const repo = await repository(cwd), files = filesFor(repo.root, env);
   const latest = await readJson(files.latest, null);
@@ -221,10 +221,19 @@ export async function runPreparation({ cwd = process.cwd(), env = process.env, c
     await locked(files, () => writeJson(files.job(id), claimed));
     return { status, prepared: claimed.prepared, ...(errorCode ? { error: errors[errorCode] } : {}) };
   };
+  // Yolo can be turned on while this worker runs. Every reviewer request
+  // re-checks it, and unstarted checks left behind are removed.
+  const ensured = [];
+  const yoloOn = () => yoloStatus(repo.root, env).catch(() => null);
+  const paused = async () => {
+    for (const sessionId of ensured) await store.discard(sessionId).catch(() => {});
+    return finish('stale');
+  };
   try {
     const plan = await planFor({ cwd: repo.root, env, config });
     if (plan.id !== id) return finish('stale');
-    store ??= createSessionStore({ env, validate: async (snapshot, currentConfig) => {
+    store ??= createSessionStore({ env, generate, validate: async (snapshot, currentConfig) => {
+      if (await yoloOn()) throw new Error('Yolo mode was turned on; background review is paused.');
       const effective = await loadConfig(snapshot.repoRoot, env);
       if (policyHash(effective) !== policyHash(currentConfig) || !await revalidateSnapshot(snapshot, effective, { env })) throw new Error('The snapshot or policy changed before preparation.');
     } });
@@ -232,11 +241,14 @@ export async function runPreparation({ cwd = process.cwd(), env = process.env, c
       const current = await readJson(files.latest, null);
       if (current?.id !== id) return finish('stale');
       const session = await store.ensure(snapshot, plan.config);
+      ensured.push(session.id);
       const fresh = await planFor({ cwd: repo.root, env, config });
+      if (await yoloOn()) return paused();
       if (fresh.id !== id || !await revalidateSnapshot(snapshot, plan.config, { env })) return finish('stale');
       await store.prepare(session.id, plan.config, { wait: true });
+      ensured.pop();
       claimed.prepared.push(snapshot.id);
     }
     return finish('ready');
-  } catch (error) { return finish('failed', failureKind(error)); }
+  } catch (error) { return await yoloOn() ? paused() : finish('failed', failureKind(error)); }
 }
