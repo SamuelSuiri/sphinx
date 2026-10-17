@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, realpath, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ import { toggleYolo, yoloStatus, recentOverrides } from '../src/overrides.js';
 const exec = promisify(execFile);
 const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
 const json = async file => JSON.parse(await readFile(file, 'utf8'));
+// Both processes poll these files, so publish complete contents with a rename.
+const publish = async (file, data) => { await writeFile(`${file}.tmp`, data); await rename(`${file}.tmp`, file); };
 const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
@@ -21,6 +23,8 @@ async function fixture(t, { events = ['pre-push'], oldHook = '' } = {}) {
   const repo = path.join(base, 'repo'), remote = path.join(base, 'remote.git'), home = path.join(base, 'home');
   const state = path.join(base, 'fixture-state');
   await Promise.all([repo, home, state].map(directory => mkdir(directory)));
+  // Newer Git detaches post-commit/receive maintenance, which can write packs while cleanup removes the fixture.
+  await writeFile(path.join(home, '.gitconfig'), '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n');
   const env = { ...process.env, HOME: home, SPHINX_USER_HOME: home, SPHINX_HOME: path.join(home, '.sphinx'), GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', SPHINX_TEST_STATE: state, CI: '1' };
   for (const key of Object.keys(env)) if (/^(?:GIT_(?:DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|CONFIG(?:_|$))|SPHINX_(?:INSTALL_ID|EVALUATOR|HOOK_DEPTH)$|CODEX_THREAD_ID$|PI_SESSION_ID$|OPENROUTER_API_KEY$|OPENAI_API_KEY$|ANTHROPIC_API_KEY$)/.test(key) && !['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'].includes(key)) delete env[key];
   const children = new Set();
@@ -54,7 +58,7 @@ process.stdout.write(JSON.stringify({valid:await revalidateSnapshot(snapshot,con
   const launcher = path.join(base, 'hook-launcher.mjs');
   await writeFile(launcher, `import { dispatchHook } from ${JSON.stringify(modulePath('install'))};
 import { runGitGate } from ${JSON.stringify(modulePath('git-gate'))};
-import { readFile,writeFile } from 'node:fs/promises';
+import { readFile,writeFile,rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -79,7 +83,7 @@ const present=async({request,env,signal})=>{
     const result=await promisify(execFile)(process.execPath,[${JSON.stringify(validator)},candidate],{cwd:request.repoRoot,env});
     payload.externalValidation=JSON.parse(result.stdout);
   }
-  await writeFile(file,JSON.stringify(payload));
+  await writeFile(file+'.tmp',JSON.stringify(payload));await rename(file+'.tmp',file);
   while(true){signal?.throwIfAborted();const decision=await read(join(state,request.id+'.decision'),null);if(decision)return decision;await delay(10,undefined,{signal});}
 };
 try{process.exitCode=await dispatchHook({event,args:process.argv.slice(5),input,gate:args=>runGitGate({...args,store,present,signal:controller.signal})});}
@@ -104,8 +108,8 @@ catch(error){process.stderr.write(error.message+'\\n');process.exitCode=1;}
     assert.fail('Git did not reach the fixture questionnaire');
   };
   const release = async (checkpoint, { status = 'passed', approve = status === 'passed' } = {}) => {
-    if (approve) await writeFile(path.join(state, `${checkpoint.request.id}.approval`), JSON.stringify({ id: checkpoint.request.id }));
-    await writeFile(path.join(state, `${checkpoint.request.id}.decision`), JSON.stringify({ status }));
+    if (approve) await publish(path.join(state, `${checkpoint.request.id}.approval`), JSON.stringify({ id: checkpoint.request.id }));
+    await publish(path.join(state, `${checkpoint.request.id}.decision`), JSON.stringify({ status }));
   };
   const pending = async () => readdir(path.join(env.SPHINX_HOME, 'presentations')).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
   const oldCalls = async () => (await readFile(path.join(state, 'old-hooks'), 'utf8')).trim().split('\n');

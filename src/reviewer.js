@@ -137,17 +137,23 @@ export function activityText(name, args = {}) {
 
 /** Sphinx policy/evidence adapter around Pi's agent session and native compaction. */
 export async function runReviewer(options) {
-  try { return await review(options); }
+  // A referenced timer, unlike AbortSignal.timeout: the deadline must still fire
+  // when a stalled model call leaves nothing else keeping the event loop alive.
+  const timeoutMs = Math.max(1, Math.floor((options.config?.timeoutSeconds ?? 180) * 1000));
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new DOMException('The review deadline elapsed.', 'TimeoutError')), timeoutMs);
+  try { return await review({ ...options, timeoutMs, timeoutSignal: deadline.signal }); }
   catch (error) {
     // The review's own deadline, not a human pause or Git cancellation.
     if (error?.name === 'TimeoutError' && !options.signal?.aborted) fail(`The review did not finish within ${options.config?.timeoutSeconds ?? 180} seconds. Its investigation so far is saved; continue the check to resume, or raise timeoutSeconds for very large changes.`, 'REVIEWER_TIMEOUT');
     throw error;
   }
+  finally { clearTimeout(timer); }
 }
 
 async function review({ snapshot, config, assessmentSchema, assessmentInstructions, validateAssessment,
   runModel, runToolModel, nativeTools = false, workspace: injectedWorkspace, env = process.env,
-  beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment, onProgress,
+  beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment, onProgress, timeoutMs, timeoutSignal,
 }) {
   // Live status for the human's questionnaire. Progress can never affect review.
   const progress = text => { try { onProgress?.(text); } catch {} };
@@ -167,9 +173,7 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
   if (saved && (!isObject(saved) || saved.version !== 1 || saved.snapshotId !== snapshot.id || !Array.isArray(saved.archive) || !Array.isArray(saved.entries) || !Number.isSafeInteger(saved.calls) || saved.calls < 0 || !Number.isSafeInteger(saved.compactions) || saved.compactions < 0 || (saved.reviewFeedback !== undefined && !plainText(saved.reviewFeedback, 4000)) || (saved.repairWindowUsed !== undefined && typeof saved.repairWindowUsed !== 'boolean') || bytes(saved) > MAX_CHECKPOINT_BYTES)) fail('The saved investigation is invalid, oversized, or belongs to another checkpoint.', 'INVALID_REVIEW_CHECKPOINT');
   if (!uncapped && (!Number.isSafeInteger(callLimit) || callLimit < (saved ? 1 : 2))) fail('The reviewer needs at least two available model calls for a fresh investigation, or one to resume; leave room for grading too.', 'REVIEWER_BUDGET');
   if (!Number.isSafeInteger(cap) || cap < 1000) fail('The active reviewer context budget is invalid.', 'CONTEXT_LIMIT');
-  const timeoutMs = Math.max(1, Math.floor((config.timeoutSeconds ?? 180) * 1000));
   const deadline = Date.now() + timeoutMs;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const reviewSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const check = () => reviewSignal.throwIfAborted();
   const runtime = () => ({ ...config, timeoutSeconds: Math.max(0.001, (deadline - Date.now()) / 1000) });
