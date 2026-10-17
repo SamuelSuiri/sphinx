@@ -188,9 +188,21 @@ test('explicit model flags alter only their requested routes and reject invalid 
   assert.throws(() => applyInstallOptions(config, { level: 'anything' }), /level/);
 });
 
+test('guided setup defers branch, remote, and depth questions unless the human customizes', async () => {
+  const output = capture(), answers = ['2', '', 'release/*', 'origin', 'thorough'];
+  const values = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
+  assert.match(output.text().replace(/\s+/g, ' '), /Before pushes to main, master on any remote, at standard depth\./);
+  assert.match(output.text(), /When should Sphinx run\?/);
+  assert.deepEqual(applyInstallOptions(DEFAULT_CONFIG, values).branches, ['release/*']);
+  assert.equal(values.level, 'thorough');
+  const kept = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: capture().ui, ask: async () => '' }), { hasExistingConfig: false });
+  assert.deepEqual(applyInstallOptions(DEFAULT_CONFIG, kept).branches, DEFAULT_CONFIG.branches);
+  assert.equal(kept.events, undefined);
+});
+
 const onboardingPolicy = { events: 'pre-push', branches: 'main', remotes: '*', level: 'standard', mode: 'block' };
 
-test('fresh onboarding asks agents first, recommends economical CLI models, then asks policy', async () => {
+test('fresh onboarding asks agents first, recommends economical CLI models, then offers recommended checkpoints', async () => {
   for (const agent of ['codex', 'claude']) {
     const order = [];
     const values = await askInstall(DEFAULT_CONFIG, {}, {
@@ -198,7 +210,8 @@ test('fresh onboarding asks agents first, recommends economical CLI models, then
       choose: async options => { order.push(options.title); assert.equal(options.requireSelection ?? false, false); return options.current; },
       text: async options => { order.push(options.title); return options.current; },
     }, { hasExistingConfig: false });
-    assert.deepEqual(order.slice(0, 3), ['Which coding agents do you use?', 'Choose your evaluator models', 'When should Sphinx run?']);
+    assert.deepEqual(order, ['Which coding agents do you use?', 'Choose your evaluator models', 'When should Sphinx check your understanding?']);
+    for (const key of ['events', 'branches', 'remotes', 'level']) assert.equal(values[key], undefined);
     assert.equal(values.agents, agent);
     assert.equal(values.preset, `${agent}-economy`);
     for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], presetOptions(`${agent}-economy`)[tier]);
