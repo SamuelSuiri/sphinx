@@ -14,7 +14,7 @@ if (global && !(env.CI && !['false', '0'].includes(env.CI))) {
   const amber = text => color ? `\x1b[38;5;179m${text}\x1b[0m` : text;
   const bold = text => color ? `\x1b[1m${text}\x1b[0m` : text;
   const message = setUp
-    ? `\n  ${amber('sphinx')} updated. Your existing setup is unchanged; run ${bold('sphinx doctor')} to check it.\n\n`
+    ? `\n  ${amber('sphinx')} updated. Apply it to your Git and agent hooks (your settings are kept):\n\n    ${bold('sphinx install')}\n\n`
     : `\n  ${amber('sphinx')} is installed. Finish setup to connect Git and your coding agents:\n\n    ${bold('sphinx install')}\n\n`;
   try {
     const tty = openSync(process.platform === 'win32' ? 'CON' : '/dev/tty', 'w');
