@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { install } from '../src/install.js';
 import { DEFAULT_CONFIG, saveConfig } from '../src/config.js';
-import { toggleYolo, recentOverrides } from '../src/overrides.js';
+import { toggleYolo, yoloStatus, recentOverrides } from '../src/overrides.js';
 
 const exec = promisify(execFile);
 const modulePath = name => fileURLToPath(new URL(`../src/${name}.js`, import.meta.url));
@@ -265,4 +265,16 @@ test('global yolo applies to repositories without their own setting', { timeout:
   const result = await f.start('push', 'origin', 'main').finished;
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /yolo mode is on globally/);
+});
+
+test('turning repository yolo off under global yolo restores that repository gate', { timeout: 20000 }, async t => {
+  const f = await fixture(t), repoRoot = await realpath(f.repo);
+  await toggleYolo({ repoRoot: null, env: f.env });
+  assert.equal((await toggleYolo({ repoRoot, env: f.env })).enabled, false, 'The toggle flips the effective state from global ON');
+  assert.equal(await yoloStatus(repoRoot, f.env), null, 'An explicit repository OFF shadows global yolo');
+  assert.equal((await yoloStatus(null, f.env)).scope, 'global');
+  await writeFile(path.join(f.repo, 'a.txt'), 'changed\n'); await f.setup('commit', '-qam', 'next');
+  const child = f.start('push', 'origin', 'main');
+  await f.ready(child);
+  assert.equal(child.exitCode, null, 'The gate is back on despite global yolo');
 });
