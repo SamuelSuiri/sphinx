@@ -286,7 +286,7 @@ backup behavior, not the primary contract.
 - The fallback is English-oriented; non-English or unusual phrasing may not be detected.
 
 ## Setup script: issue completion
-<!-- itervox-setup: autonomous-release-v5-3 -->
+<!-- itervox-setup: autonomous-release-v5-5 -->
 
 This section defines the current autonomous delivery policy. It supersedes older
 issue comments telling workers to wait for a PR number order, ask the operator
@@ -339,8 +339,9 @@ parallel implementation and processes one merge at a time per repository. Once
 GitHub confirms that merge, the next eligible PR can proceed while the controller
 finishes the Linear Done acknowledgement separately. Do not merge, enable GitHub
 auto-merge, change Linear to Done, or wait inside a coding session for another PR
-or CI. Return the worker slot once the PR and handoff are pushed; the controller
-keeps working. An already merged PR ends implementation for that issue. Do not
+or CI. Return the worker slot once the PR is pushed and the local handoff is
+written; the controller keeps working. An already merged PR ends implementation
+for that issue. Do not
 reopen it or start another implementation run for consumed work.
 
 ### Actual prerequisites
@@ -351,22 +352,27 @@ Write a JSON request outside the Git worktree at
 $ITERVOX_RELEASE_REQUESTS_DIR/{{ issue.identifier }}.json with
 {"requires": [123], "reason": "the concrete missing interface"}
 (substitute actual positive PR numbers). Write it atomically. Preserve and commit
-your useful scoped progress, write the handoff, push and create/update a draft PR
-if useful, and finish normally. Do not ask the operator for a merge order. The
+your useful scoped application progress, write the local handoff, push and
+create/update a draft PR if useful, and finish normally. Do not ask the operator
+for a merge order. The
 controller waits for those PRs to merge and automatically redispatches this issue.
 Never invent a dependency from PR numbering. On the redispatched run, complete
 the implementation and make the PR ready after verification.
 
 ### Complete the PR and release the worker
 
-Implement, verify, and commit the relevant changes. Before the final push, write
-a nonempty handoff at {{ run.handoff_path }} when provided and include it in the
-commit and push. Push the issue branch and create or update its GitHub PR with
+Implement, verify, and commit the relevant application changes. Write a nonempty
+local handoff at {{ run.handoff_path }} when provided. New files under
+.itervox/handoff/ are local continuity notes, ignored by Git. Do not stage, commit,
+or force-add them, even if older instructions requested a handoff commit. Preserve
+existing tracked handoffs and commits; do not rewrite or untrack that history.
+Push the issue branch and create or update its GitHub PR with
 Related to {{ issue.identifier }}
 in the description. Record the actual checks run and any concrete limitations.
 
 Replace an older closing-keyword link in this PR with that related-issue link.
-The implementation run is complete when its changes, handoff, and PR are pushed.
+The implementation run is complete when its changes and PR are pushed and its
+local handoff is written.
 Return the PR URL and check results, without asking whether to merge and without
 waiting for this or another issue's PR to merge. Itervox moves the successful
 implementation to In Review. The release controller schedules the native code
