@@ -77,7 +77,13 @@ This asks which branches and events to check and how deep the questions should g
 - `.sphinxignore`: paths that are never read. **Edit this now** if the repository has private or generated files.
 - `.sphinxcontext.md`: a short description of what the project does, which every reviewer request receives. Leave out secrets.
 
-To set it up without prompts, use `sphinx init --yes --branches main`. Commit the three files to share the policy with collaborators.
+To set it up without prompts:
+
+```sh
+sphinx init --yes --branches main
+```
+
+Commit the three files to share the policy with collaborators.
 
 ### 4. Check the setup (recommended)
 
@@ -120,7 +126,7 @@ Pushing the same change again does not ask again. A pass lasts 24 hours, unless 
 - **Pause check.** Saves your progress and stops the push. Run the same `git push` later to pick up where you left off.
 - **Closing the tab** doesn't stop anything. Git keeps waiting, and the same address works until the 25-minute deadline.
 - **Skip this time.** Lets the push through immediately, even while the review is still running. Skips never count as passing.
-- **`sphinx yolo`** turns checks off for the current repository, or globally when run outside one. Run it again to turn checks back on. `--reason "prod hotfix"` is optional.
+- **`sphinx yolo`** turns checks off for the current repository, or globally when run outside one. Run it again to turn checks back on. A repository's own setting wins over the global one, so turning yolo off inside a repository keeps checks on there even while global yolo is on. `--reason "prod hotfix"` is optional.
 - **`sphinx check`** runs the same check in your terminal instead of the browser.
 
 Every skip and yolo toggle is logged with its reason, and `sphinx status` lists recent ones. If Git exited before you finished, for example because your agent's shell timed out, run the push once more. Never start a second copy while one is still waiting. For more cases, see [troubleshooting](docs/integrations.md#troubleshooting).
