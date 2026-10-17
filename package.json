@@ -21,11 +21,13 @@
     "test": "node scripts/run-suite.mjs",
     "check": "node --check bin/sphinx.js && node scripts/run-suite.mjs",
     "start": "node bin/sphinx.js",
-    "eval": "node eval/run.js"
+    "eval": "node eval/run.js",
+    "postinstall": "node scripts/postinstall.js"
   },
   "files": [
     "bin",
     "src",
+    "scripts/postinstall.js",
     "docs",
     "eval/RESULTS.md",
     "eval/fixtures/known-false-negatives.json",
