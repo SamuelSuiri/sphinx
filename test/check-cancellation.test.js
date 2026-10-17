@@ -34,8 +34,8 @@ process.stdin.on('end',()=>{
   }
   const finish=()=>process.stdout.write(JSON.stringify({type:'result',subtype:'success',structured_output:result}));
   if(phase!==process.env.SPHINX_TEST_HOLD){finish();return;}
-  // Install the handler before announcing readiness, or a prompt cancellation
-  // can arrive while SIGTERM still has its default fatal action.
+  // Install the handler before announcing readiness; otherwise a prompt
+  // cancellation can arrive first and the default action skips the late result.
   process.on('SIGTERM',()=>{fs.writeFileSync(path.join(process.env.SPHINX_TEST_STATE,phase+'-terminated'),'yes');finish();process.exit(0);});
   fs.writeFileSync(path.join(process.env.SPHINX_TEST_STATE,phase+'-ready'),String(process.pid));
   setTimeout(()=>{finish();},60000);

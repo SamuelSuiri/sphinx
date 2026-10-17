@@ -1,22 +1,26 @@
 ---
 itervox_schema_version: 2
-
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: "385e48b25225"
-  active_states: ["Todo", "In Progress"]
-  working_state: "In Progress"
-  completion_state: "In Review"
-  terminal_states: ["Done", "Canceled", "Duplicate"]
-  backlog_states: ["Backlog"]
-
+  project_slug: 385e48b25225
+  active_states:
+  - Todo
+  - In Progress
+  working_state: In Progress
+  completion_state: In Review
+  terminal_states:
+  - Done
+  - Canceled
+  - Duplicate
+  backlog_states:
+  - Backlog
+  failed_state: ''
 polling:
   interval_ms: 60000
-
 agent:
-  command: /opt/homebrew/bin/claude
-  max_turns: 60
+  command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
+  max_turns: 1
   max_concurrent_agents: 3
   max_retries: 5
   turn_timeout_ms: 3600000
@@ -24,100 +28,101 @@ agent:
   stall_timeout_ms: 300000
   profiles:
     implementer:
-      command: /opt/homebrew/bin/claude
+      command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
       soul_file: .itervox/agents/implementer/SOUL.md
       instructions_file: .itervox/agents/implementer/INSTRUCTIONS.md
-      allowed_actions: [comment, comment_pr]
+      allowed_actions:
+      - comment
+      - comment_pr
+      backend: claude
+      permission_mode: bypass
     reviewer:
-      command: /opt/homebrew/bin/claude
+      command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
       soul_file: .itervox/agents/reviewer/SOUL.md
       instructions_file: .itervox/agents/reviewer/INSTRUCTIONS.md
-      allowed_actions: [comment, comment_pr]
+      allowed_actions:
+      - comment
+      - comment_pr
+      backend: claude
+      permission_mode: bypass
     input-responder:
-      command: /opt/homebrew/bin/claude
+      command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
       soul_file: .itervox/agents/input-responder/SOUL.md
       instructions_file: .itervox/agents/input-responder/INSTRUCTIONS.md
-      allowed_actions: [comment, provide_input]
+      allowed_actions:
+      - comment
+      - provide_input
+      backend: claude
+      permission_mode: bypass
     deps-analyzer:
-      command: /opt/homebrew/bin/claude
+      command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
       soul_file: .itervox/agents/deps-analyzer/SOUL.md
       instructions_file: .itervox/agents/deps-analyzer/INSTRUCTIONS.md
-  reviewer_profile: reviewer         # Profile used by the AI Review button and optional auto-review.
-  deps_analyzer_profile: deps-analyzer    # Profile used by the dashboard "Analyze dependencies" button. Empty disables the button.
-  # auto_review: false               # Set to true to auto-review after each successful agent run. Coexists with workspace.auto_clear as of v0.2.0 — the clear fires on terminal tracker state, after the reviewer also completes.
-  # backend_fallback:                 # CORE-054: reroute when a backend hits its usage limit (docs/configuration.md).
-  #   chain: [claude, codex]
-  #   profile_map:                     # each target must exist, be enabled, and run that backend
-  #     implementer: { codex: implementer-codex }
-  #   switch_back: at_reset            # at_reset | on_success | manual
-  #   min_dwell_minutes: 30
-  reviewer_prompt: |
-    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.
+      backend: claude
+      permission_mode: bypass
+    release-reviewer:
+      command: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/claude-opus
+      backend: claude
+      enabled: true
+      permission_mode: bypass
+      soul_file: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/reviewer/SOUL.md
+      instructions_file: /Users/parthbhagat/Downloads/sphinx/.itervox/setup/reviewer/INSTRUCTIONS.md
+      allowed_actions:
+      - comment
+      - comment_pr
+  reviewer_profile: release-reviewer
+  deps_analyzer_profile: deps-analyzer
+  reviewer_prompt: 'You are the automatic code reviewer for {{ issue.identifier }}:
+    {{ issue.title }}.
 
-    ## Your task
+    Follow the release-reviewer profile instructions for this run. Review this issue''s
 
-    Review the pull request created for this issue.
+    existing PR and record a machine-readable verdict. The release controller handles
 
-    1. Run `gh pr diff` to read the PR changes
-    2. Review for: correctness, test coverage, edge cases, security issues, code style
-    3. If you find problems:
-       - Fix them directly in the workspace
-       - Commit and push: `git add -A && git commit -m "fix: reviewer corrections" && git push`
-       - Post a comment on the tracker issue summarising what you fixed
-    4. If the PR is clean:
-       - Post an approval comment: "AI review passed — no issues found"
+    implementation redispatch, merging, and issue completion.
 
-    Be concise. Focus on real bugs, not style preferences.
+
+    {% if issue.description %}## Issue description
+
+    {{ issue.description }}{% endif %}
+
+    {% if issue.comments %}## Issue comments
+
+    {% for comment in issue.comments %}{{ comment.author_name }}: {{ comment.body
+    }}
+
+    {% endfor %}{% endif %}
+
+    '
   available_models:
     claude:
-      - { id: "claude-opus-5-5", label: "Opus 5.5" }
+    - id: claude-opus-5-5
+      label: Opus 5.5
     codex:
-      - { id: "gpt-6-sol", label: "GPT-6-Codex - Stable baseline" }
-
+    - id: gpt-6-sol
+      label: GPT-6-Codex - Stable baseline
+  backend: claude
+  ssh_hosts: []
+  pause_dispatch_when_any_in_state: []
+  auto_review: false
+  backend_fallback: false
+  reviewer_profiles:
+  - release-reviewer
+  inline_input: false
 workspace:
-  root: ~/.itervox/workspaces/sphinx-4167faa9
+  root: /Users/parthbhagat/.itervox/workspaces/sphinx-4167faa9
   worktree: true
   clone_url: https://github.com/parthh01/sphinx.git
   base_branch: main
-
-hooks:
-  # after_create and before_run are no longer needed for clone/reset —
-  # Itervox maintains a bare clone and creates worktrees automatically.
-  # Add custom hooks here if your project needs extra setup.
-  # before_run runs once per worker attempt; after_run runs after each turn.
-  # after_create: |
-  #   pnpm install --frozen-lockfile
-  # before_run: |
-  #   make prepare-agent-workspace
-  # after_run: |
-  #   git status --short
-  # before_remove: |
-  #   tar -czf ../workspace-backup.tgz .
-
+  auto_clear: false
+hooks: {}
 server:
   port: 0
-
-# ── automations (optional) ────────────────────────────────────────────
-# Cron and event-driven helper rules layered on top of your agent profiles.
-# Trigger types: cron, input_required, tracker_comment_added, issue_entered_state,
-#                issue_moved_to_backlog, run_failed, pr_opened, pr_merged,
-#                rate_limited, blockers_resolved.
-# Tip: an automation whose final output starts with [SILENT] posts no tracker
-# comment (run stays in the dashboard logs) — use it for scan-and-found-nothing crons.
-# Full reference: https://itervox.dev/guides/automations/
-# automations:
-#   - id: input-responder
-#     enabled: true
-#     profile: input-responder   # must match an entry under agent.profiles
-#     trigger:
-#       type: input_required
-#     filter:
-#       input_context_regex: "continue|branch|which file|test command"
-#     policy:
-#       auto_resume: true
-#     instructions: |
-#       Answer narrow, low-risk unblocker questions.
-#       If the request is ambiguous, state the safest bounded assumption.
+  host: 127.0.0.1
+dependencies:
+  inferred_gating: false
+  analysis_mode: manual
+  stacked_prs: false
 ---
 
 You are an expert engineer working on **sphinx**.
@@ -159,10 +164,11 @@ Read the issue. Explore the relevant code before making changes.
 
 ---
 
-## Step 2 — Create a branch
+## Step 2 — Inspect the prepared issue branch
 
 ```bash
-git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}
+git branch --show-current
+git status --short
 ```
 
 ---
@@ -175,7 +181,7 @@ Read `CLAUDE.md` to understand project conventions before writing any code:
 cat CLAUDE.md
 ```
 
-If `CLAUDE.md` does not exist, explore the repository structure, identify the dominant patterns and conventions, create `CLAUDE.md` documenting them, and then implement.
+If `CLAUDE.md` does not exist, explore the repository structure and follow its existing conventions. Create instruction files only when the assigned issue requires them.
 
 Detected stacks: Node.js. Follow their conventions as documented in `CLAUDE.md`.
 
@@ -278,3 +284,101 @@ backup behavior, not the primary contract.
 
 - The explicit marker is more reliable.
 - The fallback is English-oriented; non-English or unusual phrasing may not be detected.
+
+## Setup script: issue completion
+<!-- itervox-setup: autonomous-release-v5-3 -->
+
+This section defines the current autonomous delivery policy. It supersedes older
+issue comments telling workers to wait for a PR number order, ask the operator
+whether to merge, or stop the overall workflow at PR creation. If this run
+was explicitly assigned a reviewer or automation role, follow that role's
+instructions and state transitions instead of repeating the implementation.
+
+### Independent parallel work
+
+Read and follow this repository's AGENTS.md and CLAUDE.md when present. Work in
+the issue worktree and branch that Itervox already prepared. Inspect the current
+branch before doing anything; do not create the same branch again, switch to a
+sibling issue's branch, or change another worker's worktree.
+
+Read the issue's CURRENT description and acceptance criteria before continuing.
+An earlier approval or completed implementation may address an older brief.
+Reconcile the existing changes with the current brief; do not treat an old
+approval as evidence that newly added or revised requirements are satisfied.
+Keep the prepared branch even if a title edit generated a new suggested branch
+name in Linear. Preserve and inspect unfinished changes from an interrupted run.
+
+Other issues and pull requests may be active at the same time. Shared files or
+a shared target branch alone are not dependencies. Implement this issue against
+the configured base branch without waiting for unrelated pull requests to merge.
+Do not ask the operator to choose a merge order just because work is concurrent.
+Respect real, explicit issue prerequisites and repository approval requirements.
+If a prerequisite is missing, first inspect the linked issue and repository to
+establish what is actually unavailable; do not infer a blocker from file overlap.
+
+Keep changes scoped to this issue. Follow existing conventions; do not create or
+rewrite shared instruction files, plans, or scaffolding unless this issue needs
+them. Before the final push, refresh the target branch. Resolve routine conflicts
+whose intended behavior is clear from the issue, code, and tests, preserve both
+changes' intended behavior, and rerun the affected checks. Do not overwrite remote
+work or copy an unmerged sibling implementation to bypass a real prerequisite.
+
+### Tests and the integration lane
+
+Run the repository's relevant tests, build, lint, and type checks. Inspect failures
+and repair those caused by the change. A failure that also occurs on the base
+branch is still a failed release gate: diagnose and fix it when tractable instead
+of declaring it safe to ignore. Preserve the intended test coverage; do not mute
+tests or relax CI to manufacture a passing result. Ordinary CI failures and Git
+conflicts return to you automatically with evidence from the release controller.
+For a repair run, use the existing branch and PR, refresh the target branch,
+resolve the reported problem, rerun verification, and push the new result.
+
+The release controller owns automatic merging and issue completion. It allows
+parallel implementation and processes one merge at a time per repository. Once
+GitHub confirms that merge, the next eligible PR can proceed while the controller
+finishes the Linear Done acknowledgement separately. Do not merge, enable GitHub
+auto-merge, change Linear to Done, or wait inside a coding session for another PR
+or CI. Return the worker slot once the PR and handoff are pushed; the controller
+keeps working. An already merged PR ends implementation for that issue. Do not
+reopen it or start another implementation run for consumed work.
+
+### Actual prerequisites
+
+File overlap is not a prerequisite. If code truly requires an unmerged PR in this
+same repository, establish the specific missing interface from source and tests.
+Write a JSON request outside the Git worktree at
+$ITERVOX_RELEASE_REQUESTS_DIR/{{ issue.identifier }}.json with
+{"requires": [123], "reason": "the concrete missing interface"}
+(substitute actual positive PR numbers). Write it atomically. Preserve and commit
+your useful scoped progress, write the handoff, push and create/update a draft PR
+if useful, and finish normally. Do not ask the operator for a merge order. The
+controller waits for those PRs to merge and automatically redispatches this issue.
+Never invent a dependency from PR numbering. On the redispatched run, complete
+the implementation and make the PR ready after verification.
+
+### Complete the PR and release the worker
+
+Implement, verify, and commit the relevant changes. Before the final push, write
+a nonempty handoff at {{ run.handoff_path }} when provided and include it in the
+commit and push. Push the issue branch and create or update its GitHub PR with
+Related to {{ issue.identifier }}
+in the description. Record the actual checks run and any concrete limitations.
+
+Replace an older closing-keyword link in this PR with that related-issue link.
+The implementation run is complete when its changes, handoff, and PR are pushed.
+Return the PR URL and check results, without asking whether to merge and without
+waiting for this or another issue's PR to merge. Itervox moves the successful
+implementation to In Review. The release controller schedules the native code
+reviewer when a review is needed and its persistent budget permits it. Review
+findings return to implementation automatically; a passing review is tied to
+the actual pushed commit. The release controller checks that review and CI,
+queues repairs when needed, merges when eligible, and marks the issue Done after
+GitHub confirms the merge. That confirmed merge completes the issue lifecycle.
+
+Ask a focused question only for a genuine missing requirement, inaccessible
+credential, required human approval, or conflict whose intended behavior cannot
+be determined from the available evidence. Routine Git operations, ordinary
+conflicts, another open PR, and a completed PR handoff are not by themselves
+reasons to ask for input.
+

@@ -12,5 +12,5 @@ Captures of the landing page and the real local questionnaire. All are headless 
   - `workspace-run.log`: output of `workspace.mjs`: horizontal-scroll and 44px target checks per width, the walkthrough labels, and the copied clipboard text.
   - `qafter-*.png`: the real `src/browser-page.js` rendered with **scripted** states. No model was called.
   - `installer-transcript.txt`: a real `sphinx install --no-launch` run in a temporary home and Git config.
-- The checkpoint example is synthetic and labeled a product preview. Showing change scope and linked diffs in the real questionnaire is CRI-49.
+- The checkpoint example is synthetic and labeled a product preview. The real questionnaire's change-scope and linked-diff view landed separately in CRI-49 (#9) and is not captured here.
 - Scripts: `workspace.mjs` (landing captures and interaction checks), `shoot.mjs`, `questionnaire.mjs`, and `contrast.mjs` (WCAG ratios for the color tokens). The capture scripts need `playwright-core` and a local Chrome.

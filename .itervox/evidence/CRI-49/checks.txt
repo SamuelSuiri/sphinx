@@ -1,0 +1,14 @@
+Scripted reviewer fixture (not live-model evidence). Chrome headless.
+PASS no page-level horizontal overflow at 1440px
+PASS draft answer preserved after browsing 3 files, filters, context expansion and an evidence link
+PASS current question unchanged while browsing
+PASS no page-level horizontal overflow at 360px
+PASS primary touch targets >= 44px at 360px
+PASS draft preserved after switching views at 360px
+PASS no page-level horizontal overflow at 390px
+PASS primary touch targets >= 44px at 390px
+PASS draft preserved after switching views at 390px
+PASS no page-level horizontal overflow at 768px
+PASS primary touch targets >= 44px at 768px
+PASS draft preserved after switching views at 768px
+PASS passed state does not claim the whole change was reviewed

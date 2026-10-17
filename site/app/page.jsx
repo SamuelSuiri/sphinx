@@ -7,7 +7,11 @@ const NPM = 'https://www.npmjs.com/package/sphinx-understand';
 const stages = [
   ['A configured Git operation starts', 'You, or the coding agent working for you, commit or push in a way your policy covers, like a push to main. Git waits.'],
   ['An independent reviewer reads the change', 'A separate model investigates the diff and the code it touches with read-only tools, without the conversation that wrote it.'],
-  ['You answer and apply feedback', 'Answer in a local browser page. On macOS it opens in a background tab; elsewhere Sphinx prints the local link. Miss a concept and you get an explanation and a new scenario.'],
+  ['You answer and apply feedback', <>
+    Answer in a local browser page. On macOS it opens in a background tab; on Linux, WSL, or over SSH, Sphinx prints
+    a link for you to open (<a href={`${REPO}#what-happens-when-you-push`}>remote setup</a>). Miss a concept and you
+    get an explanation and a new scenario.
+  </>],
   ['The same Git operation continues', 'Once you pass, Git verifies the exact change and the original commit or push continues. Nothing to retry.'],
 ];
 
@@ -76,9 +80,9 @@ export default function Home() {
         <section className="demo wrap" id="checkpoint" tabIndex={-1} aria-label="Example checkpoint">
           <CheckpointDemo />
           <p className="demo-note">
-            Proposed interface. The real questionnaire asks the questions and gives the explanations shown here; showing
-            change scope and linked diffs beside them is planned, not shipped. All data is synthetic, and the example
-            says nothing about reviewer coverage, speed, or accuracy.
+            Synthetic example with scripted answers. The real questionnaire shows the checkpoint's changed files and the
+            diff lines the reviewer read for each question; that view is in the GitHub source and not yet in the
+            published npm package (0.1.0). The example says nothing about reviewer coverage, speed, or accuracy.
           </p>
         </section>
 
