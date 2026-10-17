@@ -285,7 +285,8 @@ test('the page serves the frozen change and verified question evidence without d
   const home = await mkdtemp(path.join(tmpdir(), 'sphinx-browser-change-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const repoRoot = path.join(home, 'repo'); await mkdir(repoRoot);
-  const env = { ...process.env, SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+  // Only what Git needs: inheriting the runner's environment would carry CI=true, which disables the browser questionnaire.
+  const env = { PATH: process.env.PATH, HOME: home, SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
   const git = async (...args) => (await exec('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd: repoRoot, env })).stdout.trim();
   await git('init', '-b', 'main'); await git('config', 'user.name', 'Fixture'); await git('config', 'user.email', 'fixture@example.invalid');
   await writeFile(path.join(repoRoot, 'app.js'), 'const seen = new Set();\nexport function add(id) {\n  seen.add(id);\n}\n');
