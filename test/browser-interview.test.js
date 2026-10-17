@@ -12,6 +12,7 @@ import { createSessionStore } from '../src/sessions.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import { claimCheckpointDialog, checkpointTerminalStatus } from '../src/terminal-launch.js';
 import { recentOverrides } from '../src/overrides.js';
+import { textStream } from '../src/stream.js';
 
 const q = { id: 'duplicate', concept: 'idempotency', prompt: 'Can a retry duplicate the insert? <script>PRIVATE_SCRIPT</script>', choices: ['Yes', 'No'], expectedAnswer: 'PRIVATE_KEY', rationale: 'PRIVATE_RUBRIC', evidence: [{ path: 'app.js', reason: 'The insert is unconditional.' }] };
 async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {} } = {}) {
@@ -254,4 +255,22 @@ test('Skip this time lets Git continue during review, logs the reason, and never
   assert.equal(entry.kind, 'skip'); assert.equal(entry.reason, 'prod is down'); assert.equal(entry.id, f.snapshot.id);
   assert.equal((await f.store.read(f.snapshot.id)).status, 'skipped');
   assert.deepEqual(await f.store.pending(f.snapshot.repoRoot), [], 'A skipped check never resurfaces as pending');
+});
+
+test('grader feedback streams into the page while grading, then the saved feedback replaces the draft', async t => {
+  let release, seenDraft;
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = await fixture(t, { grade: async () => {
+    textStream()?.('{"questionValid":true,"verdict":"incorrect","feedback":"There is no dur');
+    await gate;
+    return { verdict: 'correct', feedback: 'There is no durable deduplication.', followUp: null };
+  } });
+  const done = f.present(); await f.waitFor('question');
+  await f.post('answer', { response: 'Yes.' });
+  for (let i = 0; i < 300 && !seenDraft; i++) { seenDraft = f.interview.state.messages.find(item => item.streaming); if (!seenDraft) await delay(10); }
+  assert.equal(seenDraft?.text, 'There is no dur', 'Partial feedback reached the page before grading finished');
+  release();
+  assert.equal((await done).status, 'passed');
+  const feedback = f.interview.state.messages.filter(item => item.kind === 'feedback');
+  assert.deepEqual(feedback.map(item => [item.text, Boolean(item.streaming)]), [['There is no durable deduplication.', false]]);
 });

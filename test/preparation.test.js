@@ -154,6 +154,16 @@ test('repository and global yolo pause background review without launching worke
   assert.equal((await schedulePreparation(f.options)).status, 'scheduled');
 });
 
+test('an explicit repository yolo OFF keeps background review on while global yolo is on', async t => {
+  const f = await fixture(t), { root } = await repository(f.cwd);
+  await toggleYolo({ repoRoot: null, env: f.env });
+  assert.equal((await schedulePreparation(f.options)).status, 'skipped');
+  await toggleYolo({ repoRoot: root, env: f.env });
+  assert.equal((await schedulePreparation(f.options)).status, 'scheduled');
+  assert.equal((await runPreparation({ ...f.options, store: f.store })).status, 'ready');
+  assert.equal(f.launches.length, 1); assert.equal(f.generated.length, 1);
+});
+
 test('turning yolo on supersedes an already scheduled worker before any reviewer call', async t => {
   const f = await fixture(t), scheduled = await schedulePreparation(f.options);
   await toggleYolo({ env: f.env });
