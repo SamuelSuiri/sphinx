@@ -468,7 +468,7 @@ test('whole-review deadline and cancellation stop an in-flight provider without 
   let providerSignal;
   const keepAlive = setTimeout(() => {}, 1000);
   try {
-    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.02 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { code: 'REVIEWER_TIMEOUT' });
+    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.2 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { code: 'REVIEWER_TIMEOUT' });
     assert.equal(providerSignal.aborted, true);
     const controller = new AbortController();
     const promise = runReviewer({ ...options, workspace: workspace(), signal: controller.signal, runModel: async args => { await args.beforeCall(); controller.abort(new Error('human cancelled')); return finish(); } });
