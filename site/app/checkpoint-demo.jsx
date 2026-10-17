@@ -106,11 +106,13 @@ function StepBody({ step }) {
   }
 }
 
+const excerptCount = files.filter(f => f.hunks.length).length;
+
 function DiffView({ file, highlight }) {
   if (!file.hunks.length) {
     return (
       <div className="diff-empty">
-        <p>This file is part of the 35-file change, but its diff is not included in this excerpt. The excerpt bundles only the 3 files relevant to the question.</p>
+        <p>This file is part of the {change.files}-file change, but its diff is not included in this excerpt. The excerpt bundles only the {excerptCount} files this example’s questions refer to.</p>
       </div>
     );
   }
@@ -170,8 +172,24 @@ export default function CheckpointDemo() {
 
   const q = questions[steps[step].question];
   const file = files.find(f => f.path === selected);
-  const relevantCount = files.filter(f => f.relevant).length;
-  const shown = scope === 'relevant' ? files.filter(f => f.relevant) : files;
+  // "Relevant" follows the current question's evidence, not the whole excerpt.
+  const relevantPaths = new Set(q.evidence.map(key => evidence[key].path));
+  const relevantCount = relevantPaths.size;
+  const shown = scope === 'relevant' ? files.filter(f => relevantPaths.has(f.path)) : files;
+  const outside = !relevantPaths.has(file.path);
+
+  const goTo = next => {
+    const nextQ = questions[steps[next].question];
+    // Entering a new question re-anchors the diff on its evidence if the open file is not part of it.
+    if (nextQ !== q && !nextQ.evidence.some(key => evidence[key].path === selected)) {
+      const ref = evidence[nextQ.evidence[0]];
+      setSelected(ref.path);
+      setHighlight(ref);
+    } else if (nextQ !== q && highlight && !nextQ.evidence.some(key => evidence[key] === highlight)) {
+      setHighlight(null);
+    }
+    setStep(next);
+  };
 
   const openFile = path => {
     setSelected(path);
@@ -216,13 +234,13 @@ export default function CheckpointDemo() {
           {shown.map(f => (
             <li key={f.path}>
               <button type="button" className="file-row" aria-current={f.path === selected ? 'true' : undefined} onClick={() => openFile(f.path)}>
-                <span className="path" title={f.path}>{f.relevant && <span className="rel" aria-label="relevant">◆ </span>}{f.path}</span>
+                <span className="path" title={f.path}>{relevantPaths.has(f.path) && <span className="rel" aria-label="relevant to this question">◆ </span>}{f.path}</span>
                 <span className="stat"><span className="add">+{fmt(f.additions)}</span> <span className="del">−{fmt(f.deletions)}</span></span>
               </button>
             </li>
           ))}
         </ul>
-        <p className="files-note">Diffs for the {relevantCount} relevant files are in this excerpt. Other files list their size only.</p>
+        <p className="files-note">◆ marks files this question’s evidence cites. Diffs for {excerptCount} files are in this excerpt; other files list their size only.</p>
       </nav>
 
       <section className="ws-diff" aria-label={`Diff: ${file.path}`} tabIndex={-1} ref={diffRef}>
@@ -231,6 +249,7 @@ export default function CheckpointDemo() {
           <span className="stat"><span className="add">+{fmt(file.additions)}</span> <span className="del">−{fmt(file.deletions)}</span></span>
         </div>
         {file.role && <p className="diff-role">{file.role}</p>}
+        {outside && <p className="diff-outside">Browsing a file outside this question’s evidence.</p>}
         <DiffView file={file} highlight={highlight} />
       </section>
 
@@ -260,10 +279,10 @@ export default function CheckpointDemo() {
         </div>
         <div className="step-actions">
           {steps[step].action
-            ? <button type="button" className="button primary" onClick={() => setStep(step + 1)}>{steps[step].action}</button>
-            : <button type="button" className="button primary" onClick={() => setStep(0)}>Restart</button>}
-          <button type="button" className="button quiet" disabled={step === 0} onClick={() => setStep(step - 1)}>Back</button>
-          {steps[step].action && step > 0 && <button type="button" className="button quiet" onClick={() => setStep(0)}>Restart</button>}
+            ? <button type="button" className="button primary" onClick={() => goTo(step + 1)}>{steps[step].action}</button>
+            : <button type="button" className="button primary" onClick={() => goTo(0)}>Restart</button>}
+          <button type="button" className="button quiet" disabled={step === 0} onClick={() => goTo(step - 1)}>Back</button>
+          {steps[step].action && step > 0 && <button type="button" className="button quiet" onClick={() => goTo(0)}>Restart</button>}
           <span className="step-count">Step {step + 1} of {steps.length}</span>
         </div>
       </section>

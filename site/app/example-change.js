@@ -1,5 +1,5 @@
 // Synthetic example change for the landing-page preview. Not a real repository.
-// Only the three question-relevant files carry diffs; the rest list their size only.
+// Only the three files the questions cite carry diffs; the rest list their size only.
 // Totals are derived from this list, so the header always matches it.
 
 /** A hunk line is [kind, text] with kind ' ', '+' or '-'. Line numbers are derived. */
@@ -17,7 +17,7 @@ function hunk(id, oldStart, newStart, context, lines) {
   return { id, header: `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${context ? ` ${context}` : ''}`, rows };
 }
 
-const relevant = [
+const excerpted = [
   {
     path: 'src/webhooks/payment-webhook.js',
     role: 'Webhook now enqueues instead of charging',
@@ -94,7 +94,6 @@ const relevant = [
   },
 ].map(file => ({
   ...file,
-  relevant: true,
   additions: file.hunks.flatMap(h => h.rows).filter(row => row.kind === '+').length,
   deletions: file.hunks.flatMap(h => h.rows).filter(row => row.kind === '-').length,
 }));
@@ -132,9 +131,9 @@ const others = [
   ['docker-compose.yml', 23, 4],
   ['package.json', 6, 2],
   ['package-lock.json', 2020, 306],
-].map(([path, additions, deletions]) => ({ path, additions, deletions, relevant: false, hunks: [] }));
+].map(([path, additions, deletions]) => ({ path, additions, deletions, hunks: [] }));
 
-export const files = [...relevant, ...others].sort((a, b) => a.path.localeCompare(b.path));
+export const files = [...excerpted, ...others].sort((a, b) => a.path.localeCompare(b.path));
 
 export const change = {
   title: 'Move billing to background jobs',

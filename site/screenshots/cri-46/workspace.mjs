@@ -52,8 +52,16 @@ for (let i = 0; i < 6; i++) {
     assert.equal(await page.locator('.file-row').count(), 35);
     await page.getByRole('button', { name: /src\/legacy\/billing-cron\.js/ }).click();
     await ws.screenshot({ path: `${outDir}/step-3-all-files-excerpt.png` });
+    assert.ok(await page.locator('.diff-outside').isVisible(), 'outside-evidence note on a browsed file');
     assert.match(await page.locator('.step-count').textContent(), /Step 3 of 7/);
     await page.getByRole('button', { name: /Relevant to this question/ }).click();
+  }
+  if (i === 4) {
+    // Question 2 cites two files; the scope count and filter follow it, not the whole excerpt.
+    assert.match(await page.locator('.q-scope').textContent(), /^2 relevant files · out of 35 changed/);
+    assert.match(await page.getByRole('button', { name: /Relevant to this question/ }).textContent(), /2$/);
+    assert.equal(await page.locator('.file-row').count(), 2);
+    assert.equal(await page.locator('.diff-outside').count(), 0);
   }
   const action = page.locator('.step-actions .button.primary');
   console.log(`step ${i + 1}:`, await label(), '→', await action.textContent());
