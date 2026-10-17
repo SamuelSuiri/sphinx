@@ -191,7 +191,7 @@ The agent integration shares state with Git, so there is one assessment per chan
 
 Each form lets you answer, learn the concept, dispute the premise, or pause. Pausing or dismissing keeps the assessment incomplete. It does not reopen on unrelated shell commands; retrying a blocked Git operation queues it again. The integration associates queued checks with the agent session, including when the shell uses `cd` or `git -C`.
 
-The local questionnaire also works for shell/GUI pushes outside supported coding agents. Platforms without a reliable background browser opener print the local URL instead of taking focus. SSH users can forward the loopback port or use `sphinx check` explicitly. If presentation is unavailable, Sphinx leaves the checkpoint pending and stops Git. Native after-tool callbacks or `sphinx check` can then complete the fallback check, but cannot revive a Git process that already exited.
+The local questionnaire also works for shell/GUI pushes outside supported coding agents. Platforms without a reliable background browser opener print the local URL instead of taking focus. SSH users can forward the same loopback port or use `sphinx check` explicitly; see [What happens when you push](#what-happens-when-you-push). If presentation is unavailable, Sphinx leaves the checkpoint pending and stops Git. Native after-tool callbacks or `sphinx check` can then complete the fallback check, but cannot revive a Git process that already exited.
 
 Example question for a change introducing background jobs:
 
