@@ -466,9 +466,10 @@ test('Pi compaction must pass the shared beforeCall budget before any summary is
 
 test('whole-review deadline and cancellation stop an in-flight provider without accepting late results', async () => {
   let providerSignal;
-  const keepAlive = setTimeout(() => {}, 1000);
+  const keepAlive = setTimeout(() => {}, 5000);
   try {
-    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.02 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { code: 'REVIEWER_TIMEOUT' });
+    // The deadline must outlast reviewer setup so the provider is actually in flight when it fires.
+    await assert.rejects(runReviewer({ ...options, config: { ...config, timeoutSeconds: 0.5 }, workspace: workspace(), runModel: async args => { await args.beforeCall(); providerSignal = args.signal; return new Promise(() => {}); } }), { code: 'REVIEWER_TIMEOUT' });
     assert.equal(providerSignal.aborted, true);
     const controller = new AbortController();
     const promise = runReviewer({ ...options, workspace: workspace(), signal: controller.signal, runModel: async args => { await args.beforeCall(); controller.abort(new Error('human cancelled')); return finish(); } });

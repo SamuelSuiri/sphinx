@@ -237,4 +237,5 @@ After commits, merges, rewrites, and checkouts, Sphinx schedules a detached revi
 - `sphinx status` shows preparation progress; `sphinx prepare` schedules it explicitly; `sphinx prepare --retry` retries a failed job (failures never retry on their own).
 - Preparation and the push check share one assessment, lock, question set, and usage count. A change to source, destination, policy, ignore rules, or context discards prepared work.
 - Set `backgroundPreparation: false` in `config.json` or `.sphinxconfig` to opt out. A repository cannot re-enable preparation disabled machine-wide.
+- While yolo is on, preparation is paused: no new model request starts, although one already in progress may finish.
 - A first push, a branch without local tracking history, or a push to an unexpected destination needs a cold review at push time. Pre-commit checks always review on demand. Run `git fetch` if remote history is missing.
