@@ -22,7 +22,7 @@ The Git hook is the checkpoint. It works on its own, including for pushes from a
 | Cursor 1.7+ | Local browser questionnaire | Browser, after Git exits | Local user hooks |
 | OpenCode 1.x | Local browser questionnaire | Browser, after Git exits | Local OpenCode plugin |
 
-Client integrations are separate from the reviewer model. Pi, Cursor, and OpenCode do not supply reviewer authentication; choose a Codex/Claude CLI route or OpenRouter (see [configuration](configuration.md#reviewer-models)).
+Client integrations are separate from the reviewer model. Pi, Cursor, and OpenCode do not supply reviewer authentication; choose a Codex/Claude CLI route, OpenRouter, or an OpenAI-compatible endpoint (see [configuration](configuration.md#reviewer-models)).
 
 ## Choosing and opening clients
 

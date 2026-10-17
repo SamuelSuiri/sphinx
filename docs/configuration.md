@@ -16,7 +16,7 @@ This page is the reference for reviewer models, usage limits, repository policy,
 | What | Where |
 | --- | --- |
 | Machine-wide settings | `~/.config/sphinx/config.json` |
-| OpenRouter key | `~/.config/sphinx/credentials.json` (mode `0600`) |
+| OpenRouter key and OpenAI-compatible endpoint | `~/.config/sphinx/credentials.json` (mode `0600`) |
 | Machine-wide ignore patterns | `~/.config/sphinx/ignore` |
 | Skip and yolo log | `~/.config/sphinx/overrides.jsonl` |
 | Repository policy | `.sphinxconfig` (legacy `.sphinx.json` is read when `.sphinxconfig` is absent) |
@@ -59,9 +59,11 @@ Reinstalling keeps saved routes unless you choose a replacement. Updating Sphinx
 
 These use your signed-in Codex or Claude CLI and consume that account's allowance. You need a recent CLI with access to the selected model; see [Codex models](https://learn.chatgpt.com/docs/models) and [Claude model configuration](https://code.claude.com/docs/en/model-config). The economy presets keep the same economical model for all tiers; investigation effort and question count still scale with change size. The Claude `haiku` alias follows the available Haiku model. Neither preset upgrades to a more expensive model.
 
+**These routes bill your signed-in plan by default.** Sphinx removes `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, and similar variables from the reviewer CLI's environment, so a key in your shell cannot silently switch reviews to API credits. If the CLI is not signed in with a Claude or ChatGPT plan, the check stops with instructions. To let the CLIs use API keys instead, run `sphinx config --cli-billing api`.
+
 Each call is a fresh, isolated CLI invocation used as a model transport underneath the embedded [Pi SDK](https://pi.dev/docs/latest/sdk) reviewer. It does not reuse your coding conversation. See [architecture](architecture.md#independent-investigation-and-compaction).
 
-Pi, Cursor, and OpenCode integrations present checkpoints but do not supply a reviewer model. Their users pick a Codex/Claude CLI route or OpenRouter.
+Pi, Cursor, and OpenCode integrations present checkpoints but do not supply a reviewer model. Their users pick a Codex/Claude CLI route, OpenRouter, or an OpenAI-compatible endpoint.
 
 ### OpenRouter routes
 
@@ -72,6 +74,17 @@ Filtered evidence goes to OpenRouter and its selected upstream provider, billed 
 - **Paid consent.** Guided setup labels paid choices. Noninteractive commands need `--allow-paid` or an existing `allowPaid: true` setting. Free routes send zero-price provider limits even when another route permits paid models. There are no automatic paid fallbacks.
 - **Free router.** `openrouter-free` is best-effort. Its model selection, rate limits, and tool support can interrupt a check; see [OpenRouter limits](https://openrouter.ai/docs/api_reference/limits). Sphinx does not switch providers or upgrade models after a failure.
 - **Endpoint compatibility.** Requests need endpoint support for tools and output parameters. Capability metadata is a compatibility check, not a guarantee; unusable output leaves the check pending. See OpenRouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs).
+
+### OpenAI-compatible endpoints
+
+Any OpenAI chat-completions-compatible endpoint (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, and others) can run reviews. It must support tool calls and JSON-schema structured output.
+
+```sh
+sphinx auth --provider openai --base-url https://api.openai.com/v1   # prompts for the key (hidden)
+sphinx config --provider openai --model gpt-5-mini                    # or per size: --large openai:<model>
+```
+
+The key is stored next to its URL and only ever sent there. Plain `http://` is allowed only for localhost, where a key is optional. For scripts, set `SPHINX_OPENAI_BASE_URL`, plus `SPHINX_OPENAI_API_KEY` unless the endpoint is localhost. Sphinx never reads `OPENAI_API_KEY`.
 
 ### Reference pricing and quality
 
@@ -138,7 +151,7 @@ Other limits always apply:
 
 OpenRouter counts hidden reasoning within `maxOutputTokens`; a higher ceiling can prevent truncation and permits more billed output. Codex and Claude CLIs get concise-output instructions and local timeout and output-byte limits, but their interfaces have no equivalent hard token cap. Small and medium changes request low reasoning effort; large changes request medium effort where the CLI supports it.
 
-**Retries.** Provider failures never retry automatically and never switch providers. Cache warming is disabled. The reviewer stops after three consecutive invalid responses. Correctable tool or question-validation errors are returned to Pi as feedback within any explicit cap. If a review fails, the questionnaire offers to continue from saved work; Pause is the default. From a terminal, `sphinx check --id <id>` resumes saved work, and `--retry-review` gives a failed, questionless review one further attempt (with an explicit cap, up to `maxModelCalls` additional requests). Setup, credential, stale-code, and evidence-loading failures must be fixed first.
+**Retries.** Provider failures never retry automatically and never switch providers. Cache warming is disabled. Without a call cap, the reviewer stops after three consecutive invalid responses. Correctable tool or question-validation errors are returned to Pi as feedback within any explicit cap. If a review fails, the questionnaire offers to continue from saved work; Pause is the default. From a terminal, `sphinx check --id <id>` resumes saved work, and `--retry-review` gives a failed, questionless review one further attempt (with an explicit cap, up to `maxModelCalls` additional requests). Setup, credential, stale-code, and evidence-loading failures must be fixed first.
 
 Call caps bound requests and byte limits bound evidence. Neither is a dollar or subscription ceiling. **Set provider-side spending limits for paid accounts.**
 

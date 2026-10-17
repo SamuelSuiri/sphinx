@@ -25,7 +25,7 @@ Questions cover behavior, failure modes, and invariants rather than file names o
 - **Requirements.** Node.js 22.19 or newer, Git, and macOS, Linux, or WSL. Native Windows is not supported yet.
 - **It applies to every repository on this machine.** `sphinx install` sets your global Git `core.hooksPath`. Your existing hooks still run first. Right after install, pushes to `main` or `master` in any repository are checked. `sphinx init` lets you adjust that for each repository.
 - **It blocks Git.** A matching push waits until you pass, pause, or skip, for up to 25 minutes. Your coding agent's shell may time out sooner.
-- **You need a reviewer model account.** This can be a signed-in Codex or Claude Code CLI, which uses that plan's allowance. It can also be an OpenRouter API key, which bills separately and is required even for free models. Sphinx has no account or hosted service of its own.
+- **You need a reviewer model account.** This can be a signed-in Codex or Claude Code CLI, which uses that plan's allowance. It can also be an OpenRouter API key, which bills separately and is required even for free models, or any [OpenAI-compatible endpoint](docs/configuration.md#openai-compatible-endpoints). Sphinx has no account or hosted service of its own.
 - **Code leaves your machine.** The reviewer provider receives the changed code and related files from the commit, your answers, and `.sphinxcontext.md`. Ignored files are never read, and `.env` files, private keys, and common credential files are excluded by default. Add your own sensitive paths to `.sphinxignore` before your first check. Ignore rules match file paths, so they will not catch a secret pasted into ordinary source.
 - **There is no default cap on model calls.** A typical check makes about 5 to 8 requests, plus about one per answer. You can [set a cap](docs/configuration.md#model-calls-tokens-and-limits), and you should set spending limits with paid providers.
 - **This is practice, not a security gate.** Anyone with local access, including a coding agent, can bypass hooks or get outside help. Passing does not prove who wrote the code or that you understood it unaided. The examiner is an LLM and can be wrong.
@@ -52,7 +52,7 @@ You should see:
 ✓ Claude Code native questionnaire hooks and Sphinx MCP server installed.
 ```
 
-Use `--preset codex-economy` for Codex, or `--agents none` if you don't use a coding agent. Other presets, OpenRouter, and custom routes are covered in [configuration](docs/configuration.md#reviewer-models).
+Use `--preset codex-economy` for Codex, or `--agents none` if you don't use a coding agent. Other presets, OpenRouter, OpenAI-compatible endpoints, and custom routes are covered in [configuration](docs/configuration.md#reviewer-models).
 
 ### 2. Load Sphinx in your coding agent (required if you use one)
 
@@ -105,10 +105,10 @@ Git prints the questionnaire address and waits:
 Sphinx: understanding check needed for refs/heads/main (medium change).
 Sphinx: Git is waiting for your answers in the local Sphinx questionnaire. It will continue automatically after you pass. Do not start another copy of this Git operation.
 Sphinx questionnaire: http://127.0.0.1:56114/fSdZM7yg…
-Sphinx: open the local URL above to answer. No application was brought to the foreground.
+Sphinx: questionnaire opened in a background browser tab. Your coding window stays in place.
 ```
 
-On macOS, the page opens in a background browser tab. Elsewhere, open the printed address. Over SSH, see [remote machines](docs/integrations.md#remote-machines-ssh-and-ci). Questions can take a moment while the reviewer reads the change, and the page shows its progress as it works. Answer each question with a prediction and a short reason. When you pass:
+On macOS, the page opens in a background browser tab. Elsewhere, Git prints `open the local URL above to answer` instead, so open the printed address. Over SSH, see [remote machines](docs/integrations.md#remote-machines-ssh-and-ci). Questions can take a moment while the reviewer reads the change, and the page shows its progress as it works. Answer each question with a prediction and a short reason. When you pass:
 
 ```text
 Sphinx: understanding check complete. Continuing this Git operation.
@@ -131,7 +131,7 @@ Pushing the same change again does not ask again. A pass lasts 24 hours, unless 
 
 Every skip and yolo toggle is logged with its reason, and `sphinx status` lists recent ones. If Git exited before you finished, for example because your agent's shell timed out, run the push once more. Never start a second copy while one is still waiting. For more cases, see [troubleshooting](docs/integrations.md#troubleshooting).
 
-Your answers go straight from the page to Sphinx. Your coding agent only sees whether the check passed.
+Your answers go straight from the page to Sphinx. Your coding agent sees only the check's status, progress, and usage, never your answers.
 
 ## Limits and cost
 
@@ -158,7 +158,7 @@ Version 0.1 checks local commits and pushes only. It does not cover web merges, 
 | `pending` | List unfinished checks |
 | `yolo` | Toggle skipping checks |
 | `config` | Change reviewer models and limits |
-| `auth` | Save or replace your OpenRouter key |
+| `auth` | Save your OpenRouter key or an OpenAI-compatible endpoint |
 | `prepare` | Schedule background preparation (`--retry` after a failure) |
 | `activate` | Open configured coding agents without reinstalling |
 | `uninstall` | Remove Sphinx integrations, keeping unrelated settings |
