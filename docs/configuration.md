@@ -11,6 +11,7 @@ This page is the reference for reviewer models, usage limits, repository policy,
 - [Files Sphinx never reads](#files-sphinx-never-reads)
 - [Background preparation](#background-preparation)
 - [GitHub commit status and pull requests](#github-commit-status-and-pull-requests)
+- [Browser or terminal](#browser-or-terminal)
 
 ## Settings locations
 
@@ -265,3 +266,15 @@ Set these in `config.json` for yourself or in `.sphinxconfig` for a repository. 
 It uses the [GitHub CLI](https://cli.github.com) and its existing login, in a detached process after Git continues, so it never slows or blocks a push. If `gh` is missing or not signed in, the remote isn't GitHub, or any request fails, nothing is posted and nothing else changes. The worker waits a few minutes for the push to land and up to 15 minutes for a pull request to be opened; the result of the last run is in `github/last.json` in Sphinx's data directory.
 
 **Requiring it for a team.** In the repository's branch protection or ruleset, add `sphinx/understanding` as a required status check. Pull requests whose head commit was not pushed through a passing check then cannot merge. The status is self-reported by the pusher's machine: it shows the check happened, but it is not a cryptographic proof, and anyone with write access can set a commit status.
+
+## Browser or terminal
+
+`interface` in `config.json` chooses where a push's questions appear. Set it with `sphinx config --interface <auto|browser|terminal>`.
+
+| Value | Behavior |
+| --- | --- |
+| `auto` (default) | The browser on a local Mac, where Sphinx can open it in the background. Elsewhere (SSH, Linux, WSL), inline in the terminal you ran Git from |
+| `terminal` | Always the terminal |
+| `browser` | Always the browser (on Linux and over SSH, open the printed local URL) |
+
+Inline questions need a terminal a person is looking at. When Git runs from a coding agent's shell there isn't one, so Sphinx opens a terminal window on a desktop instead, and falls back to the browser when it can't do either. `interface` is a personal setting; it can't be set in `.sphinxconfig` and doesn't change what a check asks.

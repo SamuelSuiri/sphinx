@@ -17,7 +17,6 @@ import { activateIntegrations } from './activation.js';
 import { checkbox } from './checkbox.js';
 import { agentHook } from './agent.js';
 import { createSessionStore } from './sessions.js';
-import { prepareInteractiveCheck } from './check-recovery.js';
 import { parseRoute } from './routing.js';
 import { createTerminal, withProgress } from './terminal.js';
 import { HELP, printHelp } from './help.js';
@@ -26,7 +25,8 @@ import { runGitGate } from './git-gate.js';
 import { loadProjectContext } from './repo-context.js';
 import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 import { modelUsageText, modelLimitText, readUsage, summarizeUsage, printUsage, usageDir } from './usage.js';
-import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
+import { toggleYolo, yoloStatus, recentOverrides, recordOverride } from './overrides.js';
+import { runTerminalCheck } from './terminal-check.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const POLICY_FLAGS = ['branches', 'events', 'level', 'distance', 'remotes'];
@@ -37,7 +37,7 @@ const OPTIONS = {
   init: ['yes', 'json', 'context', 'suggest', 'apply', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json', 'distance', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
+  status: ['json'], config: ['json', 'distance', 'interface', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
   mcp: [], yolo: ['json', 'reason'], usage: ['json'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -135,7 +135,7 @@ export function applyInstallOptions(current, values) {
   }
   if (values['max-model-calls'] !== undefined) config.maxModelCalls = parseModelCalls(values['max-model-calls']);
   if (values['max-output-tokens'] !== undefined) config.maxOutputTokens = parseOutputTokens(values['max-output-tokens']);
-  for (const key of ['provider', 'model', 'level', 'distance', 'mode']) if (values[key] !== undefined) config[key] = values[key];
+  for (const key of ['provider', 'model', 'level', 'distance', 'interface', 'mode']) if (values[key] !== undefined) config[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) config[key] = splitList(values[key]);
   if (values.provider !== undefined || values.model !== undefined) {
     if (values.provider !== undefined && values.model === undefined) {
@@ -399,9 +399,10 @@ async function checkCommand(values) {
     if (values['retry-review']) await store.retryReview(session.id, config);
     json(await start()); return 0;
   }
-  const terminal = ui(); terminal.section('Understanding check'); terminal.paragraph('This is open-book. Inspect the code when useful; explain the behavior in your own words.');
   const controller = new AbortController(), { signal } = controller;
+  const waitingGit = process.env.SPHINX_WAITING_GIT === '1';
   return withReadline(async ask => {
+    const terminal = ui();
     if (values['retry-review']) {
       await store.retryReview(session.id, config, { signal });
       signal.throwIfAborted();
@@ -409,29 +410,17 @@ async function checkCommand(values) {
         ? 'Resuming the review with no model-call limit. Previous usage remains counted.'
         : `Starting a new review attempt with up to ${config.maxModelCalls} additional model calls, including grading. Previous usage remains counted.`);
     }
-    let state = await prepareInteractiveCheck({
-      start: () => start(signal), inspect: async () => store.public(await store.read(session.id)),
-      authorizeMore: () => store.retryReview(session.id, config, { signal }),
-      validate: () => validateCheckpoint(session.snapshot, config), config,
-      choose: createPrompts({ ask, ui: terminal }).choose, ui: terminal,
-      waitingGit: process.env.SPHINX_WAITING_GIT === '1', signal,
+    return runTerminalCheck({
+      store, session: await store.read(session.id), config, ask, terminal, signal, waitingGit,
+      choose: createPrompts({ ask, ui: terminal }).choose,
+      validate: () => validateCheckpoint(session.snapshot, config),
       planProviders: await planProviders().catch(() => []),
-      switchRoute: provider => store.switchRoute(session.id, config, provider, { signal }),
+      // A skip lets the waiting Git operation through; it is logged like the browser's.
+      skip: async reason => {
+        await store.skip(session.id);
+        await recordOverride({ kind: 'skip', repoRoot: repo.root, target: session.snapshot.target.ref, id: session.id, reason });
+      },
     });
-    signal.throwIfAborted();
-    if (!state) return 1;
-    while (state.status !== 'passed') {
-      printSession(state, terminal);
-      const answer = (await ask('\nYour answer: ')).trim();
-      if (answer === '/quit') { terminal.note('Progress saved. Run sphinx check when you are ready to continue.'); return 1; }
-      if (!answer) continue;
-      const dispute = answer.startsWith('/dispute '), learn = answer === '/learn';
-      if (answer === '/dispute') { terminal.warning('Add a reason: /dispute <what is ambiguous or unsupported>'); continue; }
-      if (answer.startsWith('/') && !dispute && !learn) { terminal.warning('Use /learn, /dispute <reason>, or /quit; otherwise enter your answer.'); continue; }
-      state = await withProgress(learn ? 'Preparing an explanation and new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: state.question.id, signal }));
-      signal.throwIfAborted();
-    }
-    signal.throwIfAborted(); printSession(state, terminal); return 0;
   }, { controller });
 }
 
@@ -475,7 +464,7 @@ async function statusCommand(command, values) {
 export function parseCommandLine(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, interface: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
@@ -548,13 +537,14 @@ export async function main(argv) {
     return result.checks.every(check => check.ok) ? 0 : 1;
   }
   if (command === 'config') {
-    if ([...MODEL_FLAGS, 'distance'].some(key => values[key] !== undefined)) {
+    if ([...MODEL_FLAGS, 'distance', 'interface'].some(key => values[key] !== undefined)) {
       const current = await loadConfig(), previousMaxModelCalls = current.maxModelCalls;
       const config = applyInstallOptions(current, values), maxModelCalls = config.maxModelCalls;
       await saveConfig(config);
       const result = { scope: 'global', path: getPaths().config, previousMaxModelCalls, maxModelCalls, config };
       if (values.json) { json(result); return 0; }
       const terminal = ui();
+      if (values.interface !== undefined) terminal.success(`Questions appear ${config.interface === 'terminal' ? 'in the terminal (the browser is the fallback)' : config.interface === 'browser' ? 'in the browser' : 'in the browser on a local Mac, otherwise in the terminal'}.`);
       if (values['max-model-calls'] !== undefined) terminal.success(`Saved machine-wide limit: ${modelLimitText(maxModelCalls)} (previously ${modelLimitText(previousMaxModelCalls)}).`);
       if (values['max-output-tokens'] !== undefined) terminal.success(`Saved output allowance: ${config.maxOutputTokens} tokens per request, including model reasoning. Model calls: ${modelLimitText(maxModelCalls)}.`);
       if (MODEL_FLAGS.some(key => !['max-model-calls', 'max-output-tokens'].includes(key) && values[key] !== undefined)) {

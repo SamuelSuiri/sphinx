@@ -241,7 +241,7 @@ test('interactive CLI stays open after review failure until the human pauses or 
   assert.match(resumed.output(), /original Git operation is waiting/);
   await rm(marker);
   resumed.child.stdin.write('1\n');
-  await resumed.waitFor('Your answer:');
+  await resumed.waitFor('› ');
   resumed.child.stdin.write('No. The existing ID is rejected before insertion.\n');
   assert.equal(await resumed.done, 0);
   assert.match(resumed.output(), /Understanding check complete/);

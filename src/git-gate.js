@@ -8,6 +8,7 @@ import { yoloStatus, recordOverride } from './overrides.js';
 import { dropContext } from './working-context.js';
 import { collectGarbage } from './storage.js';
 import { scheduleStamp } from './github.js';
+import { prefersTerminal, runGitTerminalCheck } from './git-interview.js';
 
 async function snapshotsFor({ event, args, input, cwd, config, env }) {
   if (event === 'pre-push') return pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config, env });
@@ -30,7 +31,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   store: providedStore, readConfig = loadConfig, snapshotsFor: collectSnapshots = snapshotsFor,
   revalidate = revalidateSnapshot, present, readYolo = yoloStatus, logOverride = recordOverride,
   queue = queuePresentation, claim = claimPresentation, listRequests = listPresentations,
-  output = line => process.stderr.write(`${line}\n`), stamp = scheduleStamp,
+  output = line => process.stderr.write(`${line}\n`), stamp = scheduleStamp, askInTerminal = runGitTerminalCheck,
 } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return 0;
   signal?.throwIfAborted();
@@ -86,7 +87,9 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     const interviewEnv = interviewEnvironment(cwd, env);
     for (let index = 0; index < requests.length; index++) {
       signal?.throwIfAborted();
-      const result = await (present || browser.present)({ request: requests[index], env: interviewEnv, signal });
+      // Headless sessions (or interface: terminal) ask in the terminal first; the browser is the fallback.
+      let result = !present && prefersTerminal(config, { env }) ? await askInTerminal({ request: requests[index], env: interviewEnv, signal, cwd }) : null;
+      if (!result || result.status === 'unavailable') result = await (present || browser.present)({ request: requests[index], env: interviewEnv, signal });
       signal?.throwIfAborted();
       if (result?.status === 'unavailable') {
         // Native callbacks only run after Git exits. Keep that explicit fallback

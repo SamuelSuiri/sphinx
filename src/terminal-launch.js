@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { getPaths, readJson, writeJson } from './config.js';
 
 const WORKER = fileURLToPath(new URL('./terminal-worker.js', import.meta.url));
-const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
+export const CLI = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
 const ID = /^[a-f0-9]{64}$/;
 const TOKEN = /^[a-f0-9-]{36}$/;
 const STARTUP_MS = 30000;
@@ -282,7 +282,7 @@ export async function runCheckpointTerminal({ recordFile, token, env = process.e
     if (Number.isInteger(child.pid)) { running.childPid = child.pid; childWrite = writeJson(recordFile, running).catch(() => {}); }
   });
   await childWrite;
-  const result = { ...running, status: code === 0 ? 'passed' : 'pending', updatedAt: Date.now(), finishedAt: Date.now() };
+  const result = { ...running, status: code === 0 ? 'passed' : code === 3 ? 'skipped' : 'pending', updatedAt: Date.now(), finishedAt: Date.now() };
   if ((await readJson(recordFile, null))?.token === token) await writeJson(recordFile, result);
   return { status: result.status, code };
 }

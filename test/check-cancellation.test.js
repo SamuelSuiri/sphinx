@@ -115,7 +115,7 @@ test('SIGINT during the first interactive review cancels its subprocess and reco
 test('cancellation while the final grade is in flight cannot save a late correct result or release waiting Git', { timeout: 45000 }, async t => {
   for (const cancel of ['SIGINT', 'EOF']) await t.test(cancel, async t => {
     const f = await fixture(t, 'grade');
-    await f.until(() => f.output().includes('Your answer:'));
+    await f.until(() => f.output().includes('› '));
     f.child.stdin.write('No. The existing ID is checked before insertion.\n');
     await f.ready();
     if (cancel === 'EOF') f.child.stdin.end(); else f.child.kill('SIGINT');

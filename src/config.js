@@ -9,7 +9,7 @@ export const PROVIDERS = Object.freeze(['openrouter', 'codex', 'claude', 'openai
 
 export const DEFAULT_CONFIG = {
   version: 1, enabled: true, provider: 'openrouter', model: 'openrouter/free',
-  level: 'standard', distance: 'high', mode: 'block', events: ['pre-push'],
+  level: 'standard', distance: 'high', mode: 'block', interface: 'auto', events: ['pre-push'],
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
   maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false, cliBilling: 'plan',
@@ -75,7 +75,7 @@ export function validateConfig(config) {
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
   for (const key of ['enabled', 'allowPaid', 'backgroundPreparation', 'workingContext']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
-  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], distance: ['high','low'], mode: ['block'], cliBilling: ['plan','api'] })) {
+  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], distance: ['high','low'], interface: ['auto','browser','terminal'], mode: ['block'], cliBilling: ['plan','api'] })) {
     if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
@@ -180,8 +180,8 @@ export function stableStringify(value) {
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-export function policyHash({ github, ...config }) {
-  // GitHub stamps happen after a check, so they are not part of it.
+export function policyHash({ github, interface: _interface, ...config }) {
+  // GitHub stamps and where the questions appear are not part of the check.
   // The call ceiling controls spending, not what the human must understand.
   // Normalize it independently of DEFAULT_CONFIG so allowance edits preserve
   // checkpoint identity within the same assessment contract.
