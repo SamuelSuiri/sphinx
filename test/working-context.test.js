@@ -32,7 +32,7 @@ test('curation sends only unseen filtered diffs, updates one context, and starts
   assert.equal((await curateContext({ repoRoot: r.root, sourceRef: SOURCE, base: r.base, head: first, config: r.config, env: r.env, call })).status, 'updated');
   assert.match(prompts[0].prompt, /worker\.js/);
   assert.doesNotMatch(prompts[0].prompt, /hunter2|\.env/, 'Ignored credential files are never sent');
-  assert.equal(prompts[0].config.model, 'openrouter/free');
+  assert.deepEqual([prompts[0].config.provider, prompts[0].config.model], [r.config.models.small.provider, r.config.models.small.model], 'The curator uses the small-change model the user chose');
   assert.equal((await curateContext({ repoRoot: r.root, sourceRef: SOURCE, base: r.base, head: first, config: r.config, env: r.env, call })).status, 'current');
   assert.equal(prompts.length, 1, 'No call when the context is already current');
 
@@ -48,7 +48,7 @@ test('curation sends only unseen filtered diffs, updates one context, and starts
   assert.match(prompts[2].prompt, /CURRENT CONTEXT \(DATA\): \{"overview":"","items":\[\]\}/, 'A rewrite starts from scratch');
 });
 
-test('the brief withholds items whose files changed after curation and is unavailable without a key or when disabled', async t => {
+test('the brief withholds items whose files changed after curation, and curation can be turned off', async t => {
   const r = await repo(t);
   const head = await r.commit({ 'worker.js': 'retry(job);\n', 'retry.js': 'export const retry = f => f();\n' }, 'add retry');
   const call = async () => ({ overview: 'Adds retries.', items: [{ kind: 'map', text: 'worker calls retry', files: ['worker.js'] }, { kind: 'watch', text: 'retry has no limit', files: ['retry.js'] }] });
@@ -57,8 +57,6 @@ test('the brief withholds items whose files changed after curation and is unavai
   const brief = await briefFor({ repoRoot: r.root, sourceRef: SOURCE, head: later, env: r.env });
   assert.deepEqual(brief.items.map(item => item.text), ['worker calls retry'], 'Later work replaced retry.js, so its note is withheld');
   assert.equal(brief.withheld, 1);
-  const noKey = { ...r.env }; delete noKey.OPENROUTER_API_KEY;
-  assert.equal((await curateContext({ repoRoot: r.root, sourceRef: SOURCE, base: r.base, head: later, config: r.config, env: noKey, call })).status, 'unavailable');
   assert.equal((await curateContext({ repoRoot: r.root, sourceRef: SOURCE, base: r.base, head: later, config: { ...r.config, workingContext: false }, env: r.env, call })).status, 'unavailable');
   await dropContext({ repoRoot: r.root, sourceRef: SOURCE, env: r.env });
   assert.equal(await briefFor({ repoRoot: r.root, sourceRef: SOURCE, head: later, env: r.env }), null);

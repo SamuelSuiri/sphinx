@@ -290,6 +290,6 @@ test('the background worker curates the working context once before preparing, w
   const ready = await runPreparation({ ...f.options, env, store: f.store, curate: async ({ prompt, config }) => { curated.push({ prompt, model: config.model }); return { overview: 'Bumps the count.', items: [] }; } });
   assert.equal(ready.status, 'ready');
   assert.equal(curated.length, 1);
-  assert.equal(curated[0].model, 'openrouter/free');
+  assert.equal(curated[0].model, f.config.models.small.model);
   assert.match(curated[0].prompt, /count = 2/, 'The curator sees the unpushed change');
 });

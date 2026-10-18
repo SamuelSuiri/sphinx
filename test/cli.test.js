@@ -547,6 +547,12 @@ test('native resume trims a legacy small-change questionnaire without regenerati
 
 test('post-commit preparation investigates before push and the native gate reuses the exact prepared questions', { timeout: 30000 }, async t => {
   const f = await fixture(t, { background: true });
+  // Background curation of the working context runs on the same small-change
+  // route, and a failed call is followed by a plan sign-in check. Count only
+  // review and grading calls below.
+  const curator = call => call.input.includes('You keep a brief orientation for a code reviewer');
+  const allCalls = f.calls;
+  f.calls = async () => (await allCalls()).filter(call => !curator(call) && call.argv[0] !== 'auth');
   // Establish local tracking metadata before installing hooks; no inference.
   f.git('push', '-u', 'origin', 'main');
   f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
@@ -571,6 +577,9 @@ test('post-commit preparation investigates before push and the native gate reuse
   assert.equal(status.preparation?.status, 'ready');
   assert.equal(status.pending.length, 1);
   assert.equal(status.pending[0].status, 'active');
+  const all = await allCalls();
+  assert.ok(all.some(curator), 'The working context was curated in the background');
+  assert.equal(all.filter(curator).some(call => call.input.includes('do-not-transmit-92bfa')), false);
   const generated = await f.calls();
   assert.equal(generated.length, 3, 'Reviewer requested a diff, read its observation, then audited the questions before any push');
   assert.ok(generated.every(call => call.input.includes(projectContext)));
