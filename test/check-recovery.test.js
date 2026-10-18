@@ -276,3 +276,13 @@ test('switching a check drops unanswered investigation but keeps questions, usag
   assert.deepEqual(after.questions, before.questions, 'Questions survive a mid-grading switch');
   await assert.rejects(f.store.switchRoute(snapshot.id, f.config, 'openrouter'), /Only Claude Code or Codex/);
 });
+
+test('a coding-agent CLI failure names the CLI and offers the other installed plan', async t => {
+  const cliFailure = Object.assign(new Error('Codex reported: something broke.'), { code: 'PROVIDER_FAILED' });
+  const f = await fixture(t, { generate: async (attempt, options) => { await options.beforeCall(); if (attempt === 1) throw cliFailure; return { questions: [question] }; } });
+  await f.store.switchRoute(snapshot.id, f.config, 'codex');
+  await f.run(prompt => prompt.choices[0].value, { planProviders: ['claude', 'codex'], switchRoute: provider => f.store.switchRoute(snapshot.id, f.config, provider), start: () => f.store.start(snapshot.id, f.config) });
+  assert.equal(f.prompts[0].title, 'Codex could not run this review');
+  assert.deepEqual(f.prompts[0].choices.filter(choice => choice.value.startsWith('switch-')).map(choice => choice.value), ['switch-claude'], 'Never offers the CLI that just failed');
+  assert.equal((await f.store.read(snapshot.id)).route.provider, 'claude');
+});

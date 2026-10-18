@@ -61,15 +61,17 @@ button.primary{background:var(--amber);color:#fff;border-color:var(--amber);marg
 button:hover:not(:disabled){background:#eee7dc}button.primary:hover:not(:disabled){background:#8b4208}
 .disputing textarea{border-color:#8d271e}.disputing #submit{background:#8d271e;border-color:#8d271e}
 button.quiet{border-color:transparent;color:var(--muted)}button.quiet:hover:not(:disabled){color:var(--ink)}
-.hint{font-size:12px;color:var(--muted);margin:10px 0 0}.recovery{display:grid;gap:12px;margin:0 0 20px}.recovery button{text-align:left;width:100%}.recovery p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+.hint{font-size:12px;color:var(--muted);margin:10px 0 0}.recovery-reason{margin:-8px 0 18px;padding:10px 14px;border-left:2px solid #8d271e;background:#f8ece9;color:#6f1f18;font-size:13.5px;white-space:pre-wrap;overflow-wrap:anywhere}.recovery{display:grid;gap:12px;margin:0 0 20px}.recovery button{text-align:left;width:100%}.recovery p{margin:4px 0 0;font-size:13px;color:var(--muted)}
 header .tools{display:flex;gap:4px}
-.score{position:relative;display:flex;align-items:center;gap:10px;margin-left:auto;margin-right:12px;padding:4px 14px 4px 4px;border:1px solid var(--line);border-radius:999px;background:#fff}
-.score .ring{width:38px;height:38px;transform:rotate(-90deg)}.score .track{fill:none;stroke:#efe5d8;stroke-width:3.5}.score .arc{fill:none;stroke:var(--amber);stroke-width:3.5;stroke-linecap:round;stroke-dasharray:0 100;transition:stroke-dasharray .6s ease}
-.score.good .arc{stroke:var(--pass)}.score.calibrating .arc{stroke:#a59c90}.score.calibrating .track{stroke-dasharray:2 2.4}
-.score-value{position:absolute;left:4px;width:38px;text-align:center;font:600 11.5px var(--mono);font-variant-numeric:tabular-nums}
-.score-copy{display:flex;flex-direction:column;line-height:1.25}.score-label{font-size:13px;font-weight:600}.score-meta{font-size:11.5px;color:var(--muted);white-space:nowrap}
-@media(prefers-reduced-motion:reduce){.score .arc{transition:none}}
-@media(max-width:600px){.score{margin-right:4px;padding-right:10px}.score-meta{display:none}}
+.score{display:grid;grid-template-columns:auto auto;grid-template-rows:auto auto;column-gap:14px;align-items:center;margin-left:auto;margin-right:14px;padding:6px 16px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.score-head{display:flex;flex-direction:column;line-height:1.15;grid-row:1/3}.score-label{font-size:11.5px;color:var(--muted)}.score-value{font:600 20px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.score-value.pending{font-family:inherit;font-size:13px;font-weight:500;line-height:1.6;color:var(--muted)}
+.score-dots{display:flex;gap:4px}.score-dots i{width:11px;height:11px;border-radius:50%;border:1.5px solid #cfc4b6;background:transparent}
+.score-dots i.hit{background:var(--pass);border-color:var(--pass)}.score-dots i.miss{border-color:#c0574a;background:#f6e2df}
+.score-dots i.fresh{animation:pop .5s ease}@keyframes pop{0%{transform:scale(.3)}70%{transform:scale(1.25)}100%{transform:scale(1)}}
+.score-meta{font-size:11px;color:var(--muted);white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.score-dots i.fresh{animation:none}}
+@media(max-width:600px){.score{margin-right:4px;padding:4px 10px}.score-meta{display:none}}
 .skipbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid var(--line);font-size:14px}.skipbar p{flex-basis:100%;margin:0;color:var(--muted);font-size:13px}
 .skipbar input{flex:1;min-width:180px;font:inherit;font-size:14px;padding:6px 10px;border:1px solid #b9afa3;border-radius:6px;background:#fff;color:var(--ink)}
 button.danger{background:#8d271e;border-color:#8d271e;color:#fff}button.danger:hover:not(:disabled){background:#6f1f18}
@@ -88,7 +90,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 #question-pane{overflow-y:auto}.conversation{flex:none;overflow:visible;padding-right:0}.evidence{max-height:none;overflow:visible}}
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
 </style></head><body><div class="shell">
-<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><span>Understanding check</span></div><div id="score" class="score" hidden title="First-try understanding in this repository"><svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="15"/><circle id="score-arc" class="arc" cx="18" cy="18" r="15" pathLength="100"/></svg><span id="score-value" class="score-value"></span><span class="score-copy"><span id="score-label" class="score-label"></span><span id="score-meta" class="score-meta"></span></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
+<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><span>Understanding check</span></div><div id="score" class="score" hidden><span class="score-head"><span class="score-label">Your understanding</span><strong id="score-value" class="score-value"></strong></span><span id="score-dots" class="score-dots" role="img"></span><span id="score-meta" class="score-meta"></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
 <section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div><dd id="usage"></dd></div></dl>
 <p id="scope-note" class="scope-note">Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.</p><p class="scope-note scope-short">Checkpoint range only — not necessarily a whole pull request.</p></section>
 <nav class="tabs" role="tablist" aria-label="Questionnaire views"><button id="tab-question" role="tab" type="button" aria-controls="question-pane" aria-selected="true">Question</button><button id="tab-files" role="tab" type="button" aria-controls="files-pane" aria-selected="false">Files</button><button id="tab-diff" role="tab" type="button" aria-controls="diff-pane" aria-selected="false">Diff</button></nav>
@@ -109,7 +111,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 <div id="conversation" class="conversation" aria-label="Understanding check conversation">
 <ol id="messages" aria-label="Conversation"></ol>
 <p id="feedback" class="feedback" hidden></p><section id="question" hidden><p id="prompt" class="question"></p><ul id="choices" hidden></ul></section>
-<p id="message" class="message" role="status" hidden></p><div id="status" class="status" role="status" aria-live="polite">Connecting to your local checkpoint…</div><div id="recovery" class="recovery" hidden></div>
+<p id="message" class="message" role="status" hidden></p><div id="status" class="status" role="status" aria-live="polite">Connecting to your local checkpoint…</div><p id="recovery-reason" class="recovery-reason" hidden></p><div id="recovery" class="recovery" hidden></div>
 </div>
 <section id="evidence" class="evidence" aria-labelledby="evidence-title" hidden><h2 id="evidence-title">Code behind this question</h2><ul id="evidence-list"></ul><p id="evidence-note" class="pane-note"></p></section>
 <div id="composer" class="composer"><p id="error" class="error" role="alert" hidden></p>
@@ -127,18 +129,23 @@ const usageText=(u,t)=>{if(!t)return '';const total=(t.input||0)+(t.output||0);i
  return [compact(total)+' tokens',...(t.cost!=null?[t.cost===0?'$0':t.cost<0.0001?'<$0.0001':t.cost<0.01?'$'+t.cost.toFixed(4):'$'+t.cost.toFixed(2)]:[]),...(u?.limit!=null?[u.calls+'/'+u.limit+' calls']:[])].join(' · ');};
 const PROVIDERS={openrouter:'OpenRouter',openai:'Endpoint',claude:'Claude Code',codex:'Codex'};
 const routeText=r=>r?.provider?[PROVIDERS[r.provider]||r.provider,r.model].filter(Boolean).join(' '):'';
-// The repository's understanding score: first-try accuracy, streak, and skip rate.
+// The repository's understanding score, shown rather than explained: one dot
+// per recent answer (green = right first time), filling empty slots while calibrating.
+let lastScored=-1;
 function scoreView(sc){
  $('score').hidden=!sc;if(!sc)return;
- const pct=sc.calibrating?Math.round(100*sc.answered/(sc.answered+sc.needed)):sc.accuracy;
- $('score').className='score'+(sc.calibrating?' calibrating':sc.accuracy>=80?' good':'');
- $('score-arc').style.strokeDasharray=pct+' 100';
- $('score-value').textContent=sc.calibrating?sc.answered+'/'+(sc.answered+sc.needed):sc.accuracy+'%';
- $('score-label').textContent=sc.calibrating?'Calibrating':'Understanding · first try';
- const meta=sc.calibrating?['score after '+(sc.answered+sc.needed)+' answers']:[sc.answered+' questions'];
- if(!sc.calibrating&&sc.streak>1)meta.push(sc.streak+' in a row');
- if(sc.skipRate!=null)meta.push('skipped '+sc.skipRate+'%');
- $('score-meta').textContent=meta.join(' · ');
+ const recent=sc.recent||[],slots=sc.calibrating?sc.answered+sc.needed:Math.max(recent.length,1);
+ const dots=[];
+ for(let i=0;i<slots;i++){const dot=document.createElement('i'),hit=recent[i];
+  if(i<recent.length){dot.className=hit?'hit':'miss';dot.title=hit?'Right first time':'Needed another try';}else dot.title='Not answered yet';
+  if(i===recent.length-1&&lastScored!==-1&&sc.answered>lastScored)dot.className+=' fresh';
+  dots.push(dot);}
+ $('score-dots').replaceChildren(...dots);
+ $('score-dots').setAttribute('aria-label',recent.filter(Boolean).length+' of the last '+recent.length+' answers right first time');
+ $('score-value').textContent=sc.calibrating?'warming up':sc.accuracy+'%';$('score-value').className='score-value'+(sc.calibrating?' pending':'');
+ $('score').title=sc.calibrating?'Answer '+sc.needed+' more question'+(sc.needed===1?'':'s')+' in this repository to get a score.':'Share of questions in this repository you answered right on the first try.';
+ const meta=[];if(sc.streak>1)meta.push(sc.streak+' in a row');if(sc.skipRate!=null)meta.push('skipped '+sc.skipRate+'%');
+ $('score-meta').textContent=meta.join(' · ');lastScored=sc.answered;
 }
 const resize=()=>{$('response').style.height='auto';$('response').style.height=Math.min($('response').scrollHeight||76,180)+'px';};
 function controls(){
@@ -193,7 +200,7 @@ function render(state){
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;
- text('status',label+(retry?' · Needs another answer':''));$('message').className='message'+(state.phase==='passed'?' passed':'');scope(state,branch,label);$('status').className='status phase-'+state.phase+(state.phase==='working'?' busy':'')+(retry?' retry':'');if(state.phase==='question'&&!retry)$('status').hidden=true;text('message',state.message);text('error',state.error); if(state.phase==='passed'&&String(state.message||'').includes('\\n')){const [lead,...rest]=state.message.split('\\n');text('message',lead);text('status',rest.join(' '));$('status').className='status passed-note';}
+ text('status',label+(retry?' · Needs another answer':''));$('message').className='message'+(state.phase==='passed'?' passed':'');scope(state,branch,label);$('status').className='status phase-'+state.phase+(state.phase==='working'?' busy':'')+(retry?' retry':'');if(state.phase==='question'&&!retry)$('status').hidden=true;text('message',state.message);text('error',state.phase==='recovery'?'':state.error);text('recovery-reason',state.phase==='recovery'?state.error:''); if(state.phase==='passed'&&String(state.message||'').includes('\\n')){const [lead,...rest]=state.message.split('\\n');text('message',lead);text('status',rest.join(' '));$('status').className='status passed-note';}
  history(messages);
  // Live activity already shows progress; avoid stacking generic spinners under it.
  if(state.phase==='working'&&(messages.at(-1)?.kind==='activity'||messages.at(-1)?.streaming)){$('status').hidden=true;$('message').hidden=true;}

@@ -3,7 +3,7 @@ import { reportUsage } from './usage.js';
 import { textStream, readCompletionStream } from './stream.js';
 import { MAX_REVIEWER_TOOL_CALLS } from './reviewer-limits.js';
 
-const incomplete = 'No completion was recorded; Sphinx did not retry or switch models.';
+const incomplete = 'No completion was recorded; Sphinx did not retry automatically.';
 const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 const RETRYABLE_ERROR_TYPES = new Set(['rate_limit_exceeded', 'provider_overloaded', 'provider_unavailable', 'server', 'timeout']);
 // The transport itself never retries. Pi may return this sanitized feedback to

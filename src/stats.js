@@ -7,6 +7,7 @@ import { getPaths, readJson, writeJson } from './config.js';
 // the first try, questions answered, the current first-try streak, and how
 // many checks were completed or skipped. Updates are best-effort.
 export const CALIBRATION_QUESTIONS = 5;
+const RECENT = 10;
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const statsFile = (repoRoot, env = process.env) => path.join(getPaths(env).home, 'stats', `${digest(repoRoot)}.json`);
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -17,6 +18,7 @@ export async function readStats(repoRoot, env = process.env) {
     version: 1, repoRoot,
     answered: count(stored?.answered), firstTry: count(stored?.firstTry), streak: count(stored?.streak), bestStreak: count(stored?.bestStreak),
     completed: count(stored?.completed), skipped: count(stored?.skipped), updatedAt: stored?.updatedAt ?? null,
+    recent: Array.isArray(stored?.recent) ? stored.recent.filter(item => typeof item === 'boolean').slice(-RECENT) : [],
   };
 }
 
@@ -30,7 +32,7 @@ async function update(repoRoot, env, change) {
 /** One question's first graded answer: correct on the first try, or not. */
 export const recordAnswer = ({ repoRoot, correct, env = process.env }) => update(repoRoot, env, stats => {
   const streak = correct ? stats.streak + 1 : 0;
-  return { ...stats, answered: stats.answered + 1, firstTry: stats.firstTry + (correct ? 1 : 0), streak, bestStreak: Math.max(stats.bestStreak, streak) };
+  return { ...stats, answered: stats.answered + 1, firstTry: stats.firstTry + (correct ? 1 : 0), streak, bestStreak: Math.max(stats.bestStreak, streak), recent: [...stats.recent, Boolean(correct)].slice(-RECENT) };
 });
 
 /** A check that asked questions was completed, or the human skipped it. */
@@ -47,5 +49,6 @@ export function scoreSummary(stats) {
     accuracy: calibrating ? null : Math.round((stats.firstTry / stats.answered) * 100),
     streak: stats.streak, bestStreak: stats.bestStreak,
     skipRate: checks ? Math.round((stats.skipped / checks) * 100) : null, checks,
+    recent: stats.recent,
   };
 }

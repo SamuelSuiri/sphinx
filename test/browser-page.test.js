@@ -335,13 +335,15 @@ test('the context line names the model reviewing this check', () => {
   assert.equal(p.nodes.usage.textContent, 'Claude Code haiku');
 });
 
-test('the header shows the repository score, or calibration progress before it exists', () => {
+test('the score shows one dot per recent answer, empty slots while warming up, and the percentage once scored', () => {
   const p = page();
-  p.update({ ...question, score: { calibrating: true, answered: 2, needed: 3, accuracy: null, streak: 2, skipRate: null } });
+  p.update({ ...question, score: { calibrating: true, answered: 2, needed: 3, accuracy: null, streak: 2, skipRate: null, recent: [true, false] } });
   assert.equal(p.nodes.score.hidden, false);
-  assert.deepEqual([p.nodes['score-value'].textContent, p.nodes['score-label'].textContent], ['2/5', 'Calibrating']);
-  p.update({ ...question, sequence: 2, score: { calibrating: false, answered: 34, needed: 0, accuracy: 82, streak: 3, skipRate: 6 } });
+  assert.deepEqual(p.nodes['score-dots'].children.map(dot => dot.className), ['hit', 'miss', '', '', '']);
+  assert.equal(p.nodes['score-value'].textContent, 'warming up');
+  p.update({ ...question, sequence: 2, score: { calibrating: false, answered: 34, needed: 0, accuracy: 82, streak: 3, skipRate: 6, recent: [true, true, false, true] } });
   assert.equal(p.nodes['score-value'].textContent, '82%');
-  assert.equal(p.nodes['score-meta'].textContent, '34 questions · 3 in a row · skipped 6%');
-  assert.equal(p.nodes['score-arc'].style.strokeDasharray, '82 100');
+  assert.equal(p.nodes['score-dots'].children.length, 4);
+  assert.match(p.nodes['score-dots'].children.at(-1).className, /hit fresh/, 'A newly graded answer pops in');
+  assert.equal(p.nodes['score-meta'].textContent, '3 in a row · skipped 6%');
 });

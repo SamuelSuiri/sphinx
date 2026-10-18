@@ -9,10 +9,14 @@ export const isRateLimit = (error, route) => ['openrouter', 'openai'].includes(r
   && (error?.status === 429 || error?.errorType === 'rate_limit_exceeded');
 
 export const PLAN_NAMES = { claude: ['Claude Code', 'Claude'], codex: ['Codex', 'ChatGPT'] };
-export const switchChoices = (providers, from) => providers.map(provider => ({
+const ROUTE_NAMES = { openrouter: 'OpenRouter', openai: 'your API endpoint', claude: 'Claude Code', codex: 'Codex' };
+export const switchChoices = (providers, from) => providers.filter(provider => provider !== from).map(provider => ({
   value: `switch-${provider}`, label: `Switch this check to ${PLAN_NAMES[provider][0]}`,
-  description: `Continue on your signed-in ${PLAN_NAMES[provider][1]} plan instead of ${from === 'openai' ? 'your API endpoint' : 'OpenRouter'}. Only this check changes; your saved model settings stay the same.`,
+  description: `Continue on your signed-in ${PLAN_NAMES[provider][1]} plan instead of ${ROUTE_NAMES[from] ?? from}. Only this check changes; your saved model settings stay the same.`,
 }));
+/** A coding-agent CLI that failed to run; another plan can take over. */
+export const isCliFailure = (error, route) => ['claude', 'codex'].includes(route?.provider)
+  && ['PROVIDER_FAILED', 'PROVIDER_NO_OUTPUT', 'PROVIDER_AUTH', 'EVALUATOR_TIMEOUT'].includes(error?.code);
 
 function retryable(error, before, state, minimum) {
   if (setupCodes.has(error.code) || setupTypes.has(error.errorType)) return false;
@@ -75,13 +79,19 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
         });
       }
       // Offer the user's own coding-agent plan first when an API route is rate limited.
-      const switches = switchRoute && isRateLimit(error, state.route) ? switchChoices(planProviders, state.route.provider) : [];
+      const switches = switchRoute && (isRateLimit(error, state.route) || isCliFailure(error, state.route)) ? switchChoices(planProviders, state.route.provider) : [];
       choices.unshift(...switches);
       if (!choices.length) ui.note('Resolve the reported setup or evidence problem before resuming. Repeating this attempt is not offered here.');
+      const failedCli = isCliFailure(error, state.route) ? PLAN_NAMES[state.route.provider][0] : null;
       choices.push({ value: 'pause', label: 'Pause this check', description: 'Save progress without making another model request. The Git operation remains unapproved.' });
       const action = await choose({
-        title: 'Review did not finish',
-        description: waitingGit
+        // Lead with the cause when it is a rate limit, so the choices make sense.
+        title: isRateLimit(error, state.route) ? `${state.route.provider === 'openai' ? 'Your API endpoint' : 'OpenRouter'} is rate limiting this review`
+          : failedCli ? `${failedCli} could not run this review` : 'Review did not finish',
+        description: isRateLimit(error, state.route)
+          ? `It returned too many requests (HTTP 429). ${switches.length ? 'Switch this check to your coding plan, or wait and continue.' : 'Wait a moment, then continue.'}`
+          : failedCli ? `${switches.length ? `Switch this check to ${PLAN_NAMES[switches[0].value.slice(7)][0]}, or pause and` : 'Pause and'} check that ${failedCli} is installed, signed in, and up to date. The details are below.`
+          : waitingGit
           ? 'The original Git operation is waiting while this terminal stays open, subject to its time limit. Choose how to continue.'
           : 'Choose how to continue. Nothing is retried automatically.',
         choices, current: 'pause',

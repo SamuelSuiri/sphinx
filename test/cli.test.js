@@ -157,7 +157,7 @@ test('CLI keeps a failed evaluator pending and enforces the checkpoint on retry'
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   const failure = f.run(process.execPath, [CLI, 'check', '--json'], { env: { ...f.env, SPHINX_TEST_FAILURE: '1' } });
   assert.notEqual(failure.status, 0);
-  assert.match(failure.stderr, /No completion was\s+recorded/);
+  assert.match(failure.stderr, /No completion\s+was\s+recorded/);
   assert.equal(f.cliJson('pending')[0].status, 'pending');
   assert.notEqual(f.run('git', ['push', 'origin', 'main']).status, 0);
   const first = f.cliJson('check');

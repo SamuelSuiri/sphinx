@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, policyHash } from './config.js';
 import { revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
-import { prepareInteractiveCheck, isRateLimit, switchChoices, PLAN_NAMES } from './check-recovery.js';
+import { prepareInteractiveCheck, isRateLimit, isCliFailure, switchChoices, PLAN_NAMES } from './check-recovery.js';
 import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTerminal } from './terminal-launch.js';
 import { browserPage } from './browser-page.js';
 import { recordOverride } from './overrides.js';
@@ -281,7 +281,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         },
         choose: async prompt => {
           const current = store.public(await store.read(request.id));
-          const action = await waitForAction({ ...publicFields(current), repoRoot: request.repoRoot, phase: 'recovery', message: prompt.title, error: notes.join('\n'), choices: prompt.choices }, prompt.choices.map(choice => choice.value));
+          const action = await waitForAction({ ...publicFields(current), repoRoot: request.repoRoot, phase: 'recovery', message: prompt.title, error: [prompt.description, ...notes].filter(Boolean).join('\n'), choices: prompt.choices }, prompt.choices.map(choice => choice.value));
           return action.action;
         },
       });
@@ -317,9 +317,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
           localSignal.throwIfAborted(); await validate(session.snapshot, config);
           visible = store.public(await store.read(request.id));
           // A rate-limited API route can hand grading to the user's coding-agent plan.
-          if (isRateLimit(error, visible.route) && plans.length) {
+          if ((isRateLimit(error, visible.route) || isCliFailure(error, visible.route)) && switchChoices(plans, visible.route.provider).length) {
             const choices = [...switchChoices(plans, visible.route.provider), { value: 'back', label: 'Back to the question', description: 'Keep the current model and try again later. Your draft answer is kept.' }];
-            const picked = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'recovery', message: 'Grading was rate limited', error: error.message, choices }, choices.map(choice => choice.value));
+            const picked = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'recovery', message: isRateLimit(error, visible.route) ? 'Grading was rate limited' : `${PLAN_NAMES[visible.route.provider][0]} could not grade this answer`, error: error.message, choices }, choices.map(choice => choice.value));
             if (picked.action.startsWith('switch-')) {
               const provider = picked.action.slice('switch-'.length);
               visible = await store.switchRoute(request.id, config, provider, { signal: localSignal });

@@ -245,6 +245,44 @@ export async function planProviders(env = process.env) {
   return found;
 }
 
+/**
+ * OpenAI strict structured output (used by Codex) requires every property to be
+ * listed as required. Optional properties become required-but-nullable, and
+ * the nulls are removed again from the answer, so callers see the same shape.
+ */
+export function strictSchema(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(strictSchema);
+  const out = Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, ['properties', 'items', 'anyOf', 'oneOf', 'allOf', '$defs', 'definitions'].includes(key) ? (key === 'properties' || key === '$defs' || key === 'definitions' ? Object.fromEntries(Object.entries(value).map(([name, child]) => [name, strictSchema(child)])) : strictSchema(value)) : value]));
+  if (out.type === 'object' && out.properties) {
+    const required = new Set(out.required || []);
+    for (const name of Object.keys(out.properties)) {
+      if (!required.has(name)) out.properties[name] = { anyOf: [out.properties[name], { type: 'null' }] };
+    }
+    out.required = Object.keys(out.properties);
+  }
+  return out;
+}
+export function dropOptionalNulls(value, schema) {
+  if (Array.isArray(value)) return value.map(item => dropOptionalNulls(item, schema?.items));
+  if (!value || typeof value !== 'object' || !schema?.properties) return value;
+  const required = new Set(schema.required || []);
+  return Object.fromEntries(Object.entries(value).filter(([key, child]) => !(child === null && !required.has(key))).map(([key, child]) => [key, dropOptionalNulls(child, schema.properties[key])]));
+}
+const codexError = stdout => {
+  for (const line of String(stdout || '').split('\n').reverse()) {
+    try {
+      const event = JSON.parse(line);
+      const raw = event?.type === 'error' ? event.message : event?.type === 'turn.failed' ? event.error?.message : null;
+      if (!raw) continue;
+      let message = raw;
+      try { message = JSON.parse(raw)?.error?.message ?? raw; } catch {}
+      return String(message).replace(/[\u0000-\u001f\u007f]/gu, ' ').slice(0, 300);
+    } catch {}
+  }
+  return null;
+};
+
 async function findExecutable(command, env) {
   for (const directory of (env.PATH ?? '').split(delimiter).filter(Boolean)) {
     const candidate = resolve(directory, command);
@@ -331,7 +369,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       const schemaPath = join(directory, 'response.schema.json');
       const instructionsPath = join(directory, 'instructions.txt');
       const outputPath = join(directory, 'response.json');
-      await writeFile(schemaPath, JSON.stringify(schema), { mode: 0o600 });
+      await writeFile(schemaPath, JSON.stringify(provider === 'codex' ? strictSchema(schema) : schema), { mode: 0o600 });
       await writeFile(instructionsPath, systemPrompt, { mode: 0o600 });
       const billing = config.cliBilling ?? 'plan';
       const childEnv = childEnvironment(requestEnv, { provider, billing });
@@ -365,7 +403,8 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
           const problem = await planSignInProblem(provider, { runner, cwd: directory, env: childEnv, signal });
           if (problem) fail(problem, 'PROVIDER_AUTH');
         }
-        fail(`${provider} exited ${result.signal ? `with signal ${result.signal}` : `with code ${result.exitCode}`}. Check CLI sign-in, model access, and that the CLI supports the isolation flags (update it if needed). No completion was recorded.`, 'PROVIDER_FAILED');
+        const reason = provider === 'codex' ? codexError(result.stdout) : null;
+        fail(`${provider === 'codex' ? 'Codex' : 'Claude Code'} ${reason ? `reported: ${reason}` : `exited ${result.signal ? `with signal ${result.signal}` : `with code ${result.exitCode}`}. Check CLI sign-in, model access, and that the CLI supports the isolation flags (update it if needed).`} No completion was recorded.`, 'PROVIDER_FAILED');
       }
       if (provider === 'codex') {
         // --json streams events; turn.completed carries token usage.
@@ -374,7 +413,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
         }
         try {
           if ((await stat(outputPath)).size > MAX_OUTPUT_BYTES) fail('Codex returned oversized output.', 'OUTPUT_LIMIT');
-          return parseModelJSON(await readFile(outputPath, 'utf8'), 'Codex');
+          return dropOptionalNulls(parseModelJSON(await readFile(outputPath, 'utf8'), 'Codex'), schema);
         } catch (error) {
           if (error instanceof EvaluatorError) throw error;
           throw new EvaluatorError('Codex produced no final assessment. Retry and check CLI sign-in and model access.', 'PROVIDER_NO_OUTPUT', { cause: error });
