@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { listPresentations, claimPresentation } from './presentations.js';
 import { launchCheckpointTerminal, waitForCheckpointTerminal } from './terminal-launch.js';
 import { createBrowserInterview } from './browser-interview.js';
+import { setupNudge } from './repo-setup.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -232,7 +233,10 @@ export async function browserHandoff({ cwd, host, hostSession, checkpointIds, en
 export async function cursorAgentHook({ input = {}, env = process.env, handoff = browserHandoff } = {}) {
   if (env.SPHINX_EVALUATOR === '1') return {};
   const event = input.hook_event_name;
-  if (event === 'sessionStart') return { additional_context: TERMINAL_GUIDANCE, ...(sessionId(input.session_id || input.conversation_id) ? { env: { SPHINX_CURSOR_SESSION: sessionId(input.session_id || input.conversation_id) } } : {}) };
+  if (event === 'sessionStart') {
+    const nudge = await setupNudge(typeof input.cwd === 'string' ? input.cwd : input.workspace_roots?.[0]);
+    return { additional_context: nudge ? `${TERMINAL_GUIDANCE}\n${nudge}` : TERMINAL_GUIDANCE, ...(sessionId(input.session_id || input.conversation_id) ? { env: { SPHINX_CURSOR_SESSION: sessionId(input.session_id || input.conversation_id) } } : {}) };
+  }
   if (!['postToolUse', 'postToolUseFailure'].includes(event) || input.tool_name !== 'Shell') return {};
   try {
     const checkpointIds = cursorCheckpointIds(input);
