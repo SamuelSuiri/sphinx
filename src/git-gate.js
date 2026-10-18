@@ -64,6 +64,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     signal?.throwIfAborted();
     if (await store.approved(snapshot, config)) continue;
     const session = await store.ensure(snapshot, config);
+    if (await store.passTrivial?.(session.id, config)) { output(`Sphinx: documentation-only change to ${snapshot.target.ref}; no questions needed.`); continue; }
     pending.push({ snapshot, session });
     output(`Sphinx: understanding check needed for ${snapshot.target.ref} (${session.route.tier} change).`);
   }

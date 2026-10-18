@@ -329,7 +329,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       }
       localSignal.throwIfAborted(); await validate(session.snapshot, config);
       finalStatus = 'passed';
-      publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'passed', message: waitingGit ? 'You passed. You can close this tab; Git is finishing the push on its own.\nThis records your answers, not a review of every changed line.' : 'You passed. You can close this tab.\nThis records your answers, not a review of every changed line.' });
+      publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'passed', message: visible.noQuestionReason ? `No questions needed: ${visible.noQuestionReason} You can close this tab${waitingGit ? '; Git is finishing the push on its own' : ''}.` : waitingGit ? 'You passed. You can close this tab; Git is finishing the push on its own.\nThis records your answers, not a review of every changed line.' : 'You passed. You can close this tab.\nThis records your answers, not a review of every changed line.' });
       return { status: 'passed', id: request.id };
     } catch (error) {
       settle('not-graded');

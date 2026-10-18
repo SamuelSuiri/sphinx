@@ -329,7 +329,8 @@ test('a small change requests one bounded question and rejects an oversized ques
     const { evaluator } = await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { request = args; }) });
     assert.equal((await evaluator.generateAssessment(change, runtime)).questions.length, 1);
     assert.equal(request.tools.find(tool => tool.function.name === 'finish_review').function.parameters.properties.assessment.properties.questions.maxItems, 1);
-    assert.match(JSON.stringify(request.messages), /Ask at most 1 question,/);
+    assert.match(JSON.stringify(request.messages), /Ask at most 1 question\. This is a small change/);
+    assert.match(JSON.stringify(request.messages), /ask no questions and give a one-sentence noQuestionReason/);
     assert.match(JSON.stringify(request.messages), /one bounded outcome/);
     assert.match(JSON.stringify(request.messages), /visual or styling change/);
     assert.doesNotMatch(JSON.stringify(request.messages), /Use exactly/);
@@ -859,4 +860,22 @@ test('a correct grade may return empty feedback, but an incorrect one must expla
   assert.equal((await pass.evaluator.gradeAnswer({ snapshot, question, answer: 'It inserts again on retry.', config })).feedback, '');
   const fail = await fixture(t, { questionValid: true, verdict: 'incorrect', feedback: '', evidence: question.evidence, followUp: transfer });
   await assert.rejects(fail.evaluator.gradeAnswer({ snapshot, question, answer: 'No.', config }), /Feedback must be nonempty/);
+});
+
+test('zero questions needs a reason, is offered only for small changes, and the audit can overrule it', async t => {
+  const { evaluator } = await fixture(t, null, {
+    openRouterTurn: nativeResponse({ questions: [], noQuestionReason: 'Only reformats whitespace.' }),
+    openRouter: async invocation => { await invocation.beforeCall(); return { questions: [] }; },
+  });
+  const change = { ...snapshot, files: ['src/orders.js'], stats: { additions: 3, deletions: 3, files: 1 } };
+  const settings = { ...DEFAULT_CONFIG, maxModelCalls: 20, agentMaxTurns: 8 };
+  const runtime = evaluatorConfig(settings, selectRoute(change, settings));
+  const agreed = await evaluator.generateAssessment(change, runtime);
+  assert.deepEqual([agreed.questions.length, agreed.noQuestionReason], [0, 'Only reformats whitespace.']);
+  const overruled = await fixture(t, null, {
+    openRouterTurn: nativeResponse({ questions: [], noQuestionReason: 'Trivial.' }),
+    openRouter: async invocation => { await invocation.beforeCall(); return { questions: [question] }; },
+  });
+  const result = await overruled.evaluator.generateAssessment(change, runtime);
+  assert.equal(result.questions.length, 1, 'The audit added the question the reviewer skipped');
 });

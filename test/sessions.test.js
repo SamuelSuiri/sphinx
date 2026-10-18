@@ -517,3 +517,33 @@ test('reviewer and grading calls are tagged with their purpose in the usage ledg
   });
   assert.deepEqual(readUsage({ env }).map(entry => [entry.purpose, entry.tier]), [['review', 'free'], ['grading', 'plan']]);
 });
+
+test('a documentation-only change passes with no model call, before any page opens', async t => {
+  let calls = 0;
+  const { store, config } = await fixture(t, { generate: async () => { calls++; return { questions: [q] }; } });
+  const docs = { ...snapshot, id: 'd'.repeat(64), files: ['README.md', 'docs/guide.mdx', 'LICENSE'] };
+  await store.ensure(docs, config);
+  assert.equal(await store.passTrivial(docs.id, config), true);
+  const state = store.public(await store.read(docs.id));
+  assert.equal(state.status, 'passed');
+  assert.equal(state.noQuestionReason, 'Documentation-only change.');
+  assert.equal(await store.approved(docs, config), true);
+  assert.equal(calls, 0);
+  const mixed = { ...snapshot, id: 'e'.repeat(64), files: ['README.md', 'src/order.js'] };
+  await store.ensure(mixed, config);
+  assert.equal(await store.passTrivial(mixed.id, config), false, 'Any code file needs a real check');
+});
+
+test('a small change the reviewer finds trivial passes with its reason; a larger one never passes with zero questions', async t => {
+  const review = { version: 1, summary: 'Renamed a local variable.', evidence: 'x', evidencePaths: ['src/order.js'], toolCalls: 1, compactions: 0 };
+  const small = await fixture(t, { generate: async (_s, _c, { beforeCall }) => { await beforeCall(); return { questions: [], noQuestionReason: 'Only renames a local variable; behavior is unchanged.', review }; } });
+  await small.store.ensure(snapshot, small.config);
+  const passed = await small.store.start(snapshot.id, small.config);
+  assert.equal(passed.status, 'passed');
+  assert.match(passed.noQuestionReason, /renames a local variable/);
+  const big = { ...snapshot, id: 'f'.repeat(64), stats: { additions: 900, deletions: 300, files: 30 } };
+  const large = await fixture(t, { generate: async (_s, _c, { beforeCall }) => { await beforeCall(); return { questions: [], noQuestionReason: 'Looks fine.', review }; } });
+  await large.store.ensure(big, large.config);
+  await assert.rejects(large.store.start(big.id, large.config), /no grounded questions/);
+  assert.notEqual((await large.store.read(big.id)).status, 'passed');
+});

@@ -84,6 +84,17 @@ function reviewFailure(error, session, signal) {
 // or the final save persists them alongside the call count.
 const meterFor = session => usage => { session.tokens = addUsage(session.tokens, usage); };
 
+// Documentation-only changes need no understanding check and no model call.
+const DOCUMENTATION = /(?:^|\/)(?:readme|license|licence|changelog|changes|authors|contributors|notice|code_of_conduct|contributing)(?:\.[a-z]+)?$|\.(?:md|mdx|markdown|txt|rst|adoc)$/iu;
+export const documentationOnly = files => Array.isArray(files) && files.length > 0 && files.every(file => typeof file === 'string' && DOCUMENTATION.test(file));
+function passWithoutQuestions(session, config, reason) {
+  session.questions = []; session.index = 0; session.status = 'passed'; session.noQuestionReason = reason;
+  session.expiresAt = new Date(Date.now() + config.receiptHours * 3600000).toISOString();
+  session.preparation = { status: 'ready', completedAt: now() };
+  delete session.reviewerCheckpoint;
+  session.updatedAt = now();
+}
+
 export function publicSession(session) {
   const q = session.questions[session.index];
   return {
@@ -97,7 +108,7 @@ export function publicSession(session) {
     // Concept labels are evaluator metadata and may themselves reveal the answer.
     ...(q && session.status !== 'passed' ? { question: { id: q.id, prompt: q.prompt, choices: q.choices } } : {}),
     ...(session.lastFeedback ? { feedback: session.lastFeedback } : {}),
-    ...(session.status === 'passed' ? { expiresAt: session.expiresAt } : {}),
+    ...(session.status === 'passed' ? { expiresAt: session.expiresAt, ...(session.noQuestionReason ? { noQuestionReason: session.noQuestionReason } : {}) } : {}),
   };
 }
 
@@ -222,6 +233,12 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       if (validReceipt(session,config)) return publicSession(session);
       await limitPendingQuestions(session, config);
       signal?.throwIfAborted();
+      if (!session.questions.length && session.status === 'pending' && documentationOnly(session.snapshot.files)) {
+        await validate(session.snapshot, config);
+        passWithoutQuestions(session, config, 'Documentation-only change.');
+        await save(session);
+        return publicSession(session);
+      }
       if (!session.questions.length) {
         const reserve = questionLimit(config.level, session.route.tier);
         const limit = callLimit(session);
@@ -263,6 +280,15 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         try {
           const result = await withUsageMeter(meterFor(session), () => withUsagePurpose('review', () => generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env})));
           signal?.throwIfAborted();
+          // The reviewer, confirmed by its audit, may decide a small change needs no questions.
+          if (Array.isArray(result.questions) && !result.questions.length && session.route.tier === 'small' && typeof result.noQuestionReason === 'string' && result.noQuestionReason.trim()) {
+            await validate(session.snapshot, config);
+            signal?.throwIfAborted();
+            if (result.review) session.review = result.review;
+            passWithoutQuestions(session, config, result.noQuestionReason.trim().slice(0, 300));
+            await save(session);
+            return publicSession(session);
+          }
           if (!Array.isArray(result.questions) || !result.questions.length) throw new Error('Evaluator returned no grounded questions. The check remains pending.');
           if (result.questions.length > reserve) throw new Error('Evaluator exceeded the question limit. The check remains pending.');
           await validate(session.snapshot, config);
@@ -399,5 +425,16 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       return publicSession(session);
     });
   }
-  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,switchRoute,public:publicSession};
+  /** Pass a documentation-only change before any page or model is involved. */
+  async function passTrivial(id, config) {
+    return withLock(id, env, async () => {
+      const session = await read(id);
+      if (session.status !== 'pending' || session.questions.length || !documentationOnly(session.snapshot.files)) return false;
+      await validate(session.snapshot, config);
+      passWithoutQuestions(session, config, 'Documentation-only change.');
+      await save(session);
+      return true;
+    });
+  }
+  return {passTrivial,ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,switchRoute,public:publicSession};
 }

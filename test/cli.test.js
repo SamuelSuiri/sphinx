@@ -612,3 +612,16 @@ test('without a call cap, --retry-review simply continues a failed review', { ti
   assert.equal(retried.usage.limit, null);
   assert.ok(retried.usage.calls > before.usage.calls, 'Prior usage is kept and counted');
 });
+
+test('a documentation-only push goes through with no questionnaire and no model call', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  f.git('push', '-u', 'origin', 'main');
+  f.cli('install', '--yes', '--provider', 'claude', '--agents', 'none');
+  await writeFile(path.join(f.repo, 'README.md'), '# Queue\n\nUsage notes.\n');
+  f.git('add', 'README.md'); f.git('commit', '-qm', 'Docs');
+  const before = (await f.calls()).length;
+  const pushed = f.run('git', ['push', 'origin', 'main']);
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.match(pushed.stderr, /documentation-only change to refs\/heads\/main; no questions needed/);
+  assert.equal((await f.calls()).length, before, 'No model was called');
+});

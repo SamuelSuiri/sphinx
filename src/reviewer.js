@@ -152,6 +152,7 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
 }, timers) {
   // Live status for the human's questionnaire. Progress can never affect review.
   const progress = text => { try { onProgress?.(text); } catch {} };
+  const finishOptions = { reasonField: Boolean(assessmentSchema?.properties?.noQuestionReason) };
   if (!snapshot || !Array.isArray(snapshot.files) || !snapshot.files.length) fail('The snapshot contains no assessable changed paths.', 'INVALID_SNAPSHOT');
   const cap = Math.min(config.maxContextBytes ?? 100000, MAX_ARCHIVE_BYTES);
   const configuredLimit = config.agentMaxTurns ?? Infinity;
@@ -344,6 +345,8 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
     const append = item => { const key = JSON.stringify([item.tool, item.args, item.result, item.paths]); if (!seen.has(key)) { evidence.push(item); seen.add(key); } };
     hints.forEach(append);
     for (const path of citations) if (!evidence.some(item => item.paths.includes(path))) [...archive.values()].filter(item => item.paths.includes(path)).forEach(append);
+    // Asking nothing is a claim about the whole change: keep the observed diffs so the audit can check it.
+    if (!questions.length) [...archive.values()].filter(changedDiff).forEach(append);
     // A retained file read must not hide its already-observed diff merely
     // because both share a path. Ground the change without a model repair turn.
     for (const question of questions) {
@@ -356,7 +359,7 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
     const evidencePaths = pathsFor(evidence);
     const review = { version: 1, harness: 'pi', harnessVersion: '1.2.0', snapshotId: snapshot.id, summary: action.summary, evidence, evidencePaths, projectContext, calls: priorCalls + calls, toolCalls: sequence, compactions };
     if (bytes(review) > cap * 0.75) throw correctable('The retained evidence is too large for grading. Narrow the questions or supply evidenceIds for exact supporting pages.', 'CONTEXT_LIMIT');
-    return { questions, review };
+    return { questions, review, ...(questions.length ? {} : { noQuestionReason: action.assessment.noQuestionReason }) };
   };
   const finalize = async action => {
     progress('Drafting questions');
@@ -469,7 +472,7 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
         const request = { systemPrompt, prompt: `Continue the investigative review. ${instructions} ${phase}\n${JSON.stringify({ projectContext, remainingCalls: uncapped ? null : remaining(), archivedObservations: manifest(), tools: finishOnly ? [] : tools.filter(tool => availableNames.has(tool.name)).map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters })), conversation: conversation(messages) })}`, schema: reviewerActionSchema(assessmentSchema, { finishOnly, archiveAvailable }) };
         inputBytes = ensureFits(request);
         let action = await abortable(runModel({ ...request, ...common }), requestSignal);
-        if (action?.action === 'finish') action = normalizeFinishArguments(action);
+        if (action?.action === 'finish') action = normalizeFinishArguments(action, finishOptions);
         if (!actionKeys(action, ['action', 'calls', 'assessment', 'summary']) || !['tools', 'finish'].includes(action.action) || !Array.isArray(action.calls)) throw correctable('Return an action with action:tools or finish, calls, assessment, and summary.');
         if (finishOnly && action.action !== 'finish') throw correctable('Investigation is closed. Return a finish action using archived evidence.');
         if (action.action === 'finish') {
@@ -488,7 +491,7 @@ async function review({ snapshot, config, assessmentSchema, assessmentInstructio
       // Pi receives canonical arguments while nativeMessage keeps the exact
       // provider continuation, including any signed reasoning, unchanged.
       toolCalls = toolCalls.map(call => call.name === 'finish_review'
-        ? { ...call, arguments: normalizeFinishArguments(call.arguments) } : call);
+        ? { ...call, arguments: normalizeFinishArguments(call.arguments, finishOptions) } : call);
       if (finishOnly && (toolCalls.length !== 1 || toolCalls[0].name !== 'finish_review')) throw correctable('Investigation is closed. Call finish_review using archived evidence.');
       if (!toolCalls.length || toolCalls.length > MAX_CALLS_PER_TURN) throw correctable(`Return 1–${MAX_CALLS_PER_TURN} tool calls. No tools from the invalid batch were executed.`);
       if (toolCalls.some(call => ![...availableNames, 'finish_review'].includes(call.name) || !isObject(call.arguments))) throw correctable('Choose supplied tools and pass their arguments as JSON objects.');
