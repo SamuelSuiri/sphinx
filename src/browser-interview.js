@@ -59,8 +59,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   const token = randomBytes(32).toString('base64url'), nonce = randomBytes(24).toString('base64');
   let server, origin, url, opened = false, closed = false, active, skip, resolver, sequence = 0, waitingGit = false;
   const pauseMessage = () => waitingGit
-    ? 'Paused. Progress is saved; the waiting Git operation was stopped.'
-    : 'Paused. Your progress and completed checkpoints are saved.';
+    ? 'Paused. Progress is saved; the waiting Git operation was stopped. You can close this tab.'
+    : 'Paused. Your progress and completed checkpoints are saved. You can close this tab.';
   let state = { phase: 'waiting', operationClosed: false, revision: randomUUID(), sequence, message: 'Waiting for the checkpoint.', messages: [] };
   // The chat transcript for the current checkpoint lives only in this process.
   // It contains public questions, feedback, and the human's own text.
@@ -153,7 +153,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       // Available at any step, including while the review is still running.
       skip = { reason: data.response };
       active.abort(cancelled());
-      publish({ ...publicFields(state), phase: 'skipped', message: waitingGit ? 'Skipped. Git is continuing.' : 'Skipped.' });
+      publish({ ...publicFields(state), phase: 'skipped', message: waitingGit ? 'Skipped. Git is continuing; you can close this tab.' : 'Skipped. You can close this tab.' });
       return send(res, 200, state);
     }
     if (data.action === 'pause') {

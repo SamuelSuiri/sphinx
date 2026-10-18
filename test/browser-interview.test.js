@@ -250,6 +250,7 @@ test('Skip this time lets Git continue during review, logs the reason, and never
   assert.equal(response.status, 200, 'Skip does not need the latest revision while progress streams');
   assert.equal((await done).status, 'skipped');
   assert.equal(f.interview.state.phase, 'skipped');
+  assert.match(f.interview.state.message, /you can close this tab/);
   assert.equal(await f.store.approved(f.snapshot, f.config), false);
   const [entry] = await recentOverrides({ env: f.env });
   assert.equal(entry.kind, 'skip'); assert.equal(entry.reason, 'prod is down'); assert.equal(entry.id, f.snapshot.id);
