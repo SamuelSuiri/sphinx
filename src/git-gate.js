@@ -106,7 +106,8 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
       }
     }
     signal?.throwIfAborted();
-    if (requests.length) output('Sphinx: understanding check complete. Continuing this Git operation.');
+    // Skipped checks already reported themselves; only a pass is a completed check.
+    if (requests.length > skipped.size) output('Sphinx: understanding check complete. Continuing this Git operation.');
     return 0;
   } finally {
     // A paused or cancelled batch must not reopen from an after-tool callback.
