@@ -366,3 +366,22 @@ test('branch and path glob semantics handle nested names', () => {
   assert.equal(matches('**/*.js', 'main.js', { path: true }), true);
   assert.equal(matches('**/*.js', 'src/main.js', { path: true }), true);
 });
+
+test('a new branch is checked from where it left the remote default branch', async t => {
+  const cwd = await fixture(t);
+  const main = await commit(cwd, { 'base.js': 'export const base = 1;\n' });
+  await command(cwd, 'update-ref', 'refs/remotes/origin/main', main);
+  await command(cwd, 'checkout', '-b', 'feature');
+  const head = await commit(cwd, { 'feature.js': 'export const feature = 1;\n' });
+  const input = `refs/heads/feature ${head} refs/heads/feature ${zero}\n`;
+  const [snapshot] = await pushSnapshots({ cwd, remote: 'origin', remoteUrl: 'https://example.invalid/sphinx.git', input, config: { ...defaults, branches: ['*'] } });
+  assert.equal(snapshot.base, main);
+  assert.deepEqual(snapshot.files, ['feature.js']);
+  // A branch with nothing beyond the default branch needs no check.
+  const same = `refs/heads/copy ${main} refs/heads/copy ${zero}\n`;
+  assert.deepEqual(await pushSnapshots({ cwd, remote: 'origin', remoteUrl: 'https://example.invalid/sphinx.git', input: same, config: { ...defaults, branches: ['*'] } }), []);
+  // If the default branch is not checked, its code was never assessed: check the whole tree.
+  const [release] = await pushSnapshots({ cwd, remote: 'origin', remoteUrl: 'https://example.invalid/sphinx.git', input: `refs/heads/feature ${head} refs/heads/release/v1 ${zero}\n`, config: { ...defaults, branches: ['release/*'] } });
+  assert.equal(release.base, null);
+  assert.deepEqual(release.files, ['base.js', 'feature.js']);
+});

@@ -15,7 +15,7 @@ import { recentOverrides } from '../src/overrides.js';
 import { textStream } from '../src/stream.js';
 
 const q = { id: 'duplicate', concept: 'idempotency', prompt: 'Can a retry duplicate the insert? <script>PRIVATE_SCRIPT</script>', choices: ['Yes', 'No'], expectedAnswer: 'PRIVATE_KEY', rationale: 'PRIVATE_RUBRIC', evidence: [{ path: 'app.js', reason: 'The insert is unconditional.' }] };
-async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {}, plans = [] } = {}) {
+async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {}, plans = [], interviewOptions = {} } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'sphinx-browser-'));
   const env = { SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home }, repoRoot = path.join(home, 'repo'); await mkdir(repoRoot);
   const config = { ...structuredClone(DEFAULT_CONFIG), maxModelCalls };
@@ -27,7 +27,7 @@ async function fixture(t, { generate, grade, maxModelCalls = 20, validate = asyn
   });
   await store.ensure(snapshot, config);
   const controller = new AbortController(), output = [];
-  const interview = createBrowserInterview({ env, signal: controller.signal, store, readConfig: async () => config, revalidate: async () => { await validate(); return true; }, openBrowser: async () => { opened++; return true; }, output: text => output.push(text), findPlans: async () => plans });
+  const interview = createBrowserInterview({ env, signal: controller.signal, store, readConfig: async () => config, revalidate: async () => { await validate(); return true; }, openBrowser: async () => { opened++; return true; }, output: text => output.push(text), findPlans: async () => plans, checkUpdate: async () => null, ...interviewOptions });
   const request = { id: snapshot.id, token: randomUUID(), repoRoot, delivery: 'hook', createdAt: Date.now() };
   const tasks = [];
   const present = (next = request) => { const task = interview.present({ request: next }); tasks.push(task); return task; };
@@ -351,4 +351,27 @@ test('a rate limit while grading offers the coding-agent plan, then the same que
   await f.post('answer', { response: 'Yes, it inserts again.' });
   assert.equal((await done).status, 'passed');
   assert.deepEqual(providers, ['openrouter', 'claude']);
+});
+
+test('a newer release is offered in the header and installs only after the check ends', async t => {
+  const started = [];
+  const f = await fixture(t, { interviewOptions: {
+    checkUpdate: async () => ({ current: '0.1.7', latest: '0.1.9', available: true, command: 'npm install -g sphinx-understand@latest', note: null }),
+    planUpdate: async () => ({ manager: 'npm', command: ['npm', 'install', '-g', 'sphinx-understand@latest'] }),
+    startUpdate: async options => { started.push(options); return true; },
+  } });
+  f.present(); await f.waitFor('question');
+  for (let i = 0; i < 100 && !f.interview.state.update; i++) await delay(10);
+  assert.equal(f.interview.state.update.latest, '0.1.9');
+  const html = await (await fetch(f.interview.url)).text();
+  assert.match(html, /id="version">v\d+\.\d+\.\d+</);
+  const forged = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://evil.invalid' }, body: '{}' });
+  assert.equal(forged.status, 403); assert.equal(started.length, 0);
+  const token = new URL(f.interview.url).pathname.slice(1);
+  const res = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': token }, body: '{}' });
+  assert.equal(res.status, 200); assert.equal((await res.json()).update.status, 'scheduled');
+  assert.deepEqual(started[0].command, ['npm', 'install', '-g', 'sphinx-understand@latest']);
+  assert.equal(f.interview.state.phase, 'question', 'updating never interrupts the check');
+  const again = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': token }, body: '{}' });
+  assert.equal(again.status, 409); assert.equal(started.length, 1);
 });

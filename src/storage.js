@@ -40,12 +40,14 @@ export async function collectGarbage({ env = process.env, now = Date.now(), cap 
       const gone = context?.repoRoot && !(await stat(context.repoRoot).catch(() => null));
       if (!context || gone || now - file.mtime > 14 * DAY) await drop(file.path);
     }
-    for (const directory of ['preparations', 'presentations', 'terminals']) {
+    for (const directory of ['preparations', 'presentations', 'terminals', 'github/jobs']) {
       for (const file of await files(path.join(home, directory))) if (now - file.mtime > 7 * DAY) await drop(file.path);
     }
+    // A branch's check records feed its pull request comment while it is active.
+    for (const file of await files(path.join(home, 'github', 'branches'))) if (now - file.mtime > 30 * DAY) await drop(file.path);
     // Size cap: drop the oldest removable data first. Hooks, settings, the
     // install manifest, and credentials are never candidates.
-    const removable = (await Promise.all(['sessions', 'context', 'preparations', 'presentations', 'terminals'].map(dir => files(path.join(home, dir))))).flat()
+    const removable = (await Promise.all(['sessions', 'context', 'preparations', 'presentations', 'terminals', 'github'].map(dir => files(path.join(home, dir))))).flat()
       .filter(file => now - file.mtime > HOUR && !removed.includes(file.path)).sort((a, b) => a.mtime - b.mtime);
     let total = await storageUsage(env);
     for (const file of removable) { if (total <= cap) break; await drop(file.path); total -= file.size; }

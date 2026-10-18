@@ -15,6 +15,8 @@ export const DEFAULT_CONFIG = {
   maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false, cliBilling: 'plan',
   agentMaxTurns: null, toolResultBytes: 16000,
   backgroundPreparation: true, preparationDebounceMs: 1500, workingContext: true,
+  // GitHub stamps never affect a check; see src/github.js.
+  github: { status: true, comment: false, answers: false },
   models: {
     small: { provider: 'openrouter', model: 'openrouter/free' },
     medium: { provider: 'openrouter', model: 'openrouter/free' },
@@ -96,6 +98,8 @@ export function validateConfig(config) {
     if (Object.keys(route).some(k => !['provider','model'].includes(k))) fail(`unexpected field in models.${tier}`);
   }
   if (Object.keys(config.models).some(k => !['small','medium','large'].includes(k))) fail('unknown model tier');
+  if (!config.github || typeof config.github !== 'object' || Array.isArray(config.github)) fail('github must be an object');
+  for (const key of Object.keys(config.github)) if (!Object.hasOwn(DEFAULT_CONFIG.github, key) || typeof config.github[key] !== 'boolean') fail(`github.${key} must be one of status, comment, answers set to true or false`);
   if (!config.routing || typeof config.routing !== 'object') fail('routing is required');
   for (const key of Object.keys(config.routing)) if (!Object.hasOwn(DEFAULT_CONFIG.routing,key)) fail(`unknown routing setting ${key}`);
   for (const k of ['smallMaxLines','smallMaxFiles','largeMinLines','largeMinFiles']) {
@@ -107,10 +111,10 @@ export function validateConfig(config) {
 }
 
 function merged(base, overrides) {
-  return { ...base, ...overrides, models: { ...base.models, ...overrides?.models }, routing: { ...base.routing, ...overrides?.routing } };
+  return { ...base, ...overrides, models: { ...base.models, ...overrides?.models }, routing: { ...base.routing, ...overrides?.routing }, github: { ...base.github, ...overrides?.github } };
 }
 
-export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','distance','mode','events','branches','remotes','exclude','backgroundPreparation']);
+export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','distance','mode','events','branches','remotes','exclude','backgroundPreparation','github']);
 
 export function validateRepositoryConfig(local, { env = process.env, source = '.sphinxconfig' } = {}) {
   if (!local || typeof local !== 'object' || Array.isArray(local)
@@ -122,7 +126,7 @@ export function validateRepositoryConfig(local, { env = process.env, source = '.
       throw new Error(`Repository ${source} cannot set ${key}; configure model routes and budgets in ${getPaths(env).config}.`);
     }
   }
-  validateConfig({ ...structuredClone(DEFAULT_CONFIG), ...local });
+  validateConfig(merged(structuredClone(DEFAULT_CONFIG), local));
   return local;
 }
 
@@ -176,7 +180,8 @@ export function stableStringify(value) {
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
   return JSON.stringify(value);
 }
-export function policyHash(config) {
+export function policyHash({ github, ...config }) {
+  // GitHub stamps happen after a check, so they are not part of it.
   // The call ceiling controls spending, not what the human must understand.
   // Normalize it independently of DEFAULT_CONFIG so allowance edits preserve
   // checkpoint identity within the same assessment contract.

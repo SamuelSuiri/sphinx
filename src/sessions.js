@@ -339,7 +339,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       // Capture after charging the grade: cancellation rolls back progress, not
       // model usage, and leaves the same question available to the human.
       const beforeAnswer = structuredClone(session);
-      session.attempts.push({questionId:question.id,answer:text.trim(),verdict:result.verdict,feedback:result.feedback,at:now()});
+      session.attempts.push({questionId:question.id,index:session.index,kind:dispute?'dispute':learn?'learn':'answer',prompt:question.prompt,answer:text.trim(),verdict:result.verdict,feedback:result.feedback,at:now()});
       // Score each question once, on its first real grade. A dispute or an
       // ambiguous grade leaves it unscored; asking for an explanation counts as a miss.
       const scoredIndex = session.index;

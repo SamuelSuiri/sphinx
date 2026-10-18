@@ -10,6 +10,7 @@ This page is the reference for reviewer models, usage limits, repository policy,
 - [Project context](#project-context)
 - [Files Sphinx never reads](#files-sphinx-never-reads)
 - [Background preparation](#background-preparation)
+- [GitHub commit status and pull requests](#github-commit-status-and-pull-requests)
 
 ## Settings locations
 
@@ -180,6 +181,7 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
 | `distance` | `high` (default): questions about what the change does and affects; `low`: questions about its specific logic, conditions, and edge cases |
 | `exclude` | Extra ignore patterns, added to machine-wide ones |
 | `backgroundPreparation` | `false` opts this repository out |
+| `github` | GitHub stamps; see [below](#github-commit-status-and-pull-requests) |
 
 Branch defaults come from machine-wide settings (initially `main` and `master`), not from the branch you happen to have checked out. Without prompts:
 
@@ -192,6 +194,8 @@ If both `.sphinxconfig` and legacy `.sphinx.json` exist, `.sphinxconfig` wins an
 **Commit checkpoints.** Enable `pre-commit`. To run one by hand, `sphinx check --staged` assesses the index, including partial staging.
 
 **Manual push checks.** `sphinx check --remote origin --branch main` selects the destination; otherwise Sphinx uses the upstream. Multiple destination refs are assessed separately. Tag-only pushes and deletions do not trigger checks in v0.1.
+
+**Pull request branches.** Set `"branches": ["*"]` to check pushes to every branch. The first push of a new branch is checked from where it left the remote's default branch (the same range the pull request shows), using local remote-tracking refs; later pushes check only the new commits.
 
 ## Project context
 
@@ -241,3 +245,23 @@ After commits, merges, rewrites, and checkouts, Sphinx schedules a detached revi
 - Set `backgroundPreparation: false` in `config.json` or `.sphinxconfig` to opt out. A repository cannot re-enable preparation disabled machine-wide.
 - While yolo is on, preparation is paused: no new model request starts, although one already in progress may finish.
 - A first push, a branch without local tracking history, or a push to an unexpected destination needs a cold review at push time. Pre-commit checks always review on demand. Run `git fetch` if remote history is missing.
+
+## GitHub commit status and pull requests
+
+When you push to GitHub and a check passes, Sphinx marks the pushed commit with a `sphinx/understanding` commit status, for example "Understood: 3 questions, 2 first try". It shows next to the commit and in the pull request's checks. A skipped check is marked as a failure ("Understanding check skipped"). Yolo pushes and commit checkpoints are not marked.
+
+```json
+{ "github": { "status": true, "comment": false, "answers": false } }
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `status` | `true` | Post the commit status |
+| `comment` | `false` | Keep one comment on the branch's open pull request listing every check on that branch: questions, first-try results, and the model. It is edited in place on later pushes |
+| `answers` | `false` | Also include your answers in that comment |
+
+Set these in `config.json` for yourself or in `.sphinxconfig` for a repository. Private answer keys are never posted.
+
+It uses the [GitHub CLI](https://cli.github.com) and its existing login, in a detached process after Git continues, so it never slows or blocks a push. If `gh` is missing or not signed in, the remote isn't GitHub, or any request fails, nothing is posted and nothing else changes. The worker waits a few minutes for the push to land and up to 15 minutes for a pull request to be opened; the result of the last run is in `github/last.json` in Sphinx's data directory.
+
+**Requiring it for a team.** In the repository's branch protection or ruleset, add `sphinx/understanding` as a required status check. Pull requests whose head commit was not pushed through a passing check then cannot merge. The status is self-reported by the pusher's machine: it shows the check happened, but it is not a cryptographic proof, and anyone with write access can set a commit status.

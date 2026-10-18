@@ -13,6 +13,7 @@ import { browserPage } from './browser-page.js';
 import { recordOverride } from './overrides.js';
 import { withTextStream, partialField } from './stream.js';
 import { loadChangeView } from './change-view.js';
+import { updateStatus, updatePlan, scheduleUpdate } from './update.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -54,7 +55,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   store: providedStore, readConfig = loadConfig, revalidate = revalidateSnapshot,
   reserve = claimCheckpointDialog, release = finishCheckpointDialog, waitForExisting = waitForCheckpointTerminal,
   openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`), logOverride = recordOverride, findPlans = planProviders,
-  loadView = loadChangeView,
+  loadView = loadChangeView, checkUpdate = updateStatus, planUpdate = updatePlan, startUpdate = scheduleUpdate,
 } = {}) {
   const token = randomBytes(32).toString('base64url'), nonce = randomBytes(24).toString('base64');
   let server, origin, url, opened = false, closed = false, active, skip, resolver, sequence = 0, waitingGit = false;
@@ -65,6 +66,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // The chat transcript for the current checkpoint lives only in this process.
   // It contains public questions, feedback, and the human's own text.
   let transcript = [], turns = 0, score = null;
+  // The installed version and whether npm has a newer one. Display only.
+  let update = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -94,7 +97,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, ...(score ? { score } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -141,6 +144,15 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     }
     if (req.method !== 'POST' || segments[2] !== 'action') return send(res, 405, { error: 'Unsupported method.' });
     if (req.headers.origin !== origin || !equal(req.headers['x-sphinx-token'], token) || req.headers['content-type']?.split(';')[0] !== 'application/json') return send(res, 403, { error: 'Forbidden request.' });
+    if (new URL(req.url, origin).searchParams.get('update') === '1') {
+      // Independent of the check: the install runs only after this process exits.
+      if (!update?.available || update.status === 'scheduled') return send(res, 409, { error: 'No update to install.' });
+      const plan = await planUpdate().catch(() => null);
+      const started = !!plan?.command && await startUpdate({ command: plan.command, env });
+      update = { ...update, status: started ? 'scheduled' : 'failed' };
+      publish(state, { display: true });
+      return send(res, 200, { update });
+    }
     let bytes = 0; const chunks = [];
     // 8,000 characters can occupy 24KB in UTF-8 or 48KB when JSON-escaped.
     for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) { send(res, 413, { error: 'Keep your response below 8,000 characters.' }); req.destroy(); return; } chunks.push(chunk); }
@@ -184,6 +196,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     try { await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); }); }
     catch (error) { server = undefined; throw error; }
     origin = `http://127.0.0.1:${server.address().port}`; url = `${origin}/${token}`;
+    Promise.resolve().then(() => checkUpdate({ env: operationEnv })).then(result => { update = result; publish(state, { display: true }); }).catch(() => {});
     output(`Sphinx questionnaire: ${url}`);
     if (!opened) {
       opened = true;

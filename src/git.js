@@ -191,6 +191,22 @@ export async function revalidateSnapshot(snapshot, config, { env = process.env }
   return true;
 }
 
+// A new branch is checked from where it left the remote's default branch, the
+// same range a pull request shows, instead of from an empty tree. That only
+// holds when the policy also checks the default branch; otherwise code that
+// reached it unchecked would be skipped, so the whole tree is assessed.
+async function branchPoint(root, remote, head, config) {
+  if (!remote || remote === '.' || !/^[\w.-]+$/.test(remote)) return null;
+  const named = (await git(root, ['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`], { allowFailure: true }))?.trim();
+  for (const ref of [named, `refs/remotes/${remote}/main`, `refs/remotes/${remote}/master`].filter(Boolean)) {
+    if (!(await git(root, ['rev-parse', '--verify', '--quiet', ref], { allowFailure: true }))) continue;
+    if (!triggered(config, 'pre-push', ref.slice(`refs/remotes/${remote}/`.length), remote)) return null;
+    const base = (await git(root, ['merge-base', head, ref], { allowFailure: true }))?.trim();
+    if (base && OID.test(base)) return base; // Equal to head: nothing new to check.
+  }
+  return null;
+}
+
 export async function pushSnapshots({ cwd = process.cwd(), remote, remoteUrl, input, config, env = process.env }) {
   if (!config.enabled || !config.events.includes('pre-push')) return [];
   const repo = await repository(cwd);
@@ -203,7 +219,7 @@ export async function pushSnapshots({ cwd = process.cwd(), remote, remoteUrl, in
     if (ZERO.test(head) || head === old || !ref.startsWith('refs/heads/')) continue;
     if (!triggered(config, 'pre-push', ref.slice('refs/heads/'.length), remote)) continue;
     await ensureCommit(repo.root, head, remote);
-    const base = ZERO.test(old) ? null : old;
+    const base = ZERO.test(old) ? await branchPoint(repo.root, remote, head, config) : old;
     if (base) await ensureCommit(repo.root, base, remote, true);
     const tree = (await git(repo.root, ['rev-parse', `${head}^{tree}`])).trim();
     const snapshot = await buildSnapshot({ repo, event: 'pre-push', target: { remote, url: remoteUrl || '', ref }, base, head, tree, sourceRef, config, env });

@@ -1,4 +1,5 @@
 import { sphinxMark } from './logo.js';
+import { VERSION } from './version.js';
 /** Static UI only. Model-authored content always enters the DOM as textContent. */
 export function browserPage({ token, nonce }) {
   return `<!doctype html>
@@ -11,6 +12,7 @@ button:focus-visible,textarea:focus-visible,input:focus-visible,[tabindex]:focus
 .shell{height:100vh;height:100dvh;display:flex;flex-direction:column}
 header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .brand{display:flex;align-items:center;gap:14px}.brand strong{display:flex;align-items:center;gap:9px;font:600 19px ui-monospace,SFMono-Regular,Menlo,monospace}.brand svg{color:var(--amber);flex-shrink:0}.brand span{color:var(--muted);font-size:14px}
+.brand small{font:12px var(--mono);color:var(--muted);margin-left:-8px}.update{font-size:12px;padding:2px 10px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--amber);cursor:pointer;white-space:nowrap}.update:hover:not(:disabled){border-color:var(--amber)}.update:disabled{color:var(--muted);cursor:default}
 .scope{border-bottom:1px solid var(--line);padding:7px 24px;font-size:13px;line-height:1.45;color:var(--muted)}
 .facts dt{display:none}.facts dd{font-weight:400!important}.facts div:has(#scope-range){display:none}.facts div+div::before{content:"·";margin-right:8px;color:#b7ab9c}.facts #meta{color:var(--ink);font-weight:600!important}.scope-note{display:none!important}
 .facts{display:flex;flex-wrap:wrap;gap:2px 20px;margin:0;align-items:baseline}.facts div{display:flex;gap:6px;min-width:0}.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:600;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -90,7 +92,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 #question-pane{overflow-y:auto}.conversation{flex:none;overflow:visible;padding-right:0}.evidence{max-height:none;overflow:visible}}
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
 </style></head><body><div class="shell">
-<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><span>Understanding check</span></div><div id="score" class="score" hidden><span class="score-head"><span class="score-label">Your understanding</span><strong id="score-value" class="score-value"></strong></span><span id="score-dots" class="score-dots" role="img"></span><span id="score-meta" class="score-meta"></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
+<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><small id="version">v${VERSION}</small><button id="update" class="update" type="button" hidden></button><span>Understanding check</span></div><div id="score" class="score" hidden><span class="score-head"><span class="score-label">Your understanding</span><strong id="score-value" class="score-value"></strong></span><span id="score-dots" class="score-dots" role="img"></span><span id="score-meta" class="score-meta"></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
 <section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div><dd id="usage"></dd></div></dl>
 <p id="scope-note" class="scope-note">Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.</p><p class="scope-note scope-short">Checkpoint range only — not necessarily a whole pull request.</p></section>
 <nav class="tabs" role="tablist" aria-label="Questionnaire views"><button id="tab-question" role="tab" type="button" aria-controls="question-pane" aria-selected="true">Question</button><button id="tab-files" role="tab" type="button" aria-controls="files-pane" aria-selected="false">Files</button><button id="tab-diff" role="tab" type="button" aria-controls="diff-pane" aria-selected="false">Diff</button></nav>
@@ -147,6 +149,14 @@ function scoreView(sc){
  const meta=[];if(sc.streak>1)meta.push(sc.streak+' in a row');if(sc.skipRate!=null)meta.push('skipped '+sc.skipRate+'%');
  $('score-meta').textContent=meta.join(' · ');lastScored=sc.answered;
 }
+// A newer release is offered quietly; installing waits until this check ends.
+function updateView(u){const b=$('update');if(!u?.available){b.hidden=true;return;}b.hidden=false;
+ if(u.status==='scheduled'){b.textContent='Updating to v'+u.latest+' after this check';b.disabled=true;b.title='';}
+ else if(u.status==='failed'){b.textContent='Update could not start';b.disabled=true;b.title='Run '+(u.command||'npm install -g sphinx-understand@latest')+' in a terminal.';}
+ else if(!u.command){b.textContent='v'+u.latest+' available';b.disabled=true;b.title=u.note||'';}
+ else{b.textContent='v'+u.latest+' available · Update';b.disabled=false;b.title='Runs '+u.command+' once this check finishes. Your settings are kept.';}}
+$('update').onclick=async()=>{const b=$('update');b.disabled=true;b.textContent='Scheduling update…';
+ try{const res=await fetch(base+'/action?update=1',{method:'POST',headers:{'Content-Type':'application/json','X-Sphinx-Token':token},body:'{}'});const data=await res.json();updateView(data.update||{available:true,status:'failed'});}catch{updateView({available:true,status:'failed'});}};
 const resize=()=>{$('response').style.height='auto';$('response').style.height=Math.min($('response').scrollHeight||76,180)+'px';};
 function controls(){
  if(!current)return;
@@ -196,7 +206,7 @@ function render(state){
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
  const repo=state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',repo||state.change?.header?.repository||'');$('meta').title=state.repoRoot||'';
- text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));scoreView(state.score);const messages=state.messages||[];
+ text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));scoreView(state.score);updateView(state.update);const messages=state.messages||[];
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;
