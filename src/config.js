@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
   maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false, cliBilling: 'plan',
   agentMaxTurns: null, toolResultBytes: 16000,
-  backgroundPreparation: true, preparationDebounceMs: 1500,
+  backgroundPreparation: true, preparationDebounceMs: 1500, workingContext: true,
   models: {
     small: { provider: 'openrouter', model: 'openrouter/free' },
     medium: { provider: 'openrouter', model: 'openrouter/free' },
@@ -72,7 +72,7 @@ export function validateConfig(config) {
   const allowed = new Set(Object.keys(DEFAULT_CONFIG));
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
-  for (const key of ['enabled', 'allowPaid', 'backgroundPreparation']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
+  for (const key of ['enabled', 'allowPaid', 'backgroundPreparation', 'workingContext']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
   for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], mode: ['block'], cliBilling: ['plan','api'] })) {
     if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
@@ -182,7 +182,7 @@ export function policyHash(config) {
   // checkpoint identity within the same assessment contract.
   // Version the contract when assessment semantics change: older questions and
   // receipts must not stand in for an assessment under the new requirements.
-  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, agentMaxTurns: 8, cliBilling: 'plan', assessmentContract: 3 })).digest('hex');
+  return createHash('sha256').update(stableStringify({ ...config, maxModelCalls: 10, agentMaxTurns: 8, cliBilling: 'plan', workingContext: true, assessmentContract: 3 })).digest('hex');
 }
 
 const isRecord = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);

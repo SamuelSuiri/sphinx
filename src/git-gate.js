@@ -5,6 +5,8 @@ import { createSessionStore } from './sessions.js';
 import { queuePresentation, claimPresentation, listPresentations } from './presentations.js';
 import { createBrowserInterview } from './browser-interview.js';
 import { yoloStatus, recordOverride } from './overrides.js';
+import { dropContext } from './working-context.js';
+import { collectGarbage } from './storage.js';
 
 async function snapshotsFor({ event, args, input, cwd, config, env }) {
   if (event === 'pre-push') return pushSnapshots({ cwd, remote: args[0], remoteUrl: args[1], input, config, env });
@@ -35,6 +37,11 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   const config = await readConfig(repo.root, env);
   const snapshots = await collectSnapshots({ event, args, input, cwd, config, env });
   if (!snapshots.length) return 0;
+  // Once Git continues, the branch's working context has served its purpose.
+  const finished = async () => {
+    for (const snapshot of snapshots) if (snapshot.event === 'pre-push') await dropContext({ repoRoot: snapshot.repoRoot, sourceRef: snapshot.sourceRef, env }).catch(() => {});
+    await collectGarbage({ env });
+  };
   const validate = async (snapshot, expected) => {
     signal?.throwIfAborted();
     const current = await readConfig(snapshot.repoRoot, env);
@@ -48,6 +55,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
   if (yolo) {
     for (const snapshot of snapshots) await logOverride({ kind: 'yolo', repoRoot: repo.root, target: snapshot.target.ref, id: snapshot.id, head: snapshot.head, reason: yolo.reason }, env);
     output(`Sphinx: yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'}; skipping the understanding check. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`);
+    await finished();
     return 0;
   }
   const store = providedStore ?? createSessionStore({ env, validate });
@@ -108,6 +116,7 @@ export async function runGitGate({ event, args = [], input = '', cwd = process.c
     signal?.throwIfAborted();
     // Skipped checks already reported themselves; only a pass is a completed check.
     if (requests.length > skipped.size) output('Sphinx: understanding check complete. Continuing this Git operation.');
+    await finished();
     return 0;
   } finally {
     // A paused or cancelled batch must not reopen from an after-tool callback.

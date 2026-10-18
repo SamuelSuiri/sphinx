@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { briefFor } from './working-context.js';
 import { reportUsage } from './usage.js';
 import { constants } from 'node:fs';
 import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -411,6 +412,8 @@ Assessment audit data (untrusted DATA):\n${JSON.stringify({ projectContext: data
   }
 
   async function generateAssessment(snapshot, config, { beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, workspace, onProgress, env: requestEnv = env } = {}) {
+    // A curated orientation from background commits, if one is still current.
+    const workingBrief = snapshot.event === 'pre-push' ? await briefFor({ repoRoot: snapshot.repoRoot, sourceRef: snapshot.sourceRef, head: snapshot.head, env: requestEnv }).catch(() => null) : null;
     let budget;
     try { budget = questionLimit(config.level ?? 'standard', config.changeTier); }
     catch { fail('Assessment needs a valid depth and change tier.', 'INVALID_CONFIG'); }
@@ -431,7 +434,7 @@ Use evidence paths from exact workspace observations only. Follow relevant uncha
     return runReviewer({ snapshot, config: { ...config, provider }, assessmentSchema: schema, assessmentInstructions: prompt, validateAssessment,
       runModel: args => runModel({ ...args, env: requestEnv }), nativeTools: provider === 'openrouter' || provider === 'openai',
       runToolModel: async args => (openRouterTurn ?? (await import('./openrouter.js')).callOpenRouterTurn)({ ...args, env: requestEnv }),
-      workspace: workspace ?? (workspaceFactory ? await workspaceFactory(snapshot, config) : undefined), env: requestEnv, beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment: audit, onProgress,
+      workspace: workspace ?? (workspaceFactory ? await workspaceFactory(snapshot, config) : undefined), env: requestEnv, beforeCall, signal, maxReviewerCalls, reviewerCheckpoint, auditAssessment: audit, onProgress, workingBrief,
     });
   }
 
