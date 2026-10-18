@@ -17,7 +17,7 @@ header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;disp
 .facts .mono{font:600 12.5px var(--mono)}.scope-note{margin:2px 0 0;color:var(--muted);font-size:12px}#usage{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
 .tabs{display:none}.scope-short{display:none}
 .workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(400px,46%) minmax(0,1fr);grid-template-rows:minmax(0,auto) minmax(0,1fr);grid-template-areas:"q files" "q diff"}
-#question-pane{grid-area:q;border-right:1px solid var(--line)!important}#files-pane{grid-area:files;max-height:30vh;border-right:0;border-bottom:1px solid var(--line)}#diff-pane{grid-area:diff;border-right:0}
+#question-pane{grid-area:q;border-right:1px solid var(--line)!important}#files-pane{grid-area:files;max-height:30vh;overflow:hidden;border-right:0;border-bottom:1px solid var(--line)}#diff-pane{grid-area:diff;border-right:0}
 .pane{min-width:0;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line)}.pane:last-child{border-right:0}
 .pane h2{font-size:13px;font-weight:600;margin:0;overflow-wrap:anywhere;line-height:1.4}.pane-note{font-size:12px;color:var(--muted);margin:0;padding:8px 14px;overflow-wrap:anywhere}
 .filters{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px 6px}.filters button{min-height:44px;font-size:12.5px;line-height:1.25;padding:4px 8px}
@@ -63,6 +63,13 @@ button:hover:not(:disabled){background:#eee7dc}button.primary:hover:not(:disable
 button.quiet{border-color:transparent;color:var(--muted)}button.quiet:hover:not(:disabled){color:var(--ink)}
 .hint{font-size:12px;color:var(--muted);margin:10px 0 0}.recovery{display:grid;gap:12px;margin:0 0 20px}.recovery button{text-align:left;width:100%}.recovery p{margin:4px 0 0;font-size:13px;color:var(--muted)}
 header .tools{display:flex;gap:4px}
+.score{position:relative;display:flex;align-items:center;gap:10px;margin-left:auto;margin-right:12px;padding:4px 14px 4px 4px;border:1px solid var(--line);border-radius:999px;background:#fff}
+.score .ring{width:38px;height:38px;transform:rotate(-90deg)}.score .track{fill:none;stroke:#efe5d8;stroke-width:3.5}.score .arc{fill:none;stroke:var(--amber);stroke-width:3.5;stroke-linecap:round;stroke-dasharray:0 100;transition:stroke-dasharray .6s ease}
+.score.good .arc{stroke:var(--pass)}.score.calibrating .arc{stroke:#a59c90}.score.calibrating .track{stroke-dasharray:2 2.4}
+.score-value{position:absolute;left:4px;width:38px;text-align:center;font:600 11.5px var(--mono);font-variant-numeric:tabular-nums}
+.score-copy{display:flex;flex-direction:column;line-height:1.25}.score-label{font-size:13px;font-weight:600}.score-meta{font-size:11.5px;color:var(--muted);white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.score .arc{transition:none}}
+@media(max-width:600px){.score{margin-right:4px;padding-right:10px}.score-meta{display:none}}
 .skipbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid var(--line);font-size:14px}.skipbar p{flex-basis:100%;margin:0;color:var(--muted);font-size:13px}
 .skipbar input{flex:1;min-width:180px;font:inherit;font-size:14px;padding:6px 10px;border:1px solid #b9afa3;border-radius:6px;background:#fff;color:var(--ink)}
 button.danger{background:#8d271e;border-color:#8d271e;color:#fff}button.danger:hover:not(:disabled){background:#6f1f18}
@@ -81,7 +88,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 #question-pane{overflow-y:auto}.conversation{flex:none;overflow:visible;padding-right:0}.evidence{max-height:none;overflow:visible}}
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
 </style></head><body><div class="shell">
-<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><span>Understanding check</span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
+<header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><span>Understanding check</span></div><div id="score" class="score" hidden title="First-try understanding in this repository"><svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="track" cx="18" cy="18" r="15"/><circle id="score-arc" class="arc" cx="18" cy="18" r="15" pathLength="100"/></svg><span id="score-value" class="score-value"></span><span class="score-copy"><span id="score-label" class="score-label"></span><span id="score-meta" class="score-meta"></span></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
 <section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div><dd id="usage"></dd></div></dl>
 <p id="scope-note" class="scope-note">Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.</p><p class="scope-note scope-short">Checkpoint range only — not necessarily a whole pull request.</p></section>
 <nav class="tabs" role="tablist" aria-label="Questionnaire views"><button id="tab-question" role="tab" type="button" aria-controls="question-pane" aria-selected="true">Question</button><button id="tab-files" role="tab" type="button" aria-controls="files-pane" aria-selected="false">Files</button><button id="tab-diff" role="tab" type="button" aria-controls="diff-pane" aria-selected="false">Diff</button></nav>
@@ -120,6 +127,19 @@ const usageText=(u,t)=>{if(!t)return '';const total=(t.input||0)+(t.output||0);i
  return [compact(total)+' tokens',...(t.cost!=null?[t.cost===0?'$0':t.cost<0.0001?'<$0.0001':t.cost<0.01?'$'+t.cost.toFixed(4):'$'+t.cost.toFixed(2)]:[]),...(u?.limit!=null?[u.calls+'/'+u.limit+' calls']:[])].join(' · ');};
 const PROVIDERS={openrouter:'OpenRouter',openai:'Endpoint',claude:'Claude Code',codex:'Codex'};
 const routeText=r=>r?.provider?[PROVIDERS[r.provider]||r.provider,r.model].filter(Boolean).join(' '):'';
+// The repository's understanding score: first-try accuracy, streak, and skip rate.
+function scoreView(sc){
+ $('score').hidden=!sc;if(!sc)return;
+ const pct=sc.calibrating?Math.round(100*sc.answered/(sc.answered+sc.needed)):sc.accuracy;
+ $('score').className='score'+(sc.calibrating?' calibrating':sc.accuracy>=80?' good':'');
+ $('score-arc').style.strokeDasharray=pct+' 100';
+ $('score-value').textContent=sc.calibrating?sc.answered+'/'+(sc.answered+sc.needed):sc.accuracy+'%';
+ $('score-label').textContent=sc.calibrating?'Calibrating':'Understanding · first try';
+ const meta=sc.calibrating?['score after '+(sc.answered+sc.needed)+' answers']:[sc.answered+' questions'];
+ if(!sc.calibrating&&sc.streak>1)meta.push(sc.streak+' in a row');
+ if(sc.skipRate!=null)meta.push('skipped '+sc.skipRate+'%');
+ $('score-meta').textContent=meta.join(' · ');
+}
 const resize=()=>{$('response').style.height='auto';$('response').style.height=Math.min($('response').scrollHeight||76,180)+'px';};
 function controls(){
  if(!current)return;
@@ -169,7 +189,7 @@ function render(state){
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
  const repo=state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',repo||state.change?.header?.repository||'');$('meta').title=state.repoRoot||'';
- text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));const messages=state.messages||[];
+ text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));scoreView(state.score);const messages=state.messages||[];
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;

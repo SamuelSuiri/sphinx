@@ -547,3 +547,22 @@ test('a small change the reviewer finds trivial passes with its reason; a larger
   await assert.rejects(large.store.start(big.id, large.config), /no grounded questions/);
   assert.notEqual((await large.store.read(big.id)).status, 'passed');
 });
+
+test('each question is scored once: first-try correct, a miss after a wrong answer or explanation, never for a dispute', async t => {
+  const { readStats } = await import('../src/stats.js');
+  const follow = { ...q, id: 'follow', prompt: 'After a restart, can the same request run again? Why?' };
+  const verdicts = ['incorrect', 'correct'];
+  const { store, config, env } = await fixture(t, {
+    generate: async (_s, _c, { beforeCall }) => { await beforeCall(); return { questions: [q, { ...q, id: 'second', prompt: 'Does a second worker share the guard? Why?' }], review: { version: 1, summary: 's', evidence: 'x', evidencePaths: ['src/order.js'], toolCalls: 1, compactions: 0 } }; },
+    grade: async request => { await request.beforeCall(); const verdict = request.dispute ? 'ambiguous' : verdicts.shift() ?? 'correct'; return { verdict, feedback: verdict === 'correct' ? '' : 'No.', followUp: verdict === 'incorrect' ? follow : null }; },
+  });
+  const medium = { ...snapshot, id: '9'.repeat(64), stats: { additions: 200, deletions: 40, files: 6 } };
+  await store.ensure(medium, config);
+  await store.start(medium.id, config);
+  await store.answer(medium.id, 'It is ambiguous.', config, { dispute: true });
+  await store.answer(medium.id, 'Wrong idea.', config);
+  await store.answer(medium.id, 'Right idea.', config);
+  await store.answer(medium.id, 'Right again.', config);
+  const stats = await readStats(medium.repoRoot, env);
+  assert.deepEqual([stats.answered, stats.firstTry, stats.completed], [2, 1, 1], 'Question 1 missed then recovered counts once as a miss; question 2 first-try');
+});

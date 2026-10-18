@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { readStats, scoreSummary } from './stats.js';
 import { planProviders } from './evaluator.js';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -63,7 +64,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   let state = { phase: 'waiting', operationClosed: false, revision: randomUUID(), sequence, message: 'Waiting for the checkpoint.', messages: [] };
   // The chat transcript for the current checkpoint lives only in this process.
   // It contains public questions, feedback, and the human's own text.
-  let transcript = [], turns = 0;
+  let transcript = [], turns = 0, score = null;
+  // The repository's understanding score, refreshed after every graded answer.
+  const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
   // beside the questionnaire and can never block, grade, or approve it.
   let view, evidence, evidenceKey;
@@ -91,7 +94,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -255,6 +258,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       if (session.snapshot.repoRoot !== request.repoRoot) throw new Error('This checkpoint belongs to another repository.');
       await validate(session.snapshot, config);
       startView(request, session.snapshot, config, operationEnv, store);
+      await refreshScore(request.repoRoot, operationEnv).catch(() => {});
       let visible = store.public(session);
       publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'working', message: 'Preparing your understanding check…' });
       await ensureServer(operationEnv);
@@ -306,6 +310,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
           })).finally(dropDraft);
           settle('graded');
+          await refreshScore(request.repoRoot, operationEnv).catch(() => {});
           if (visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
         } catch (error) {
           settle('not-graded');

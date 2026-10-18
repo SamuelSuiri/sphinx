@@ -334,3 +334,14 @@ test('the context line names the model reviewing this check', () => {
   p.update({ ...question, sequence: 2, route: { provider: 'claude', model: 'haiku', tier: 'small' } });
   assert.equal(p.nodes.usage.textContent, 'Claude Code haiku');
 });
+
+test('the header shows the repository score, or calibration progress before it exists', () => {
+  const p = page();
+  p.update({ ...question, score: { calibrating: true, answered: 2, needed: 3, accuracy: null, streak: 2, skipRate: null } });
+  assert.equal(p.nodes.score.hidden, false);
+  assert.deepEqual([p.nodes['score-value'].textContent, p.nodes['score-label'].textContent], ['2/5', 'Calibrating']);
+  p.update({ ...question, sequence: 2, score: { calibrating: false, answered: 34, needed: 0, accuracy: 82, streak: 3, skipRate: 6 } });
+  assert.equal(p.nodes['score-value'].textContent, '82%');
+  assert.equal(p.nodes['score-meta'].textContent, '34 questions · 3 in a row · skipped 6%');
+  assert.equal(p.nodes['score-arc'].style.strokeDasharray, '82 100');
+});

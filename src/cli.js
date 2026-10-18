@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readStats, scoreSummary } from './stats.js';
 import { planProviders } from './evaluator.js';
 import { VERSION } from './version.js';
 import { fileURLToPath } from 'node:url';
@@ -461,6 +462,8 @@ async function statusCommand(command, values) {
   terminal.section('Configured checkpoints'); printConfiguration(terminal, config, { routes: false });
   if (preparation) terminal.rows([['Background review', preparation.status], ...(preparation.error ? [['Details', preparation.error]] : [])]);
   if (!active) { terminal.blank(); terminal.warning('Policy alone does not install hooks. Use sphinx install, or sphinx install --repo when this repository overrides core.hooksPath.'); }
+  const score = scoreSummary(await readStats(repo.root));
+  terminal.rows([['Understanding', score.calibrating ? `Calibrating · ${score.answered} of ${score.answered + score.needed} answers` : `${score.accuracy}% first try · ${score.answered} questions${score.streak > 1 ? ` · ${score.streak} in a row` : ''}${score.skipRate !== null ? ` · skipped ${score.skipRate}% of checks` : ''}`]]);
   if (yolo) { terminal.blank(); terminal.warning(`Yolo mode is on ${yolo.scope === 'repo' ? 'for this repository' : 'globally'} since ${yolo.since}: checks are skipped. Run sphinx yolo${yolo.scope === 'global' ? ' outside a repository' : ''} to turn it off.`); }
   terminal.section('Pending assessments'); printPending(terminal, pending);
   if (overrides.length) { terminal.section('Recent overrides'); terminal.rows(overrides.map(row => [row.at, `${row.kind}${row.target ? ` · ${row.target}` : ''}${row.reason ? ` · ${row.reason}` : ''}`])); }

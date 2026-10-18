@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { REVIEWER_PRESETS } from './model-presets.js';
+import { recordAnswer, recordCheck } from './stats.js';
 import { withUsageMeter, withUsagePurpose, addUsage } from './usage.js';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
@@ -339,6 +340,11 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       // model usage, and leaves the same question available to the human.
       const beforeAnswer = structuredClone(session);
       session.attempts.push({questionId:question.id,answer:text.trim(),verdict:result.verdict,feedback:result.feedback,at:now()});
+      // Score each question once, on its first real grade. A dispute or an
+      // ambiguous grade leaves it unscored; asking for an explanation counts as a miss.
+      const scoredIndex = session.index;
+      const scoreThis = !dispute && result.verdict !== 'ambiguous' && !(session.scored || []).includes(scoredIndex);
+      if (scoreThis) session.scored = [...(session.scored || []), scoredIndex];
       // The grader is asked to skip feedback on a correct answer; if it wrote some anyway, show it.
       session.lastFeedback = result.feedback;
       if (result.verdict === 'correct') {
@@ -370,6 +376,8 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         }
         throw error;
       }
+      if (scoreThis) await recordAnswer({ repoRoot: session.snapshot.repoRoot, correct: result.verdict === 'correct' && !learn, env });
+      if (session.status === 'passed') await recordCheck({ repoRoot: session.snapshot.repoRoot, outcome: 'completed', env });
       return {...publicSession(session), verdict:result.verdict};
     });
   }
@@ -389,6 +397,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       if (session.status === 'passed') return publicSession(session);
       session.status = 'skipped'; session.updatedAt = now();
       await save(session);
+      await recordCheck({ repoRoot: session.snapshot.repoRoot, outcome: 'skipped', env });
       return publicSession(session);
     });
   }
