@@ -73,7 +73,7 @@ test('missing authentication fails before a request and an isolated saved key is
 });
 
 test('HTTP errors remain actionable without exposing authentication or the provider response body', async () => {
-  for (const [status, message] of [[401, /sphinx auth/], [429, /Provider or account rate limit.*will not switch models/], [400, /structured-output/], [402, /insufficient credits/], [503, /unavailable/], [502, /Request failed/]]) {
+  for (const [status, message] of [[401, /sphinx auth/], [429, /Provider or account rate limit.*switch this check to your Claude Code or Codex plan/], [400, /structured-output/], [402, /insufficient credits/], [503, /unavailable/], [502, /Request failed/]]) {
     let calls = 0;
     await assert.rejects(callOpenRouter({ ...defaults, fetchImpl: async () => { calls++; return new Response(`server diagnostic ${apiKey}`, { status }); } }), error => {
       assert.match(error.message, message);

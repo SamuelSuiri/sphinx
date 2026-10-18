@@ -1,11 +1,12 @@
 import { createServer } from 'node:http';
+import { planProviders } from './evaluator.js';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, policyHash } from './config.js';
 import { revalidateSnapshot } from './git.js';
 import { createSessionStore } from './sessions.js';
-import { prepareInteractiveCheck } from './check-recovery.js';
+import { prepareInteractiveCheck, isRateLimit, switchChoices, PLAN_NAMES } from './check-recovery.js';
 import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTerminal } from './terminal-launch.js';
 import { browserPage } from './browser-page.js';
 import { recordOverride } from './overrides.js';
@@ -51,7 +52,7 @@ function publicFields(state) {
 export function createBrowserInterview({ env = process.env, signal, timeoutMs = 25 * 60 * 1000,
   store: providedStore, readConfig = loadConfig, revalidate = revalidateSnapshot,
   reserve = claimCheckpointDialog, release = finishCheckpointDialog, waitForExisting = waitForCheckpointTerminal,
-  openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`), logOverride = recordOverride,
+  openBrowser = openQuestionnaireBrowser, output = line => process.stderr.write(`${line}\n`), logOverride = recordOverride, findPlans = planProviders,
   loadView = loadChangeView,
 } = {}) {
   const token = randomBytes(32).toString('base64url'), nonce = randomBytes(24).toString('base64');
@@ -259,7 +260,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       await ensureServer(operationEnv);
       const notes = [];
       const recoveryUI = { warning: text => notes.push(text), note: text => notes.push(text), command: () => {} };
+      const plans = await findPlans(operationEnv).catch(() => []);
       visible = await prepareInteractiveCheck({ config, signal: localSignal, waitingGit: request.delivery === 'hook', ui: recoveryUI,
+        planProviders: plans, switchRoute: provider => store.switchRoute(request.id, config, provider, { signal: localSignal }),
         inspect: async () => store.public(await store.read(request.id)),
         validate: () => validate(session.snapshot, config),
         authorizeMore: () => store.retryReview(request.id, config, { signal: localSignal }),
@@ -308,6 +311,17 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
           settle('not-graded');
           localSignal.throwIfAborted(); await validate(session.snapshot, config);
           visible = store.public(await store.read(request.id));
+          // A rate-limited API route can hand grading to the user's coding-agent plan.
+          if (isRateLimit(error, visible.route) && plans.length) {
+            const choices = [...switchChoices(plans, visible.route.provider), { value: 'back', label: 'Back to the question', description: 'Keep the current model and try again later. Your draft answer is kept.' }];
+            const picked = await waitForAction({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'recovery', message: 'Grading was rate limited', error: error.message, choices }, choices.map(choice => choice.value));
+            if (picked.action.startsWith('switch-')) {
+              const provider = picked.action.slice('switch-'.length);
+              visible = await store.switchRoute(request.id, config, provider, { signal: localSignal });
+              say({ role: 'sphinx', kind: 'notice', text: `Switched this check to ${PLAN_NAMES[provider][0]}. Send your answer again.` });
+              continue;
+            }
+          }
           publish({ ...publicFields(visible), repoRoot: request.repoRoot, phase: 'question', error: error.message, message: 'Your response was not accepted. Review the error before submitting again.' });
           // Re-display through waitForAction on the next iteration; never resend.
           visible = { ...visible, browserError: error.message };

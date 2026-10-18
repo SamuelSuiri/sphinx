@@ -227,6 +227,13 @@ async function planSignInProblem(provider, { runner, cwd, env, signal }) {
   return 'Codex is not signed in with a ChatGPT plan, and Sphinx ignores API keys in your environment so reviews bill your plan. Run codex login, or run sphinx config --cli-billing api to use API keys instead.';
 }
 
+/** Coding-agent CLIs installed on PATH that can take over a check on the user's plan. */
+export async function planProviders(env = process.env) {
+  const found = [];
+  for (const name of ['claude', 'codex']) if (await findExecutable(name, env)) found.push(name);
+  return found;
+}
+
 async function findExecutable(command, env) {
   for (const directory of (env.PATH ?? '').split(delimiter).filter(Boolean)) {
     const candidate = resolve(directory, command);

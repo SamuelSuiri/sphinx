@@ -14,7 +14,7 @@ const failureAdvice = {
   401: 'API key was rejected. Run sphinx auth.',
   402: 'OpenRouter account has insufficient credits.',
   404: 'No compatible provider was available for this request. Select a route supporting JSON schema or retry later.',
-  429: 'Provider or account rate limit reached. Wait before retrying; Sphinx will not switch models.',
+  429: 'Provider or account rate limit reached. Wait before retrying, or switch this check to your Claude Code or Codex plan when offered.',
   503: 'Selected model is unavailable. Retry later or explicitly select another route.',
 };
 

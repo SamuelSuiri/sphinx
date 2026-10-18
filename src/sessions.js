@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { REVIEWER_PRESETS } from './model-presets.js';
 import { withUsageMeter, addUsage } from './usage.js';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
@@ -373,5 +374,29 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       return true;
     });
   }
-  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,public:publicSession};
+  /**
+   * Move one check to a coding agent's signed-in plan, for example after an
+   * OpenRouter rate limit. Only this check changes; saved routes stay as they
+   * are. Unanswered investigation is dropped because its conversation belongs
+   * to the previous transport; existing questions and progress are kept.
+   */
+  async function switchRoute(id, config, provider, { signal } = {}) {
+    if (!['claude', 'codex'].includes(provider)) throw new Error('Only Claude Code or Codex can take over a check on your plan.');
+    return withLock(id, env, async () => {
+      signal?.throwIfAborted();
+      const session = await read(id);
+      if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Start a fresh check.');
+      if (!['pending', 'active'].includes(session.status)) throw new Error('Only an unfinished check can switch models.');
+      const preset = REVIEWER_PRESETS.find(item => item.id === `${provider}-economy`);
+      const model = preset?.models[session.route.tier]?.model ?? null;
+      const at = now();
+      session.routeChanges = [...(session.routeChanges || []), { at, calls: session.calls, from: { provider: session.route.provider, model: session.route.model }, to: { provider, model } }];
+      session.route = { ...session.route, provider, model };
+      if (!session.questions.length) delete session.reviewerCheckpoint;
+      session.updatedAt = at;
+      await save(session);
+      return publicSession(session);
+    });
+  }
+  return {ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,switchRoute,public:publicSession};
 }

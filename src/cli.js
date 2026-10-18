@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { planProviders } from './evaluator.js';
 import { VERSION } from './version.js';
 import { fileURLToPath } from 'node:url';
 import { lstat } from 'node:fs/promises';
@@ -381,6 +382,8 @@ async function checkCommand(values) {
       validate: () => validateCheckpoint(session.snapshot, config), config,
       choose: createPrompts({ ask, ui: terminal }).choose, ui: terminal,
       waitingGit: process.env.SPHINX_WAITING_GIT === '1', signal,
+      planProviders: await planProviders().catch(() => []),
+      switchRoute: provider => store.switchRoute(session.id, config, provider, { signal }),
     });
     signal.throwIfAborted();
     if (!state) return 1;

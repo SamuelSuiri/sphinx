@@ -15,7 +15,7 @@ import { recentOverrides } from '../src/overrides.js';
 import { textStream } from '../src/stream.js';
 
 const q = { id: 'duplicate', concept: 'idempotency', prompt: 'Can a retry duplicate the insert? <script>PRIVATE_SCRIPT</script>', choices: ['Yes', 'No'], expectedAnswer: 'PRIVATE_KEY', rationale: 'PRIVATE_RUBRIC', evidence: [{ path: 'app.js', reason: 'The insert is unconditional.' }] };
-async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {} } = {}) {
+async function fixture(t, { generate, grade, maxModelCalls = 20, validate = async () => {}, plans = [] } = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'sphinx-browser-'));
   const env = { SPHINX_HOME: path.join(home, 'state'), SPHINX_USER_HOME: home }, repoRoot = path.join(home, 'repo'); await mkdir(repoRoot);
   const config = { ...structuredClone(DEFAULT_CONFIG), maxModelCalls };
@@ -27,7 +27,7 @@ async function fixture(t, { generate, grade, maxModelCalls = 20, validate = asyn
   });
   await store.ensure(snapshot, config);
   const controller = new AbortController(), output = [];
-  const interview = createBrowserInterview({ env, signal: controller.signal, store, readConfig: async () => config, revalidate: async () => { await validate(); return true; }, openBrowser: async () => { opened++; return true; }, output: text => output.push(text) });
+  const interview = createBrowserInterview({ env, signal: controller.signal, store, readConfig: async () => config, revalidate: async () => { await validate(); return true; }, openBrowser: async () => { opened++; return true; }, output: text => output.push(text), findPlans: async () => plans });
   const request = { id: snapshot.id, token: randomUUID(), repoRoot, delivery: 'hook', createdAt: Date.now() };
   const tasks = [];
   const present = (next = request) => { const task = interview.present({ request: next }); tasks.push(task); return task; };
@@ -331,4 +331,23 @@ test('the page serves the frozen change and verified question evidence without d
   assert.equal((await done).status, 'passed');
   assert.match(interview.state.message, /You passed\. You can close this tab/);
   assert.match(interview.state.message, /not a review of every changed line/);
+});
+
+test('a rate limit while grading offers the coding-agent plan, then the same question is answered on it', async t => {
+  const providers = [];
+  const f = await fixture(t, { plans: ['claude'], grade: async (request, count) => {
+    providers.push(request.config.provider);
+    if (count === 1) throw Object.assign(new Error('OpenRouter HTTP 429 (code: 429; error_type: rate_limit_exceeded).'), { code: 'OPENROUTER_PROVIDER_ERROR', status: 429, errorType: 'rate_limit_exceeded' });
+    return { verdict: 'correct', feedback: 'Correct.', followUp: null };
+  } });
+  const done = f.present(); await f.waitFor('question');
+  await f.post('answer', { response: 'Yes, it inserts again.' });
+  const recovery = await f.waitFor('recovery');
+  assert.deepEqual(recovery.choices.map(choice => choice.value), ['switch-claude', 'back']);
+  await f.post('switch-claude');
+  await f.waitFor('question');
+  assert.match(f.interview.state.messages.at(-1).text, /Switched this check to Claude Code\. Send your answer again\./);
+  await f.post('answer', { response: 'Yes, it inserts again.' });
+  assert.equal((await done).status, 'passed');
+  assert.deepEqual(providers, ['openrouter', 'claude']);
 });

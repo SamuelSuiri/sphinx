@@ -4,6 +4,16 @@ import { modelUsageText } from './usage.js';
 const setupCodes = new Set(['INVALID_CONFIG', 'INVALID_SNAPSHOT', 'STALE_SNAPSHOT', 'CONTEXT_LIMIT', 'TOOL_RESULT_LIMIT', 'OUTPUT_LIMIT', 'PROVIDER_NOT_FOUND', 'PROVIDER_START_FAILED', 'PROVIDER_FAILED']);
 const setupTypes = new Set(['authentication', 'permission_denied', 'payment_required', 'context_length_exceeded', 'max_tokens_exceeded', 'token_limit_exceeded', 'string_too_long', 'invalid_request', 'invalid_prompt', 'not_found', 'precondition_failed', 'payload_too_large', 'unprocessable', 'content_policy_violation', 'refusal']);
 
+/** A rate limit from an API route that a signed-in coding-agent plan could take over. */
+export const isRateLimit = (error, route) => ['openrouter', 'openai'].includes(route?.provider)
+  && (error?.status === 429 || error?.errorType === 'rate_limit_exceeded');
+
+export const PLAN_NAMES = { claude: ['Claude Code', 'Claude'], codex: ['Codex', 'ChatGPT'] };
+export const switchChoices = (providers, from) => providers.map(provider => ({
+  value: `switch-${provider}`, label: `Switch this check to ${PLAN_NAMES[provider][0]}`,
+  description: `Continue on your signed-in ${PLAN_NAMES[provider][1]} plan instead of ${from === 'openai' ? 'your API endpoint' : 'OpenRouter'}. Only this check changes; your saved model settings stay the same.`,
+}));
+
 function retryable(error, before, state, minimum) {
   if (setupCodes.has(error.code) || setupTypes.has(error.errorType)) return false;
   if (error.code === 'OPENROUTER_PROVIDER_ERROR' && [400, 401, 402, 403, 404, 413, 422].includes(error.status)) return false;
@@ -33,7 +43,7 @@ function diagnostic(error, state) {
  * chooses to retry, expands a budget, changes a route, or awards completion on
  * its own. inspect() exposes public state only; validate() checks current Git
  * content and policy before a recovery choice is shown. */
-export async function prepareInteractiveCheck({ start, inspect, authorizeMore, validate, config, choose, ui, waitingGit = false, signal }) {
+export async function prepareInteractiveCheck({ start, inspect, authorizeMore, validate, config, choose, ui, waitingGit = false, signal, planProviders = [], switchRoute }) {
   for (;;) {
     signal?.throwIfAborted();
     const before = await inspect();
@@ -64,6 +74,9 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
           description: `${remaining} calls remain; review needs at least ${reviewMinimum} plus ${reserve} reserved for grading. Keep all ${state.usage.calls} used calls counted and record this new allowance.`,
         });
       }
+      // Offer the user's own coding-agent plan first when an API route is rate limited.
+      const switches = switchRoute && isRateLimit(error, state.route) ? switchChoices(planProviders, state.route.provider) : [];
+      choices.unshift(...switches);
       if (!choices.length) ui.note('Resolve the reported setup or evidence problem before resuming. Repeating this attempt is not offered here.');
       choices.push({ value: 'pause', label: 'Pause this check', description: 'Save progress without making another model request. The Git operation remains unapproved.' });
       const action = await choose({
@@ -80,6 +93,13 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
         return null;
       }
       if (!choices.some(choice => choice.value === action)) throw new Error('Invalid review recovery choice. No additional model request was made.');
+      if (action.startsWith('switch-')) {
+        const provider = action.slice('switch-'.length);
+        await switchRoute(provider);
+        signal?.throwIfAborted();
+        ui.note(`Switched this check to ${PLAN_NAMES[provider][0]}. Your saved model settings are unchanged.`);
+        continue;
+      }
       if (action === 'extend') {
         await authorizeMore();
         signal?.throwIfAborted();
