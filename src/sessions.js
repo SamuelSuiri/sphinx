@@ -435,7 +435,10 @@ export function createSessionStore({ env = process.env, generate = generateAsses
     });
   }
   /** Pass a documentation-only change before any page or model is involved. */
-  async function passTrivial(id, config) {
+  async function passTrivial(id, config, snapshot) {
+    // Decide from the file list without the lock; a check that background
+    // preparation is holding is simply not passed here and follows the normal flow.
+    if (snapshot && !documentationOnly(snapshot.files)) return false;
     return withLock(id, env, async () => {
       const session = await read(id);
       if (session.status !== 'pending' || session.questions.length || !documentationOnly(session.snapshot.files)) return false;
@@ -443,7 +446,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       passWithoutQuestions(session, config, 'Documentation-only change.');
       await save(session);
       return true;
-    });
+    }).catch(error => { if (error.code === 'SPHINX_SESSION_BUSY') return false; throw error; });
   }
   return {passTrivial,ensure,approved,prepare,start,retryReview,refreshBudget,answer,pending,read,skip,discard,switchRoute,public:publicSession};
 }

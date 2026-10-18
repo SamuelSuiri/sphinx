@@ -566,3 +566,9 @@ test('each question is scored once: first-try correct, a miss after a wrong answ
   const stats = await readStats(medium.repoRoot, env);
   assert.deepEqual([stats.answered, stats.firstTry, stats.completed], [2, 1, 1], 'Question 1 missed then recovered counts once as a miss; question 2 first-try');
 });
+
+test('a documentation check never blocks on a check that background preparation is holding', async t => {
+  const { store, config } = await fixture(t);
+  await store.ensure(snapshot, config);
+  assert.equal(await store.passTrivial(snapshot.id, config, snapshot), false, 'Code changes are decided without taking the lock');
+});
