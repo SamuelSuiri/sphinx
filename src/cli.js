@@ -28,7 +28,7 @@ import { modelUsageText, modelLimitText, readUsage, summarizeUsage, printUsage, 
 import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
-const POLICY_FLAGS = ['branches', 'events', 'level', 'remotes'];
+const POLICY_FLAGS = ['branches', 'events', 'level', 'distance', 'remotes'];
 const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 'allow-paid', 'max-model-calls', 'max-output-tokens', 'cli-billing'];
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
@@ -36,7 +36,7 @@ const OPTIONS = {
   init: ['yes', 'json', 'context', 'suggest', 'apply', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
-  status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
+  status: ['json'], config: ['json', 'distance', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
   mcp: [], yolo: ['json', 'reason'], usage: ['json'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
@@ -134,7 +134,7 @@ export function applyInstallOptions(current, values) {
   }
   if (values['max-model-calls'] !== undefined) config.maxModelCalls = parseModelCalls(values['max-model-calls']);
   if (values['max-output-tokens'] !== undefined) config.maxOutputTokens = parseOutputTokens(values['max-output-tokens']);
-  for (const key of ['provider', 'model', 'level', 'mode']) if (values[key] !== undefined) config[key] = values[key];
+  for (const key of ['provider', 'model', 'level', 'distance', 'mode']) if (values[key] !== undefined) config[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) config[key] = splitList(values[key]);
   if (values.provider !== undefined || values.model !== undefined) {
     if (values.provider !== undefined && values.model === undefined) {
@@ -163,6 +163,7 @@ function policyRows(config) {
     ['Push checkpoints', enabled && config.events.includes('pre-push') ? `Destination branches: ${config.branches.join(', ') || 'none'}. Remotes: ${config.remotes.join(', ') || 'none'}.` : 'Off. Local pushes are not checked by this policy.'],
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
+    ['Distance', config.distance === 'low' ? 'low · implementation details: specific logic, conditions, and edge cases' : 'high · behavior and consequences of the change as a whole'],
     ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
     ['Behavior', !enabled ? 'Disabled for this repository' : 'The Git operation only goes through after you answer the understanding questions correctly'],
   ];
@@ -338,7 +339,7 @@ async function initCommand(initial) {
     }
   }
   const overrides = {};
-  for (const key of ['level']) if (values[key] !== undefined) overrides[key] = values[key];
+  for (const key of ['level', 'distance']) if (values[key] !== undefined) overrides[key] = values[key];
   for (const key of ['branches', 'events', 'remotes']) if (values[key] !== undefined) overrides[key] = splitList(values[key]);
   let context = values.context;
   if (context === undefined && !initial.yes && !initial.json && process.stdin.isTTY && !(await loadProjectContext(repo.root)).text) {
@@ -470,7 +471,7 @@ async function statusCommand(command, values) {
 export function parseCommandLine(argv) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
-    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
+    preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, distance: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
     context: { type: 'string' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
@@ -543,7 +544,7 @@ export async function main(argv) {
     return result.checks.every(check => check.ok) ? 0 : 1;
   }
   if (command === 'config') {
-    if (MODEL_FLAGS.some(key => values[key] !== undefined)) {
+    if ([...MODEL_FLAGS, 'distance'].some(key => values[key] !== undefined)) {
       const current = await loadConfig(), previousMaxModelCalls = current.maxModelCalls;
       const config = applyInstallOptions(current, values), maxModelCalls = config.maxModelCalls;
       await saveConfig(config);

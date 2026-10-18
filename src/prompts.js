@@ -94,6 +94,10 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     { value: 'standard', label: 'Standard', description: `Caps: ${questionCapsText('standard')}. Behavior, failures, and system interactions.` },
     { value: 'thorough', label: 'Thorough', description: `Caps: ${questionCapsText('thorough')}. Also consider rollout, rollback, and compatibility.` },
   ] });
+  if (values.distance === undefined) values.distance = await prompts.choose({ title: 'How close to the code should questions get?', current: config.distance ?? 'high', choices: [
+    { value: 'high', label: 'High level', description: 'What the change does and what it affects.' },
+    { value: 'low', label: 'Low level', description: 'The specific logic, conditions, and edge cases.' },
+  ] });
   return values;
 }
 
@@ -154,7 +158,7 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
     }
   }
   // Offer the saved (or default) policy as one choice; branch, remote, and depth details stay optional.
-  if (['events', 'branches', 'remotes', 'level'].every(key => values[key] === undefined)) {
+  if (['events', 'branches', 'remotes', 'level', 'distance'].every(key => values[key] === undefined)) {
     const policy = await prompts.choose({
       title: 'When should Sphinx check your understanding?',
       description: 'Each repository can override this later with sphinx init.',
@@ -177,5 +181,5 @@ export function policyText(config) {
   if (config.events.includes('pre-push')) parts.push(`before pushes to ${branches} on ${remotes}`);
   if (config.events.includes('pre-commit')) parts.push(`before commits on ${branches}`);
   const text = parts.join(' and ');
-  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth.`;
+  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth, ${config.distance === 'low' ? 'low' : 'high'} level.`;
 }

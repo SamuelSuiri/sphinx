@@ -9,7 +9,7 @@ export const PROVIDERS = Object.freeze(['openrouter', 'codex', 'claude', 'openai
 
 export const DEFAULT_CONFIG = {
   version: 1, enabled: true, provider: 'openrouter', model: 'openrouter/free',
-  level: 'standard', mode: 'block', events: ['pre-push'],
+  level: 'standard', distance: 'high', mode: 'block', events: ['pre-push'],
   branches: ['main', 'master'], remotes: ['*'], exclude: [],
   maxContextBytes: 100000, timeoutSeconds: 180, receiptHours: 24,
   maxModelCalls: null, maxOutputTokens: 4096, allowPaid: false, cliBilling: 'plan',
@@ -73,7 +73,7 @@ export function validateConfig(config) {
   for (const key of Object.keys(config)) if (!allowed.has(key)) fail(`unknown setting ${key}`);
   if (config.version !== 1) fail('version must be 1');
   for (const key of ['enabled', 'allowPaid', 'backgroundPreparation', 'workingContext']) if (typeof config[key] !== 'boolean') fail(`${key} must be boolean`);
-  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], mode: ['block'], cliBilling: ['plan','api'] })) {
+  for (const [key, values] of Object.entries({ provider: PROVIDERS, level: ['relaxed','standard','thorough'], distance: ['high','low'], mode: ['block'], cliBilling: ['plan','api'] })) {
     if (key === 'mode' && config.mode === 'advisory') fail('mode "advisory" was removed. Remove mode from your configuration; use sphinx yolo to bypass checks when urgent');
     if (!values.includes(config[key])) fail(`${key} must be ${values.join(', ')}`);
   }
@@ -110,7 +110,7 @@ function merged(base, overrides) {
   return { ...base, ...overrides, models: { ...base.models, ...overrides?.models }, routing: { ...base.routing, ...overrides?.routing } };
 }
 
-export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','mode','events','branches','remotes','exclude','backgroundPreparation']);
+export const REPOSITORY_CONFIG_KEYS = Object.freeze(['version','enabled','level','distance','mode','events','branches','remotes','exclude','backgroundPreparation']);
 
 export function validateRepositoryConfig(local, { env = process.env, source = '.sphinxconfig' } = {}) {
   if (!local || typeof local !== 'object' || Array.isArray(local)

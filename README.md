@@ -144,7 +144,7 @@ Your answers go straight from the page to Sphinx. Your coding agent sees only th
 
 ## Limits and cost
 
-Question count depends on the size of the change and the depth you choose. Small changes get one question, and large ones get up to three at the default depth. After commits, Sphinx prepares questions in the background, so they are often ready by the time you push. Calls, tokens, and (when reported) cost appear in the questionnaire.
+Question count depends on the size of the change and the depth you choose: small changes get up to one question (none for documentation or trivial edits), and large ones up to three at the default depth. Understanding distance sets how close to the code questions get: `high` (default) asks what your change does and affects, `low` asks about its specific logic and edge cases. Set it in setup, with `sphinx config --distance low`, or per repository in `.sphinxconfig`. After commits, Sphinx prepares questions in the background, so they are often ready by the time you push. Calls, tokens, and (when reported) cost appear in the questionnaire.
 
 ```sh
 sphinx config --max-model-calls 30        # optional cap per check (1–100)

@@ -165,6 +165,7 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
   "events": ["pre-push"],
   "branches": ["main", "release/*"],
   "level": "standard",
+  "distance": "high",
   "exclude": ["vendor/**"]
 }
 ```
@@ -176,6 +177,7 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
 | `branches` | Push policies match the **destination** branch; commit policies match the current local branch |
 | `remotes` | Remote name patterns for pushes; default `*` |
 | `level` | `relaxed`, `standard`, or `thorough` |
+| `distance` | `high` (default): questions about what the change does and affects; `low`: questions about its specific logic, conditions, and edge cases |
 | `exclude` | Extra ignore patterns, added to machine-wide ones |
 | `backgroundPreparation` | `false` opts this repository out |
 

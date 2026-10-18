@@ -879,3 +879,13 @@ test('zero questions needs a reason, is offered only for small changes, and the 
   const result = await overruled.evaluator.generateAssessment(change, runtime);
   assert.equal(result.questions.length, 1, 'The audit added the question the reviewer skipped');
 });
+
+test('question prompts follow the configured understanding distance', async t => {
+  for (const [distance, expected, absent] of [['high', /Understanding distance: high/, /Understanding distance: low/], ['low', /Understanding distance: low/, /Understanding distance: high/]]) {
+    let request;
+    const { evaluator } = await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { request ??= args; }) });
+    await evaluator.generateAssessment(snapshot, { ...config, provider: 'openrouter', distance });
+    assert.match(JSON.stringify(request.messages), expected);
+    assert.doesNotMatch(JSON.stringify(request.messages), absent);
+  }
+});
