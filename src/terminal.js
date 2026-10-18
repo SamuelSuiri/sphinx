@@ -78,6 +78,20 @@ export function createTerminal({ stream = process.stdout, env = process.env, wid
       for (const line of lines.slice(1)) write(' '.repeat(maxLabel + 5) + line);
     }
   };
+  // Columns align when they fit; narrow terminals get wrapped label/value rows.
+  const table = (head, body) => {
+    const widths = head.map((_, column) => Math.max(...[head, ...body].map(row => stripAnsi(row[column]).length)));
+    if (2 + widths.reduce((sum, width) => sum + width + 3, -3) > size) {
+      rows(body.map(([label, ...cells]) => [label, cells.map((cell, index) => `${head[index + 1]} ${cell}`).join(' · ')]));
+      return;
+    }
+    const pad = (cell, column) => {
+      const room = ' '.repeat(widths[column] - stripAnsi(cell).length);
+      return column === 0 ? cell + room : room + cell;
+    };
+    write(style.muted(`  ${head.map(pad).join('   ')}`));
+    for (const [label, ...cells] of body) write(`  ${[style.strong(pad(label, 0)), ...cells.map((cell, index) => pad(cell, index + 1))].join('   ')}`);
+  };
   const banner = () => {
     write('');
     if (size >= 65) {
@@ -91,7 +105,7 @@ export function createTerminal({ stream = process.stdout, env = process.env, wid
     write('');
   };
   return {
-    width: size, style, line: paragraph, paragraph, section, rows, banner,
+    width: size, style, line: paragraph, paragraph, section, rows, table, banner,
     blank: () => write(''),
     success: text => paragraph(`${style.green('✓')} ${text}`),
     warning: text => paragraph(`${style.amber('!')} ${text}`),

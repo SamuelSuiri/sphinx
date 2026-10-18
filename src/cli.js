@@ -23,7 +23,7 @@ import { askInstall, askPolicy, createPrompts, questionCapsText, reviewCapsText,
 import { runGitGate } from './git-gate.js';
 import { loadProjectContext } from './repo-context.js';
 import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
-import { modelUsageText, modelLimitText } from './usage.js';
+import { modelUsageText, modelLimitText, readUsage, summarizeUsage, printUsage, usageDir } from './usage.js';
 import { toggleYolo, yoloStatus, recentOverrides } from './overrides.js';
 
 const CLI_PATH = fileURLToPath(new URL('../bin/sphinx.js', import.meta.url));
@@ -36,7 +36,7 @@ const OPTIONS = {
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
-  mcp: [], yolo: ['json', 'reason'],
+  mcp: [], yolo: ['json', 'reason'], usage: ['json'],
 };
 const json = value => console.log(JSON.stringify(value, null, 2));
 const ui = () => createTerminal();
@@ -546,6 +546,11 @@ export async function main(argv) {
     terminal.blank(); terminal.note('Use sphinx config --preset <name> to choose evaluator models, or --max-model-calls <1-100|unlimited> to set or clear an optional call cap. See sphinx config --help for tier overrides and paid routes.'); return 0;
   }
   if (command === 'check') return checkCommand(values);
+  if (command === 'usage') {
+    const summary = { ledger: usageDir(process.env), ...summarizeUsage(readUsage()) };
+    if (values.json) json(summary); else printUsage(ui(), summary, { ledgerPath: summary.ledger });
+    return 0;
+  }
   if (command === 'yolo') {
     const repo = await git.repository(process.cwd()).catch(() => null);
     const result = await toggleYolo({ repoRoot: repo?.root ?? null, reason: values.reason });
