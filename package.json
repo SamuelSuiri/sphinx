@@ -29,6 +29,7 @@
     "src",
     "scripts/postinstall.js",
     "docs",
+    "!docs/demo.gif",
     "eval/RESULTS.md",
     "eval/fixtures/known-false-negatives.json",
     "examples",

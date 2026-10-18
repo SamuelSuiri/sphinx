@@ -4,6 +4,8 @@
 
 <p align="center"><em>Outsource your thinking, not your understanding.</em></p>
 
+<p align="center"><img src="docs/demo.gif" width="860" alt="A git push pauses while Sphinx asks a question about the change in a local browser page; after a correct answer the push continues."></p>
+
 Sphinx adds an understanding check to agent-assisted development. When you push to a protected branch, Git waits while Sphinx asks you to predict what your change will do. If you miss something, it explains and gives you a new scenario to try. Once you pass, the same push continues. This works whether you or a coding agent ran `git push`.
 
 The questions come from a separate reviewer model. It reads the committed change through read-only Git tools and does not see the conversation that produced the code.
