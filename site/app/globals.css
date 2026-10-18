@@ -65,7 +65,7 @@ code { font-family: var(--mono), ui-monospace, Menlo, monospace; font-size: .86e
 blockquote { margin: 0; }
 blockquote p {
   margin: 0;
-  font: 400 clamp(36px, 8.4vw, 76px)/1.02 var(--serif);
+  font: 400 clamp(32px, 7vw, 62px)/1.04 var(--serif);
   letter-spacing: -.015em;
   text-indent: -.38em;
 }

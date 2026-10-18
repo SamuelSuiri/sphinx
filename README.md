@@ -2,7 +2,7 @@
 
 <h1 align="center">Sphinx</h1>
 
-<p align="center"><em>Outsource your thinking, not your understanding.</em></p>
+<p align="center"><em>You can outsource your thinking, but not your understanding.</em></p>
 
 <p align="center"><img src="docs/demo.gif" width="860" alt="A git push pauses while Sphinx asks a question about the change in a local browser page; after a correct answer the push continues."></p>
 

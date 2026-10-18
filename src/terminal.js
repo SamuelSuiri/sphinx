@@ -81,12 +81,12 @@ export function createTerminal({ stream = process.stdout, env = process.env, wid
   const banner = () => {
     write('');
     if (size >= 65) {
-      const side = { 4: style.strong('sphinx'), 6: 'Outsource your thinking,', 7: 'not your understanding.' };
+      const side = { 4: style.strong('sphinx'), 6: 'You can outsource your thinking,', 7: 'but not your understanding.' };
       SPHINX.forEach((line, index) => write(style.amber(line.padEnd(28)) + (side[index] || '')));
     } else {
       if (size >= 30) SPHINX.forEach(line => write(style.amber(line)));
       paragraph(style.strong('sphinx'));
-      paragraph('Outsource your thinking, not your understanding.');
+      paragraph('You can outsource your thinking, but not your understanding.');
     }
     write('');
   };

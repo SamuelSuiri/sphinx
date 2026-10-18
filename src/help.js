@@ -98,7 +98,7 @@ export const HELP = {
 
 export function printHelp(ui, command, { json = false } = {}) {
   if (command && !HELP[command]) throw new Error(`Unknown command ${command}. Run sphinx --help.`);
-  const data = command ? { command, ...HELP[command] } : { command: 'sphinx', summary: 'Outsource your thinking, not your understanding.', commands: Object.fromEntries(Object.entries(HELP).map(([name, help]) => [name, help.summary])) };
+  const data = command ? { command, ...HELP[command] } : { command: 'sphinx', summary: 'You can outsource your thinking, but not your understanding.', commands: Object.fromEntries(Object.entries(HELP).map(([name, help]) => [name, help.summary])) };
   if (json) { console.log(JSON.stringify(data, null, 2)); return; }
   if (!command) {
     ui.banner();

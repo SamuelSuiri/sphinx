@@ -26,7 +26,7 @@ export default function Home() {
         <section className="hero">
           <ul className="chips"><li>Free</li><li><a href={REPO}>FOSS</a></li></ul>
           <blockquote>
-            <p>“Outsource your thinking,<br /> not your <em>understanding</em>.”</p>
+            <p>“You can outsource your thinking,<br /> but not your <em>understanding</em>.”</p>
           </blockquote>
           <p className="attribution">— <a href={QUOTE}>Sun Tzu</a></p>
           <p className="lede">
