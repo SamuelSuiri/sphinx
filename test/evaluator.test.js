@@ -373,7 +373,8 @@ test('correct grading uses the precommitted rubric and keeps the verbatim answer
   assert.match(calls[0].input, /Accept behavioral equivalents in ordinary language/);
   assert.match(calls[0].input, /quoting the combined if expression is not required/);
   assert.match(calls[0].input, /without pixel values or specificity notation/);
-  assert.match(calls[0].input, /if the human omits a requested outcome, return value, ordering, or essential causal relationship/);
+  assert.match(calls[0].input, /looking for evidence of understanding, not a precise or complete answer/);
+  assert.match(calls[0].input, /return ambiguous only when the essential prediction or reason is genuinely absent/);
   assert.match(calls[0].input, /under this question's stated conditions, not a different failure or success scenario/);
   const data = JSON.parse(calls[0].input.split('\n').at(-1));
   assert.deepEqual(data.question.acceptance, question.acceptance);
