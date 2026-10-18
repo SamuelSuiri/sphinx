@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { withUsagePurpose } from './usage.js';
 import { createHash } from 'node:crypto';
 import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -129,7 +130,8 @@ export async function directorySize(directory) {
 
 /** Curate on the small-change route, waiting once on a rate limit; never throws. */
 export async function curateQuietly({ wait, ...options }) {
-  const call = options.call ?? (async args => (await import('./evaluator.js')).createEvaluator({ env: args.env }).runModel(args));
+  const run = options.call ?? (async args => (await import('./evaluator.js')).createEvaluator({ env: args.env }).runModel(args));
+  const call = args => withUsagePurpose('context', () => run(args));
   for (let attempt = 0; attempt < 2; attempt++) {
     try { return await curateContext({ ...options, call }); }
     catch (error) {
