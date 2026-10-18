@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { settingsTarget } from './user-file.js';
 import { lstat, readFile, mkdir, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
@@ -8,8 +9,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 async function readText(file) {
   try {
-    if ((await lstat(file)).isSymbolicLink()) throw new Error(`Refusing to replace symlink: ${file}`);
-    return await readFile(file, 'utf8');
+    return await readFile((await settingsTarget(file)).path, 'utf8');
   } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 
@@ -22,8 +22,11 @@ function parseJson(text, file) {
   } catch { throw new Error(`Cannot read ${file}: invalid JSON object. Fix the file and try again.`); }
 }
 
-async function writeText(file, text) {
-  if (text === null) { await rm(file, { force: true }); return; }
+async function writeText(link, text) {
+  const { path: file, linked } = await settingsTarget(link);
+  // Never delete a dotfiles target through its link; leave it empty instead.
+  if (text === null && !linked) { await rm(file, { force: true }); return; }
+  text ??= '';
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const mode = await stat(file).then(s => s.mode & 0o777).catch(() => 0o600);
   const temporary = `${file}.${randomUUID()}.tmp`;

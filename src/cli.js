@@ -468,6 +468,8 @@ export async function main(argv) {
       const result = await agentHook({ agent: argv[2], input: await readStdin(), cwd: process.cwd(), env: process.env });
       if (result.output) console.log(JSON.stringify(result.output)); return result.exitCode;
     }
+    // Cursor's command hook protocol lives in its own module and runs on import.
+    if (argv[1] === 'cursor') { await import('./cursor-hook.js'); return 0; }
     throw new Error('Unknown hook entry point.');
   }
   const { values, command, id } = parseCommandLine(argv);

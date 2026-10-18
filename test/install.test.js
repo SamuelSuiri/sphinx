@@ -543,3 +543,48 @@ test('preparation hooks preserve streaming input and original status while sched
   await uninstall(f.options);
   assert.equal(await readFile(path.join(f.repo, '.git/hooks/post-rewrite'), 'utf8'), '#!/bin/sh\nread first\nprintf "ack:%s\\n" "$first"\nread second\nprintf "done:%s:%s\\n" "$1" "$second"\nexit 13\n');
 });
+
+test('a dotfiles-symlinked Claude settings file is updated through its link, and uninstall keeps the target', async t => {
+  const f = await fixture(t);
+  const dotfiles = path.join(f.base, 'dotfiles'), target = path.join(dotfiles, 'claude-settings.json'), link = path.join(f.paths.claudeHome, 'settings.json');
+  await mkdir(dotfiles, { recursive: true }); await mkdir(f.paths.claudeHome, { recursive: true });
+  await writeFile(target, JSON.stringify({ theme: 'dark', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'mine' }] }] } }));
+  await symlink(target, link);
+  await install({ ...f.options, agents: 'claude' });
+  assert.ok((await lstat(link)).isSymbolicLink(), 'The dotfiles link is kept');
+  const updated = await json(target);
+  assert.equal(updated.theme, 'dark');
+  assert.ok(updated.hooks.SessionStart?.length && updated.hooks.PostToolUse?.length, 'Hooks were written to the link target');
+  assert.deepEqual(updated.hooks.Stop, [{ hooks: [{ type: 'command', command: 'mine' }] }]);
+  await uninstall({ env: f.env });
+  assert.ok((await lstat(link)).isSymbolicLink());
+  const restored = await json(target);
+  assert.equal(restored.theme, 'dark');
+  assert.equal(restored.hooks.SessionStart, undefined);
+});
+
+test('a dangling settings symlink fails with a clear message and changes nothing', async t => {
+  const f = await fixture(t);
+  await mkdir(f.paths.claudeHome, { recursive: true });
+  await symlink(path.join(f.base, 'missing.json'), path.join(f.paths.claudeHome, 'settings.json'));
+  await assert.rejects(install({ ...f.options, agents: 'claude' }), /symlink to a missing file/);
+});
+
+test('hooks call the package manager shim on PATH so upgrades keep working; a checkout falls back to absolute paths', async t => {
+  const { sphinxLauncher } = await import('../src/install.js');
+  const f = await fixture(t);
+  const cli = path.join(f.base, 'store', 'sphinx-understand@0.1.0_abc', 'node_modules', 'sphinx-understand', 'bin', 'sphinx.js');
+  await executable(cli, '#!/usr/bin/env node\n');
+  const npmBin = path.join(f.base, 'npm-bin'), pnpmBin = path.join(f.base, 'pnpm-home'), other = path.join(f.base, 'other');
+  await mkdir(npmBin, { recursive: true }); await symlink(cli, path.join(npmBin, 'sphinx'));
+  await executable(path.join(pnpmBin, 'sphinx'), '#!/bin/sh\nexec node "$basedir/global/5/node_modules/sphinx-understand/bin/sphinx.js" "$@"\n');
+  await executable(path.join(other, 'sphinx'), '#!/bin/sh\necho unrelated tool\n');
+  const node = '/opt/node/bin/node', q = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+  const npm = await sphinxLauncher(cli, { PATH: [other, npmBin].join(path.delimiter) }, node);
+  assert.equal(npm.command, q(path.join(npmBin, 'sphinx')), 'An unrelated sphinx earlier on PATH is skipped');
+  assert.equal(npm.env, `PATH='/opt/node/bin':"$PATH" `);
+  const pnpm = await sphinxLauncher(cli, { PATH: pnpmBin }, node);
+  assert.equal(pnpm.command, q(path.join(pnpmBin, 'sphinx')));
+  const checkout = await sphinxLauncher(cli, { PATH: other }, node);
+  assert.deepEqual(checkout, { env: '', command: `${q(node)} ${q(cli)}` });
+});
