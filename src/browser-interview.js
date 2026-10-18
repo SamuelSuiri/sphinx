@@ -306,7 +306,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
           })).finally(dropDraft);
           settle('graded');
-          if (visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
+          if (visible.verdict !== 'correct' && visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
         } catch (error) {
           settle('not-graded');
           localSignal.throwIfAborted(); await validate(session.snapshot, config);

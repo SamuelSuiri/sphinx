@@ -853,3 +853,10 @@ test('real subprocess runner reports missing executable with an actionable error
     cwd: tmpdir(), env: process.env, input: '', timeoutMs: 1000,
   }), { code: 'PROVIDER_START_FAILED' });
 });
+
+test('a correct grade may return empty feedback, but an incorrect one must explain itself', async t => {
+  const pass = await fixture(t, { questionValid: true, verdict: 'correct', feedback: '', evidence: question.evidence, followUp: null });
+  assert.equal((await pass.evaluator.gradeAnswer({ snapshot, question, answer: 'It inserts again on retry.', config })).feedback, '');
+  const fail = await fixture(t, { questionValid: true, verdict: 'incorrect', feedback: '', evidence: question.evidence, followUp: transfer });
+  await assert.rejects(fail.evaluator.gradeAnswer({ snapshot, question, answer: 'No.', config }), /Feedback must be nonempty/);
+});
