@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { browserHandoff } from './lifecycle-integrations.js';
 import { open } from 'node:fs/promises';
+import { setupNudge } from './repo-setup.js';
 
 /** Session setup only. Git and native lifecycle hooks control the actual checkpoint. */
 export async function agentHook({ agent, event, input = '', env = process.env }) {
@@ -30,6 +31,7 @@ export async function agentHook({ agent, event, input = '', env = process.env })
     try { await file.writeFile(`\nexport SPHINX_CLAUDE_SESSION='${payload.session_id}'\n`); }
     finally { await file.close(); }
   }
+  const nudge = await setupNudge(payload?.cwd);
   return {
     exitCode: 0,
     output: {
@@ -48,6 +50,7 @@ export async function agentHook({ agent, event, input = '', env = process.env })
           'After a fallback questionnaire passes, verify that the original Git operation has exited with a Sphinx blocking failure before retrying it. Never duplicate a waiting operation or repeat a successful operation. A changed commit or destination may require another assessment. Reopen a paused blocking checkpoint only when the human asks and the previous Git process has exited.',
           'If neither the local page nor native forms are available, report the integration issue and use sphinx doctor to diagnose it. The human can run sphinx check in their own terminal. Do not substitute a chat-based questionnaire or submit answers yourself.',
           'The assessment is open-book. Helping the human inspect code is encouraged. The coding agent must not grade the response itself.',
+          ...(nudge ? [nudge] : []),
         ].join('\n'),
       },
     },

@@ -68,8 +68,8 @@ export const HELP = {
     summary: 'Set up a repository policy and content exclusions.',
     usage: 'sphinx init [options]',
     paragraphs: ['Creates .sphinxconfig (JSON policy), .sphinxignore, and .sphinxcontext.md (project purpose, workflows, and architecture). The reviewer receives project context every time. Existing files are preserved. Defaults inherit your effective global policy, not the current checkout branch.', 'Legacy .sphinx.json policy is copied into a new .sphinxconfig when needed; the original remains. This command does not install hooks, change global settings, or call a model.'],
-    groups: [['Setup', [['--yes', 'Accept inherited defaults without prompts.'], ['--context <description>', 'Initial project context when .sphinxcontext.md does not exist. Otherwise the existing file is preserved.'], ...policy]], ['Output', common]],
-    examples: ['sphinx init', 'sphinx init --yes --branches main', 'sphinx init --events pre-push,pre-commit --level thorough', 'sphinx init --yes --json'],
+    groups: [['Setup', [['--yes', 'Accept inherited defaults without prompts.'], ['--context <description>', 'Initial project context when .sphinxcontext.md does not exist. Otherwise the existing file is preserved.'], ...policy]], ['For coding agents', [['--suggest', 'Print a JSON proposal (branches, ignore paths, context stub) from the repository. Writes nothing.'], ['--apply <file|->', 'Validate a reviewed proposal and write it. Keeps existing files, merges ignore lines, and is safe to rerun.']]], ['Output', common]],
+    examples: ['sphinx init', 'sphinx init --yes --branches main', 'sphinx init --events pre-push,pre-commit --level thorough', 'sphinx init --yes --json', 'sphinx init --suggest --json > proposal.json', 'sphinx init --apply proposal.json --json'],
     footer: 'Destination branches are where a push lands: pushing feature:main matches main. Add sensitive project paths to .sphinxignore before your first assessment.',
   },
   check: {

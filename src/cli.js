@@ -2,13 +2,14 @@ import path from 'node:path';
 import { planProviders } from './evaluator.js';
 import { VERSION } from './version.js';
 import { fileURLToPath } from 'node:url';
-import { lstat } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
 import { initializeRepository } from './repo-config.js';
+import { applyRepositorySetup, suggestRepositorySetup } from './repo-setup.js';
 import * as git from './git.js';
 import { install, uninstall, doctor, dispatchHook, installedAgents, detectAgents } from './install.js';
 import { activateIntegrations } from './activation.js';
@@ -32,7 +33,7 @@ const MODEL_FLAGS = ['preset', 'provider', 'model', 'small', 'medium', 'large', 
 const OPTIONS = {
   install: ['yes', 'repo', 'agents', ...MODEL_FLAGS, 'launch', 'no-launch', ...POLICY_FLAGS],
   activate: ['agents', 'json'],
-  init: ['yes', 'json', 'context', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
+  init: ['yes', 'json', 'context', 'suggest', 'apply', ...POLICY_FLAGS], check: ['json', 'id', 'remote', 'branch', 'staged', 'retry-review'],
   prepare: ['json', 'worker', 'retry'],
   answer: ['json', 'text'], explain: ['json'], dispute: ['json', 'text'], pending: ['json'],
   status: ['json'], config: ['json', ...MODEL_FLAGS], doctor: ['json'], auth: ['provider', 'base-url'], uninstall: ['repo'],
@@ -295,7 +296,36 @@ async function installCommand(initial) {
   terminal.blank(); terminal.note(`Global settings: ${getPaths().config}`); return 0;
 }
 
+async function readProposal(source) {
+  let text = '';
+  if (source === '-') { for await (const chunk of process.stdin) { text += chunk; if (text.length > 1e6) throw new Error('Proposal exceeds 1 MB.'); } }
+  else text = await readFile(path.resolve(source), 'utf8');
+  try { return JSON.parse(text); } catch (error) { throw new Error(`Proposal is not valid JSON: ${error.message}`); }
+}
+
+// Agent setup: a read-only proposal, then a validated, idempotent apply.
+async function agentSetupCommand(values) {
+  const extra = Object.keys(values).filter(key => !['suggest', 'apply', 'json'].includes(key));
+  if (extra.length || (values.suggest && values.apply !== undefined)) throw new Error('Use either --suggest or --apply <file|->, optionally with --json, and no other init options.');
+  const { repo, config } = await repoConfig();
+  if (values.suggest) { json(await suggestRepositorySetup({ repoRoot: repo.root })); return 0; }
+  let result;
+  try { result = await applyRepositorySetup({ repoRoot: repo.root, proposal: await readProposal(values.apply), config }); }
+  catch (error) {
+    if (!values.json || error.code !== 'SPHINX_INVALID_PROPOSAL') throw error;
+    json({ ok: false, errors: error.errors }); return 1;
+  }
+  if (values.json) { json(result); return 0; }
+  const terminal = ui();
+  for (const file of result.created) terminal.success(`Created ${file}`);
+  for (const file of result.updated) terminal.success(`Updated ${file}`);
+  for (const file of result.preserved) terminal.note(`Preserved ${file}`);
+  for (const line of result.warnings) terminal.warning(line);
+  return 0;
+}
+
 async function initCommand(initial) {
+  if (initial.suggest || initial.apply !== undefined) return agentSetupCommand(initial);
   const { repo, config } = await repoConfig(), info = await repositoryConfigInfo(repo.root), terminal = ui();
   let values = initial;
   if (!initial.json) { terminal.banner(); terminal.section('Repository setup'); terminal.note(repo.root); }
@@ -442,7 +472,7 @@ export function parseCommandLine(argv) {
     help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' }, json: { type: 'boolean' }, yes: { type: 'boolean' }, repo: { type: 'boolean' }, staged: { type: 'boolean' },
     preset: { type: 'string' }, provider: { type: 'string' }, model: { type: 'string' }, small: { type: 'string' }, medium: { type: 'string' }, large: { type: 'string' }, level: { type: 'string' }, branches: { type: 'string' }, events: { type: 'string' }, agents: { type: 'string' }, remotes: { type: 'string' },
     remote: { type: 'string' }, branch: { type: 'string' }, id: { type: 'string' }, text: { type: 'string' }, 'allow-paid': { type: 'boolean' },
-    context: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
+    context: { type: 'string' }, suggest: { type: 'boolean' }, apply: { type: 'string' }, worker: { type: 'boolean' }, retry: { type: 'boolean' }, reason: { type: 'string' }, 'base-url': { type: 'string' }, 'cli-billing': { type: 'string' },
     launch: { type: 'boolean' }, 'no-launch': { type: 'boolean' }, 'retry-review': { type: 'boolean' }, 'max-model-calls': { type: 'string' }, 'max-output-tokens': { type: 'string' },
   } });
   const [command, id] = positionals;
