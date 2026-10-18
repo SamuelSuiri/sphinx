@@ -257,7 +257,7 @@ test('Skip this time lets Git continue during review, logs the reason, and never
   assert.deepEqual(await f.store.pending(f.snapshot.repoRoot), [], 'A skipped check never resurfaces as pending');
 });
 
-test('grader feedback streams into the page while grading; a correct answer then shows no feedback at all', async t => {
+test('grader feedback streams into the page while grading, then the saved feedback replaces the draft', async t => {
   let release, seenDraft;
   const gate = new Promise(resolve => { release = resolve; });
   const f = await fixture(t, { grade: async () => {
@@ -271,7 +271,8 @@ test('grader feedback streams into the page while grading; a correct answer then
   assert.equal(seenDraft?.text, 'There is no dur', 'Partial feedback reached the page before grading finished');
   release();
   assert.equal((await done).status, 'passed');
-  assert.deepEqual(f.interview.state.messages.filter(item => item.kind === 'feedback'), [], 'The streamed draft is dropped and nothing affirms a correct answer');
+  const feedback = f.interview.state.messages.filter(item => item.kind === 'feedback');
+  assert.deepEqual(feedback.map(item => [item.text, Boolean(item.streaming)]), [['There is no durable deduplication.', false]], 'Feedback the grader wrote is shown, even on a correct answer');
 });
 
 test('the page serves the frozen change and verified question evidence without disturbing an answer in flight', async t => {

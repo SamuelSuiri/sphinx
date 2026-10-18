@@ -326,3 +326,11 @@ test('passing shows a clear end state that says the tab can be closed', () => {
   assert.equal(p.nodes.message.className, 'message passed');
   assert.match(p.nodes.message.textContent, /close this tab/);
 });
+
+test('the context line names the model reviewing this check', () => {
+  const p = page();
+  p.update({ ...question, route: { provider: 'openrouter', model: 'qwen/qwen3-coder', tier: 'small' }, tokens: { input: 5200, output: 900, cost: 0.0014 } });
+  assert.equal(p.nodes.usage.textContent, 'OpenRouter qwen/qwen3-coder · 6.1k tokens · $0.0014 · 1/20 calls');
+  p.update({ ...question, sequence: 2, route: { provider: 'claude', model: 'haiku', tier: 'small' } });
+  assert.equal(p.nodes.usage.textContent, 'Claude Code haiku');
+});

@@ -339,8 +339,8 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       // model usage, and leaves the same question available to the human.
       const beforeAnswer = structuredClone(session);
       session.attempts.push({questionId:question.id,answer:text.trim(),verdict:result.verdict,feedback:result.feedback,at:now()});
-      // A correct answer moves straight on: nothing to read, nothing to show.
-      session.lastFeedback = result.verdict === 'correct' ? '' : result.feedback;
+      // The grader is asked to skip feedback on a correct answer; if it wrote some anyway, show it.
+      session.lastFeedback = result.feedback;
       if (result.verdict === 'correct') {
         session.index += 1;
         if (session.index === session.questions.length) {
