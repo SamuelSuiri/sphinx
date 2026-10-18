@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { REVIEWER_PRESETS } from './model-presets.js';
-import { withUsageMeter, addUsage } from './usage.js';
+import { withUsageMeter, withUsagePurpose, addUsage } from './usage.js';
 import { mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './config.js';
 import { selectRoute, evaluatorConfig, questionLimit } from './routing.js';
@@ -261,7 +261,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
           },
         };
         try {
-          const result = await withUsageMeter(meterFor(session), () => generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env}));
+          const result = await withUsageMeter(meterFor(session), () => withUsagePurpose('review', () => generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env})));
           signal?.throwIfAborted();
           if (!Array.isArray(result.questions) || !result.questions.length) throw new Error('Evaluator returned no grounded questions. The check remains pending.');
           if (result.questions.length > reserve) throw new Error('Evaluator exceeded the question limit. The check remains pending.');
@@ -305,7 +305,7 @@ export function createSessionStore({ env = process.env, generate = generateAsses
       }
       if (callLimit(session) !== null && session.calls >= callLimit(session)) throw new Error(`Assessment call limit (${callLimit(session)}) reached. No additional model request was made.`);
       const beforeCall = async () => { signal?.throwIfAborted(); await budget(session); signal?.throwIfAborted(); };
-      const result = await withUsageMeter(meterFor(session), () => grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env}));
+      const result = await withUsageMeter(meterFor(session), () => withUsagePurpose('grading', () => grade({snapshot:session.snapshot,question,answer:text.trim(),config:evaluatorConfig(config,session.route),review:session.review,dispute,beforeCall,signal,env})));
       signal?.throwIfAborted();
       if (!['correct','incorrect','ambiguous'].includes(result.verdict)) throw new Error('Evaluator returned an invalid verdict. The check remains pending.');
       if ((learn || dispute) && result.verdict === 'correct') throw new Error('A learning request or dispute cannot complete a concept. The check remains pending.');

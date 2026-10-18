@@ -504,3 +504,16 @@ test('transport-reported tokens and cost accumulate on the checkpoint and reach 
   assert.ok(Math.abs(state.tokens.cost - 0.003) < 1e-9);
   assert.deepEqual(Object.keys(state.usage).sort(), ['calls', 'limit'], 'usage keeps its call-count shape');
 });
+
+test('reviewer and grading calls are tagged with their purpose in the usage ledger', async t => {
+  const { reportUsage, withUsageLedger, readUsage } = await import('../src/usage.js');
+  const { store, env, config } = await fixture(t, {
+    generate: async () => { reportUsage({ inputTokens: 10, outputTokens: 2, provider: 'openrouter', model: 'openrouter/free' }); return { questions: [structuredClone(q)] }; },
+    grade: async () => { reportUsage({ inputTokens: 5, outputTokens: 1, provider: 'claude', model: 'haiku' }); return { verdict: 'correct', feedback: 'Correct: the repeated insert can duplicate it.', followUp: null }; },
+  });
+  await withUsageLedger(env, async () => {
+    await store.ensure(snapshot, config); await store.start(snapshot.id, config);
+    await store.answer(snapshot.id, 'Yes: it inserts every time.', config);
+  });
+  assert.deepEqual(readUsage({ env }).map(entry => [entry.purpose, entry.tier]), [['review', 'free'], ['grading', 'plan']]);
+});

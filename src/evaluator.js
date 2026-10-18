@@ -360,7 +360,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       if (provider === 'codex') {
         // --json streams events; turn.completed carries token usage.
         for (const line of String(result.stdout || '').split('\n')) {
-          try { const event = JSON.parse(line); if (event?.type === 'turn.completed') reportUsage({ inputTokens: event.usage?.input_tokens, outputTokens: event.usage?.output_tokens }); } catch {}
+          try { const event = JSON.parse(line); if (event?.type === 'turn.completed') reportUsage({ inputTokens: event.usage?.input_tokens, outputTokens: event.usage?.output_tokens, provider, model: config.model }); } catch {}
         }
         try {
           if ((await stat(outputPath)).size > MAX_OUTPUT_BYTES) fail('Codex returned oversized output.', 'OUTPUT_LIMIT');
@@ -372,7 +372,7 @@ export function createEvaluator({ runner = runProcess, env = process.env, tempRo
       }
       const envelope = parseModelJSON(result.stdout, 'Claude Code');
       const u = envelope?.usage;
-      if (u) reportUsage({ inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens });
+      if (u) reportUsage({ inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens, provider, model: config.model });
       if (envelope?.is_error === true || (envelope?.type === 'result' && envelope.subtype && envelope.subtype !== 'success')) {
         fail('Claude Code reported an unsuccessful result. Check CLI sign-in, model access, and usage limits; then retry.', 'PROVIDER_FAILED');
       }

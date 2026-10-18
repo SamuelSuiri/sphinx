@@ -226,7 +226,7 @@ async function requestOpenRouter({messages, schema, tools, toolChoice, config, e
   if (!data || typeof data!=='object' || Array.isArray(data)) throw new Error(`${name} returned an invalid response object.`);
   requestSignal.throwIfAborted();
   // Billed even when the choice is later rejected, so record it first.
-  reportUsage({ inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens, cost: data.usage?.cost });
+  reportUsage({ inputTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens, cost: data.usage?.cost, provider: openai ? 'openai' : 'openrouter', model });
   return requireFinishedChoice(data, config, Boolean(tools), response.headers);
 }
 
