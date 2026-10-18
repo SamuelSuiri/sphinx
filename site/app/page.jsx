@@ -78,6 +78,13 @@ export default function Home() {
           </ol>
         </section>
 
+        <section className="demo" aria-label="Demo">
+          <figure>
+            <img src="/demo.gif" width="960" height="576" alt="A git push waits while the Sphinx questionnaire asks what the change does, the answer passes, and the push continues." />
+            <figcaption>The real questionnaire: a push waits, you answer, Git continues.</figcaption>
+          </figure>
+        </section>
+
         <section className="facts">
           <p>
             Works with <strong>Codex, Claude Code, Cursor, OpenCode,</strong> and <strong>Pi</strong>, or plain Git.

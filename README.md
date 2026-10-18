@@ -183,6 +183,102 @@ Each command explains itself with `sphinx <command> --help`. `--json` gives mach
 - [Architecture](docs/architecture.md): the checkpoint sequence, the reviewer and its evidence, compaction, and state.
 - [Evaluation](eval/README.md) and [results](eval/RESULTS.md).
 
+## Configuring Sphinx
+
+Sphinx has two kinds of settings:
+- **Your own machine-wide settings** in `~/.config/sphinx/config.json`. Change them with `sphinx config`.
+- **Per-repository files** that you commit so collaborators share them: `.sphinxconfig`, `.sphinxignore`, and `.sphinxcontext.md`. `sphinx init` creates them.
+
+`sphinx config` with no flags shows the settings in effect for the current repository.
+
+### Switch the reviewer model
+
+Each change gets a small, medium, or large route depending on its size. A preset fills all three:
+
+```sh
+sphinx config --preset claude-economy                 # your Claude Code plan
+sphinx config --preset codex-economy                  # your Codex plan
+sphinx config --preset openrouter-value --allow-paid  # paid OpenRouter credits
+sphinx config --preset openrouter-free                # free, slower, rate limited
+```
+
+Or set each size yourself as `provider:model`:
+
+```sh
+sphinx config --small claude:haiku --medium claude:haiku --large claude:sonnet
+```
+
+To use any OpenAI-compatible endpoint (OpenAI, Groq, Together, Ollama, LM Studio, vLLM, and others):
+
+```sh
+sphinx auth --provider openai --base-url https://api.openai.com/v1   # asks for the key
+sphinx config --provider openai --model gpt-5-mini
+```
+
+`sphinx auth` saves or replaces your OpenRouter key. Claude Code and Codex routes bill your signed-in plan, and Sphinx strips API keys from their environment. `--cli-billing api` lets them use API keys instead. A new route applies to new checks.
+
+If a review is rate limited or a CLI fails mid-check, the questionnaire offers to switch to one of your installed coding plans.
+
+### `.sphinxconfig`: when checks run
+
+```json
+{
+  "version": 1,
+  "events": ["pre-push"],
+  "branches": ["main", "release/*"],
+  "remotes": ["*"],
+  "level": "standard",
+  "distance": "high",
+  "exclude": ["vendor/**"]
+}
+```
+
+| Setting | What it means |
+| --- | --- |
+| `enabled` | `false` turns Sphinx off for this repository |
+| `events` | `pre-push` (default), `pre-commit`, or both |
+| `branches` | Branches that trigger a check. Pushes match the destination, commits match the current branch. `["*"]` checks every branch, which is useful for pull requests |
+| `remotes` | Remote names that trigger push checks; `*` (default) means any |
+| `level` | How many questions: `relaxed`, `standard` (default), or `thorough` |
+| `distance` | `high` (default): what the change does and affects. `low`: its specific logic, conditions, and edge cases |
+| `exclude` | Extra paths to keep from the reviewer, on top of `.sphinxignore` |
+| `backgroundPreparation` | `false` stops preparing questions in the background after commits |
+| `github` | GitHub commit status and pull request comment; see below |
+
+### `.sphinxignore`: files the reviewer never sees
+
+It uses gitignore-style patterns:
+
+```gitignore
+internal/customer-exports/
+/config/production.json
+*.generated.ts
+dist/
+```
+
+`.env` files, private keys, and common credential files are always excluded, and a repository can't undo that. A change that only touches ignored files needs no check. The rules match paths, so they won't catch a secret pasted into ordinary source.
+
+### `.sphinxcontext.md`: what the project is
+
+A short description of what the project does, who uses it, and what must never break, for example "Reservations must never overlap." The reviewer reads it with every request, so questions focus on what matters. Keep it under 16 KB and free of secrets.
+
+### Your own settings
+
+These live in `config.json`, and most can be set with `sphinx config`:
+
+| Setting | Flag | What it means |
+| --- | --- | --- |
+| `models` | `--preset`, `--small`, `--medium`, `--large` | The reviewer for each change size |
+| `interface` | `--interface` | Where questions appear. `auto` (default): the browser on a local Mac, otherwise the terminal you pushed from. Or `browser` / `terminal` |
+| `maxModelCalls` | `--max-model-calls` | Optional cap on model requests per check (1–100, or `unlimited`, the default) |
+| `maxOutputTokens` | `--max-output-tokens` | Output allowance per request, including reasoning (default 4096) |
+| `allowPaid` | `--allow-paid` | Lets OpenRouter use paid models |
+| `cliBilling` | `--cli-billing` | `plan` (default) bills your Claude or Codex plan; `api` lets those CLIs use API keys |
+| `github` | edit the file | `status` (default on): mark pushed commits on GitHub. `comment`: keep a summary comment on the pull request. `answers`: include your answers in it. Needs a signed-in `gh` CLI and never blocks a push |
+| `receiptHours` | edit the file | How long a pass stays valid for the same change (default 24) |
+
+`sphinx yolo` turns checks off and on again for the current repository, or globally when run outside one. The full reference, including routing thresholds and pricing, is in [configuration and cost](docs/configuration.md).
+
 ## Development
 
 ```sh

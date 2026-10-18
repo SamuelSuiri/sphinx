@@ -109,6 +109,11 @@ blockquote em { color: var(--accent); }
 .how p { margin: 0; font-size: 15.5px; color: var(--muted); }
 
 /* Facts */
+.demo { padding: 0 0 80px; }
+.demo figure { margin: 0; }
+.demo img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--rule); }
+.demo figcaption { margin-top: 12px; font-size: 14px; color: var(--faint); text-align: center; }
+@media (min-width: 960px) { .demo figure { margin: 0 -80px; } }
 .facts { padding: 44px 0 80px; border-top: 1px solid var(--rule); }
 .facts p { margin: 0; font: 400 26px/1.42 var(--serif); color: var(--muted); }
 .facts strong { font-weight: 400; color: var(--ink); }
