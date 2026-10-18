@@ -1,7 +1,9 @@
-import { lstat, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { loadConfig, readJson, repositoryConfigInfo, REPOSITORY_CONFIG_KEYS, validateConfig, validateRepositoryConfig } from './config.js';
-import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, PROJECT_CONTEXT_TEMPLATE } from './repo-context.js';
+import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, PROJECT_CONTEXT_TEMPLATE, contextWithDescription } from './repo-context.js';
 
 export const REPOSITORY_IGNORE_TEMPLATE = `# Files excluded from Sphinx assessments before content is read.
 # Add project-specific private or generated paths below.
@@ -31,6 +33,21 @@ async function createOnly(file, contents) {
     await regularFileOrMissing(file);
     return false;
   }
+}
+
+/**
+ * Keep a new context file out of Git on this machine only (.git/info/exclude),
+ * so preferences stay personal unless the person chooses to commit it.
+ */
+export async function excludeFromGit(root, file) {
+  try {
+    const { stdout } = await promisify(execFile)('git', ['rev-parse', '--git-path', 'info/exclude'], { cwd: root });
+    const exclude = path.resolve(root, stdout.trim());
+    const current = await readFile(exclude, 'utf8').catch(() => '');
+    if (current.split('\n').some(line => line.trim() === `/${file}`)) return true;
+    await appendFile(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}# Sphinx: personal context and preferences. Commit it to share with your team.\n/${file}\n`);
+    return true;
+  } catch { return false; }
 }
 
 /** Create repository policy files without overwriting existing policy or ignore rules. */
@@ -66,7 +83,10 @@ export async function initializeRepository({ repoRoot, config, overrides = {}, c
   if (info.legacy || info.shadowed) preserved.push(info.legacy ? info.path : info.shadowed);
   if (await createOnly(ignorePath, REPOSITORY_IGNORE_TEMPLATE)) created.push(ignorePath);
   else preserved.push(ignorePath);
-  if (await createOnly(contextPath, context === undefined ? PROJECT_CONTEXT_TEMPLATE : `${context.trim()}\n`)) created.push(contextPath);
-  else preserved.push(contextPath);
-  return { configPath, ignorePath, contextPath, created, preserved, config: local };
+  let contextExcluded = false;
+  if (await createOnly(contextPath, context === undefined ? PROJECT_CONTEXT_TEMPLATE : contextWithDescription(context))) {
+    created.push(contextPath);
+    contextExcluded = await excludeFromGit(root, PROJECT_CONTEXT_FILE);
+  } else preserved.push(contextPath);
+  return { configPath, ignorePath, contextPath, created, preserved, contextExcluded, config: local };
 }

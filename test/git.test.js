@@ -346,7 +346,7 @@ test('project context is attached explicitly and invalidates the exact checkpoin
   const head = await commit(cwd, { 'code.js': 'okay\n' });
   await writeFile(join(cwd, '.sphinxcontext.md'), 'Project intention and system boundaries.\n');
   const [first] = await push(cwd, head);
-  assert.equal(first.projectContext.text, 'Project intention and system boundaries.\n');
+  assert.equal(first.projectContext.text, 'Project intention and system boundaries.');
   assert.equal(first.contextHash, first.projectContext.hash);
   assert.equal(await revalidateSnapshot(first, defaults), true);
   await writeFile(join(cwd, '.sphinxcontext.md'), 'A changed intended invariant.\n');

@@ -258,9 +258,24 @@ dist/
 
 `.env` files, private keys, and common credential files are always excluded, and a repository can't undo that. A change that only touches ignored files needs no check. The rules match paths, so they won't catch a secret pasted into ordinary source.
 
-### `.sphinxcontext.md`: what the project is
+### `.sphinxcontext.md`: what the project is, and what to ask about
 
-A short description of what the project does, who uses it, and what must never break, for example "Reservations must never overlap." The reviewer reads it with every request, so questions focus on what matters. Keep it under 16 KB and free of secrets.
+The reviewer reads this file with every request. It has two parts:
+
+```markdown
+## About this project
+A booking service for shared equipment. Reservations must never overlap.
+
+## What to ask about
+- Don't ask about styling, layout, or copy changes.
+- Focus on reservation conflicts and billing.
+```
+
+**About this project** gives background, which the reviewer checks against the code. **What to ask about** holds your preferences. Questions avoid the areas you skip and lean toward the ones you name. A change entirely in a skipped area, such as a CSS-only restyle, can pass with no questions. A second, independent audit can still overrule that when the change also affects behavior, data, or security.
+
+For preferences in every repository, use `~/.config/sphinx/context.md`; `sphinx install` creates it. Where the two disagree, the repository's file wins. HTML comments in either file are guidance for you and are never sent to the model. Keep each under 16 KB and free of secrets. Editing either one means the next check is reviewed fresh.
+
+`sphinx init` creates `.sphinxcontext.md` and keeps it out of Git on your machine (in `.git/info/exclude`), because preferences are personal. To share it with your team, run `git add -f .sphinxcontext.md` and commit it.
 
 ### Your own settings
 

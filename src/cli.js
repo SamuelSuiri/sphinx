@@ -22,7 +22,7 @@ import { createTerminal, withProgress } from './terminal.js';
 import { HELP, printHelp } from './help.js';
 import { askInstall, askPolicy, createPrompts, questionCapsText, reviewCapsText, routeText, splitList } from './prompts.js';
 import { runGitGate } from './git-gate.js';
-import { loadProjectContext } from './repo-context.js';
+import { loadProjectContext, contextWithDescription, contextWithPreferences, ensurePersonalContext, PROJECT_CONTEXT_TEMPLATE } from './repo-context.js';
 import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
 import { modelUsageText, modelLimitText, readUsage, summarizeUsage, printUsage, usageDir } from './usage.js';
 import { toggleYolo, yoloStatus, recentOverrides, recordOverride } from './overrides.js';
@@ -285,6 +285,8 @@ async function installCommand(initial) {
   }
   const result = await install({ config, agents: values.agents || 'auto', cliPath: CLI_PATH });
   await saveConfig(config); printInstallationResult(terminal, result);
+  const personal = await ensurePersonalContext().catch(() => null);
+  if (personal) terminal.note(`Created ${personal}: tell Sphinx what you do and don't want questions about, in every repository.`);
   if (result.agents.length) {
     if (launch) printActivationResult(terminal, await withProgress('Opening your coding agents', () => activateIntegrations({ agents: result.agents })));
     else {
@@ -347,8 +349,11 @@ async function initCommand(initial) {
   if (context === undefined && !initial.yes && !initial.json && process.stdin.isTTY && !(await loadProjectContext(repo.root)).text) {
     terminal.section('Project context');
     terminal.paragraph('Describe what this project does and its key workflows. This background is included in every review; you can expand .sphinxcontext.md later.');
-    const answer = await withReadline(ask => ask('\nProject description (Enter to create a template): '));
-    if (answer.trim()) context = answer.trim();
+    const [answer, preferences] = await withReadline(async ask => [
+      await ask('\nProject description (Enter to fill in later): '),
+      await ask('Anything Sphinx should skip or focus on here? For example "don\'t ask about styling" (Enter to skip): '),
+    ]);
+    if (answer.trim() || preferences.trim()) context = contextWithPreferences(answer.trim() ? contextWithDescription(answer) : PROJECT_CONTEXT_TEMPLATE, preferences.trim() ? `- ${preferences.trim()}` : '');
   }
   const result = await initializeRepository({ repoRoot: repo.root, config, overrides, context });
   if (initial.json) { json(result); return 0; }
@@ -358,7 +363,8 @@ async function initCommand(initial) {
   if (info.exists && !info.legacy && Object.keys(overrides).length) terminal.warning('The existing .sphinxconfig was preserved; command-line overrides were not applied. Edit that file to change its policy.');
   terminal.section('Effective repository policy'); printConfiguration(terminal, await loadConfig(repo.root), { routes: false });
   terminal.blank(); terminal.paragraph('Add project-specific sensitive or generated paths to .sphinxignore before an assessment.');
-  terminal.paragraph('Keep .sphinxcontext.md current with the project purpose, workflows, and architecture boundaries. The reviewer receives it every time.');
+  terminal.paragraph('.sphinxcontext.md tells the reviewer what this project is and what you want to be asked about, for example "don\'t ask about styling". Your preferences for every repository go in ~/.config/sphinx/context.md.');
+  if (result.contextExcluded) terminal.note('.sphinxcontext.md is kept out of Git on this machine. To share it with your team, run git add -f .sphinxcontext.md.');
   terminal.note('This command does not install Git hooks. Check coverage with sphinx status.'); return 0;
 }
 

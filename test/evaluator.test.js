@@ -890,3 +890,20 @@ test('question prompts follow the configured understanding distance', async t =>
     assert.doesNotMatch(JSON.stringify(request.messages), absent);
   }
 });
+
+test('stated preferences steer questions and let a larger change in a skipped area ask none', async t => {
+  const change = { ...snapshot, files: ['src/orders.js'], stats: { additions: 900, deletions: 300, files: 30 } };
+  const settings = { ...DEFAULT_CONFIG, maxModelCalls: 20, agentMaxTurns: 8 };
+  const runtime = evaluatorConfig(settings, selectRoute(change, settings));
+  const schemaFor = request => request.tools.find(tool => tool.function.name === 'finish_review').function.parameters.properties.assessment;
+  let plain;
+  await (await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { plain = args; }) })).evaluator.generateAssessment(change, runtime);
+  assert.equal(schemaFor(plain).properties.questions.minItems, 1, 'without preferences a larger change needs a question');
+  assert.doesNotMatch(JSON.stringify(plain.messages), /Question preferences/);
+  let steered;
+  const preferred = { ...change, projectContext: { path: '.sphinxcontext.md', text: '', preferences: "- Don't ask me about styling.", hash: 'h' } };
+  await (await fixture(t, null, { openRouterTurn: nativeResponse({ questions: [question] }, args => { steered = args; }) })).evaluator.generateAssessment(preferred, runtime);
+  assert.equal(schemaFor(steered).properties.questions.minItems, 0);
+  assert.match(JSON.stringify(steered.messages), /Question preferences/);
+  assert.match(JSON.stringify(steered.messages), /entire change falls in areas the person's preferences say to skip/);
+});

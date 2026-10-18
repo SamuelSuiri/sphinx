@@ -138,7 +138,7 @@ test('apply merges ignore lines, replaces only an untouched context template, an
   assert.deepEqual(first.updated.sort(), ['.sphinxcontext.md', '.sphinxignore']);
   assert.deepEqual(first.ignoreAdded, ['dist/']);
   assert.equal(await readFile(path.join(f.repo, '.sphinxignore'), 'utf8'), '# mine\nprivate/\n\n# Added by sphinx init --apply\ndist/\n');
-  assert.equal(await readFile(path.join(f.repo, '.sphinxcontext.md'), 'utf8'), 'A ledger service.\n');
+  assert.match(await readFile(path.join(f.repo, '.sphinxcontext.md'), 'utf8'), /## About this project\nA ledger service\.\n\n## What to ask about/);
 
   const changed = await applyRepositorySetup({ repoRoot: f.repo, proposal: { config: { branches: ['release'] }, ignore: ['build/'], context: 'Different.' }, env: f.env });
   assert.deepEqual(changed.updated, ['.sphinxignore']);
@@ -146,7 +146,7 @@ test('apply merges ignore lines, replaces only an untouched context template, an
   assert.match(changed.warnings.join('\n'), /\.sphinxcontext\.md already exists and was kept/);
   assert.match(changed.warnings.join('\n'), /\.sphinxconfig already exists and was kept \(proposal differs in branches\)/);
   assert.deepEqual(JSON.parse(await readFile(path.join(f.repo, '.sphinxconfig'), 'utf8')).branches, ['main']);
-  assert.equal(await readFile(path.join(f.repo, '.sphinxcontext.md'), 'utf8'), 'A ledger service.\n');
+  assert.match(await readFile(path.join(f.repo, '.sphinxcontext.md'), 'utf8'), /## About this project\nA ledger service\.\n\n## What to ask about/);
   assert.equal(await readFile(path.join(f.repo, '.sphinxignore'), 'utf8'), '# mine\nprivate/\n\n# Added by sphinx init --apply\ndist/\nbuild/\n');
 });
 

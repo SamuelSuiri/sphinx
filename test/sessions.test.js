@@ -546,6 +546,11 @@ test('a small change the reviewer finds trivial passes with its reason; a larger
   await large.store.ensure(big, large.config);
   await assert.rejects(large.store.start(big.id, large.config), /no grounded questions/);
   assert.notEqual((await large.store.read(big.id)).status, 'passed');
+  // With stated preferences, a larger change entirely in a skipped area may pass.
+  const styled = { ...big, id: 'e'.repeat(64), projectContext: { path: '.sphinxcontext.md', text: '', preferences: "- Don't ask me about styling.", hash: 'p' } };
+  const skipped = await fixture(t, { generate: async (_s, _c, { beforeCall }) => { await beforeCall(); return { questions: [], noQuestionReason: 'Only CSS changes, which your preferences skip.', review }; } });
+  await skipped.store.ensure(styled, skipped.config);
+  assert.equal((await skipped.store.start(styled.id, skipped.config)).status, 'passed');
 });
 
 test('each question is scored once: first-try correct, a miss after a wrong answer or explanation, never for a dispute', async t => {

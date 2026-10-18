@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { loadConfig, repositoryConfigInfo, readJson, REPOSITORY_CONFIG_KEYS, stableStringify, validateRepositoryConfig } from './config.js';
 import { compileIgnore, loadIgnorePolicy } from './ignore.js';
-import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, PROJECT_CONTEXT_TEMPLATE } from './repo-context.js';
+import { PROJECT_CONTEXT_FILE, PROJECT_CONTEXT_MAX_BYTES, isContextTemplate, contextWithDescription } from './repo-context.js';
 import { initializeRepository } from './repo-config.js';
 
 // Agent-driven repository setup: a read-only proposal, then a validated apply.
@@ -171,7 +171,7 @@ export async function suggestRepositorySetup({ repoRoot, env = process.env }) {
   const policy = await loadIgnorePolicy(root, { env, exclude: effective.exclude });
   const branch = await detectBranch(root);
   const existingContext = await readRegular(path.join(root, PROJECT_CONTEXT_FILE));
-  const contextIsTemplate = existingContext === null || existingContext === PROJECT_CONTEXT_TEMPLATE;
+  const contextIsTemplate = existingContext === null || isContextTemplate(existingContext);
   let config = null;
   if (!info.exists || info.legacy) {
     const defaults = info.exists ? null : await loadConfig(undefined, env);
@@ -268,7 +268,7 @@ export async function applyRepositorySetup({ repoRoot, proposal, config, env = p
   const ignorePath = path.join(root, '.sphinxignore'), contextPath = path.join(root, PROJECT_CONTEXT_FILE);
   // Checks symlinks and sizes before initializeRepository makes its first write.
   const [ignoreBefore, contextBefore] = await Promise.all([readRegular(ignorePath), readRegular(contextPath)]);
-  const replaceTemplate = contextBefore === PROJECT_CONTEXT_TEMPLATE && plan.context !== null;
+  const replaceTemplate = isContextTemplate(contextBefore) && plan.context !== null;
   const missingIgnore = plan.ignore.filter(line => !new Set((ignoreBefore ?? '').split(/\r?\n/).map(value => value.trim())).has(line));
   if (Buffer.byteLength(`${ignoreBefore ?? ''}${missingIgnore.join('\n')}`) > IGNORE_MAX_BYTES) throw invalid([`.sphinxignore would exceed ${IGNORE_MAX_BYTES} bytes`]);
 
@@ -284,10 +284,10 @@ export async function applyRepositorySetup({ repoRoot, proposal, config, env = p
       if (!created.includes('.sphinxignore')) { updated.push('.sphinxignore'); preserved.splice(preserved.indexOf('.sphinxignore'), 1); }
     }
   }
-  if (replaceTemplate && await readRegular(contextPath) === PROJECT_CONTEXT_TEMPLATE) {
-    await writeRegular(contextPath, plan.context, constants.O_TRUNC);
+  if (replaceTemplate && isContextTemplate(await readRegular(contextPath))) {
+    await writeRegular(contextPath, contextWithDescription(plan.context), constants.O_TRUNC);
     updated.push(PROJECT_CONTEXT_FILE); preserved.splice(preserved.indexOf(PROJECT_CONTEXT_FILE), 1);
-  } else if (plan.context !== null && !created.includes(PROJECT_CONTEXT_FILE) && await readRegular(contextPath) !== plan.context) {
+  } else if (plan.context !== null && !created.includes(PROJECT_CONTEXT_FILE) && await readRegular(contextPath) !== contextWithDescription(plan.context)) {
     warnings.push(`${PROJECT_CONTEXT_FILE} already exists and was kept; edit it directly to change it.`);
   }
   if (plan.config && !created.includes('.sphinxconfig')) {

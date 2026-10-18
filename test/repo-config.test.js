@@ -118,7 +118,7 @@ test('symlinks and directories are refused without modifying their targets or cr
 test('setup accepts project context separately from policy and preserves existing prose', async t => {
   const args = await fixture(t);
   const first = await initializeRepository({ ...args, context: 'A warehouse application. Stock reservations must be atomic.' });
-  assert.equal(await readFile(first.contextPath, 'utf8'), 'A warehouse application. Stock reservations must be atomic.\n');
+  assert.match(await readFile(first.contextPath, 'utf8'), /## About this project\nA warehouse application\. Stock reservations must be atomic\.\n\n## What to ask about\n/);
   const second = await initializeRepository({ ...args, context: 'New text must not overwrite existing context.' });
   assert.equal(await readFile(second.contextPath, 'utf8'), await readFile(first.contextPath, 'utf8'));
   assert.equal(first.config.context, undefined);

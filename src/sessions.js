@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, getPaths, readJson, writeJson, policyHash } from './con
 import { selectRoute, evaluatorConfig, questionLimit } from './routing.js';
 import { generateAssessment, gradeAnswer } from './evaluator.js';
 import { setTimeout as delay } from 'node:timers/promises';
+import { hasPreferences } from './repo-context.js';
 
 const now = () => new Date().toISOString();
 export function sessionFile(id, env = process.env) {
@@ -281,8 +282,10 @@ export function createSessionStore({ env = process.env, generate = generateAsses
         try {
           const result = await withUsageMeter(meterFor(session), () => withUsagePurpose('review', () => generate(session.snapshot,evaluatorConfig(config,session.route),{beforeCall,signal,maxReviewerCalls,reviewerCheckpoint,onProgress,env})));
           signal?.throwIfAborted();
-          // The reviewer, confirmed by its audit, may decide a small change needs no questions.
-          if (Array.isArray(result.questions) && !result.questions.length && session.route.tier === 'small' && typeof result.noQuestionReason === 'string' && result.noQuestionReason.trim()) {
+          // The reviewer, confirmed by its audit, may decide a change needs no questions:
+          // a small one with nothing to understand, or, when the person has stated
+          // preferences, one entirely in an area they skip.
+          if (Array.isArray(result.questions) && !result.questions.length && (session.route.tier === 'small' || hasPreferences(session.snapshot)) && typeof result.noQuestionReason === 'string' && result.noQuestionReason.trim()) {
             await validate(session.snapshot, config);
             signal?.throwIfAborted();
             if (result.review) session.review = result.review;

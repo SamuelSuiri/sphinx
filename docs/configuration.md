@@ -23,7 +23,8 @@ This page is the reference for reviewer models, usage limits, repository policy,
 | Skip and yolo log | `~/.config/sphinx/overrides.jsonl` |
 | Repository policy | `.sphinxconfig` (legacy `.sphinx.json` is read when `.sphinxconfig` is absent) |
 | Repository exclusions | `.sphinxignore` |
-| Project context | `.sphinxcontext.md` |
+| Project context and question preferences | `.sphinxcontext.md` (kept out of Git by default) |
+| Your question preferences for every repository | `~/.config/sphinx/context.md` |
 
 `SPHINX_HOME` relocates all machine-wide settings, credentials, and assessment state. `sphinx config` shows effective settings and paths. A complete global example using the paid Haiku preset is in [examples/config.json](../examples/config.json).
 
@@ -200,16 +201,20 @@ If both `.sphinxconfig` and legacy `.sphinx.json` exist, `.sphinxconfig` wins an
 
 ## Project context
 
-`.sphinxcontext.md` describes what the project does, who uses it, important workflows, and architecture boundaries. It is included in every reviewer, compaction, and grading request.
+`.sphinxcontext.md` has two sections. **About this project** covers what the project does, who uses it, important workflows, and architecture boundaries. **What to ask about** holds question preferences, such as "don't ask about styling" or "focus on billing". Your preferences for every repository go in `~/.config/sphinx/context.md`, which `sphinx install` creates; the repository's file wins where they disagree. Both are included in every reviewer, audit, compaction, and grading request.
+
+- **Preferences choose topics, not facts.** The reviewer avoids areas you skip and leans toward the ones you name. When an entire change falls in a skipped area and alters no behavior, data, security, or failure handling outside it, the check can pass with no questions at any size. The independent audit verifies that decision and can add a question instead. Without any context or preferences, only small changes can pass with no questions.
+- **Comments are for you.** HTML comments (`<!-- -->`) are stripped before anything reaches a model, so the template's guidance costs nothing. A file that is still only the template counts as empty.
+- **Personal by default.** `sphinx init` adds a new `.sphinxcontext.md` to `.git/info/exclude`, which changes nothing outside your machine. To share it, run `git add -f .sphinxcontext.md` and commit it. Files that are already committed are unaffected.
 
 ```sh
-sphinx init --yes --context 'A booking service for shared equipment. Reservations must never overlap.'
+sphinx init --yes --context 'A booking service for shared equipment. Reservations must never overlap.'   # fills About this project
 ```
 
 - Keep it under 16,000 bytes and free of secrets. It respects `.sphinxignore`.
 - The reviewer checks its claims against code. It cannot override Sphinx policy or authorize reading ignored files.
 - Without context, the reviewer establishes purpose from documentation and source rather than inventing requirements.
-- Changing it invalidates prepared questions and completion records.
+- Changing either file invalidates prepared questions and completion records.
 
 ## Files Sphinx never reads
 
