@@ -270,9 +270,10 @@ async function installCommand(initial) {
   const launch = !initial['no-launch'] && (initial.launch || !initial.yes);
   if (launch) terminal.paragraph('After setup, Sphinx opens selected installed clients in fresh sessions. Existing sessions stay open. Use --no-launch to defer this step.');
   const detected = !initial.yes && (initial.agents === undefined || initial.agents === 'auto') ? await detectAgents() : [];
+  const installedPlans = initial.yes ? [] : await planProviders().catch(() => []);
   const values = initial.yes ? initial : await withReadline(ask => askInstall(current, initial, createPrompts({ ask, ui: terminal,
     select: process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb' ? ask.checkbox : undefined,
-  }), { detectedAgents: detected, hasExistingConfig }));
+  }), { detectedAgents: detected, hasExistingConfig, installedPlans }));
   const config = applyInstallOptions(current, values);
   terminal.section('Machine-wide defaults');
   terminal.paragraph('Each repository can override these branches and remotes in .sphinxconfig to match its own production setup.');

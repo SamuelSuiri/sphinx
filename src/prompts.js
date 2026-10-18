@@ -101,7 +101,7 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
   return values;
 }
 
-export async function askInstall(config, initial, prompts, { detectedAgents = [], hasExistingConfig = true } = {}) {
+export async function askInstall(config, initial, prompts, { detectedAgents = [], hasExistingConfig = true, installedPlans = [] } = {}) {
   let values = { ...initial };
   if (values.agents === undefined) {
     const selected = await prompts.multiselect({ title: 'Which coding agents do you use?', description: 'Connect any combination. Detected agents are preselected; clear all for Git-only use. Previously connected agents remain installed.', current: detectedAgents, choices: [
@@ -119,7 +119,10 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
     || explicitTiers.length === tiers.length || (hasExistingConfig && explicitTiers.length > 0);
   if (!explicitRoute) {
     const agents = values.agents === 'auto' ? detectedAgents : splitList(values.agents);
-    const recommended = agents.includes('codex') ? 'codex-economy' : agents.includes('claude') ? 'claude-economy' : undefined;
+    // A coding plan reviews far faster than OpenRouter's free router. Prefer the
+    // agent the user works in, then any Codex or Claude Code CLI installed here.
+    const plan = ['codex', 'claude'].find(name => agents.includes(name)) ?? ['claude', 'codex'].find(name => installedPlans.includes(name));
+    const recommended = plan ? `${plan}-economy` : undefined;
     const current = hasExistingConfig ? 'keep' : recommended;
     for (;;) {
       const choice = await prompts.choose({
@@ -128,7 +131,7 @@ export async function askInstall(config, initial, prompts, { detectedAgents = []
         current, requireSelection: !current,
         choices: [
           ...(hasExistingConfig ? [{ value: 'keep', label: 'Keep current model routes', description: `Small: ${routeText(config.models.small)}. Medium: ${routeText(config.models.medium)}. Large: ${routeText(config.models.large)}.` }] : []),
-          ...REVIEWER_PRESETS.map(preset => ({ value: preset.id, label: preset.label, description: preset.description })),
+          ...[...REVIEWER_PRESETS].sort((a, b) => (b.id === recommended) - (a.id === recommended)).map(preset => ({ value: preset.id, label: preset.id === recommended ? `${preset.label} (recommended)` : preset.label, description: preset.description })),
           { value: 'custom', label: 'Choose by change size', description: 'Set separate provider:model routes for small, medium, and large changes.' },
         ],
       });

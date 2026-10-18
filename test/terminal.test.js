@@ -331,3 +331,16 @@ test('custom paid routes require explicit permission unless machine-wide permiss
     for (const tier of ['small', 'medium', 'large']) assert.equal(values[tier], 'openrouter:vendor/paid-model');
   }
 });
+
+test('setup recommends an installed coding plan even when the user works in another agent', async () => {
+  let seen;
+  const values = await askInstall(DEFAULT_CONFIG, { agents: 'cursor', ...onboardingPolicy }, {
+    choose: async options => { if (options.title === 'Choose your evaluator models') seen = options; return options.current; },
+    multiselect: async () => [], text: async options => options.current,
+  }, { hasExistingConfig: false, installedPlans: ['claude'] });
+  assert.equal(seen.current, 'claude-economy');
+  assert.equal(seen.choices[0].value, 'claude-economy');
+  assert.match(seen.choices[0].label, /\(recommended\)/);
+  assert.equal(values.preset, 'claude-economy');
+  assert.ok(seen.choices.some(choice => /free router \(slow, best effort\)/.test(choice.label)));
+});
