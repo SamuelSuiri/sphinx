@@ -11,11 +11,13 @@ button:focus-visible,textarea:focus-visible,input:focus-visible,[tabindex]:focus
 .shell{height:100vh;height:100dvh;display:flex;flex-direction:column}
 header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .brand{display:flex;align-items:center;gap:14px}.brand strong{display:flex;align-items:center;gap:9px;font:600 19px ui-monospace,SFMono-Regular,Menlo,monospace}.brand svg{color:var(--amber);flex-shrink:0}.brand span{color:var(--muted);font-size:14px}
-.scope{border-bottom:1px solid var(--line);padding:8px 24px 9px;font-size:13px;line-height:1.45;background:#f5f1eb}
+.scope{border-bottom:1px solid var(--line);padding:7px 24px;font-size:13px;line-height:1.45;color:var(--muted)}
+.facts dt{display:none}.facts dd{font-weight:400!important}.facts div:has(#scope-range){display:none}.facts div+div::before{content:"·";margin-right:8px;color:#b7ab9c}.facts #meta{color:var(--ink);font-weight:600!important}.scope-note{display:none!important}
 .facts{display:flex;flex-wrap:wrap;gap:2px 20px;margin:0;align-items:baseline}.facts div{display:flex;gap:6px;min-width:0}.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:600;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
 .facts .mono{font:600 12.5px var(--mono)}.scope-note{margin:2px 0 0;color:var(--muted);font-size:12px}#usage{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
 .tabs{display:none}.scope-short{display:none}
-.workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(210px,20%) minmax(0,45%) minmax(340px,35%)}
+.workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(400px,46%) minmax(0,1fr);grid-template-rows:minmax(0,auto) minmax(0,1fr);grid-template-areas:"q files" "q diff"}
+#question-pane{grid-area:q;border-right:1px solid var(--line)!important}#files-pane{grid-area:files;max-height:30vh;border-right:0;border-bottom:1px solid var(--line)}#diff-pane{grid-area:diff;border-right:0}
 .pane{min-width:0;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--line)}.pane:last-child{border-right:0}
 .pane h2{font-size:13px;font-weight:600;margin:0;overflow-wrap:anywhere;line-height:1.4}.pane-note{font-size:12px;color:var(--muted);margin:0;padding:8px 14px;overflow-wrap:anywhere}
 .filters{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px 6px}.filters button{min-height:44px;font-size:12.5px;line-height:1.25;padding:4px 8px}
@@ -47,6 +49,7 @@ main{width:100%;padding:0 20px;display:flex;flex-direction:column;min-height:0}
 .speaker{font-size:13px;font-weight:600;margin-bottom:6px}.turn-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.turn.question .turn-text{font-size:18px;line-height:1.6;font-weight:500}
 .turn-note{font-size:12px;color:var(--muted);margin-top:6px}.turn.notice{color:var(--muted)}.question-number{font-size:13px;color:var(--muted);margin-bottom:6px}
 .question{font-size:18px;line-height:1.6;white-space:pre-wrap;margin:8px 0 20px;font-weight:500}.feedback,.message{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 20px}
+.message.passed{font-size:20px;line-height:1.45;font-weight:500;color:var(--pass);padding:18px 20px;border:1px solid #b9d0b1;border-radius:8px;background:#eef5ea}.message.passed::before{content:"✓ ";font-weight:600}.status.passed-note{font-size:13px;color:var(--muted);margin-top:-8px}.status.passed-note::before{content:none}
 ul{padding-left:22px}.status{font-size:13px;color:var(--muted);margin:0 0 12px}
 .composer{flex-shrink:0;border-top:1px solid var(--line);padding:16px 0 12px}.error{font-size:14px;color:#8d271e;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 12px}
 label{display:block;font-size:14px;font-weight:600;margin-bottom:8px}
@@ -70,9 +73,10 @@ button.danger{background:#8d271e;border-color:#8d271e;color:#fff}button.danger:h
 .turn.streaming .turn-text::after{content:"▍";color:var(--amber);animation:pulse 1s steps(2) infinite}
 .status.busy::before{content:"● ";color:var(--amber);animation:pulse 1.2s ease-in-out infinite}.status.phase-question,.status.phase-passed,.status.phase-paused,.status.phase-error,.status.phase-skipped{display:inline-block;font-size:13px;font-weight:600;line-height:1;padding:6px 10px;border:1px solid currentColor;border-radius:999px}.status.phase-question{color:var(--amber)}.status.phase-question::before{content:"◆ "}.status.phase-question.retry{color:var(--retry)}.status.phase-question.retry::before{content:"↺ "}.status.phase-passed{color:var(--pass)}.status.phase-passed::before{content:"✓ "}.status.phase-paused,.status.phase-skipped{color:var(--muted)}.status.phase-paused::before{content:"‖ "}.status.phase-skipped::before{content:"↷ "}.status.phase-error{color:var(--retry)}.status.phase-error::before{content:"! "}@keyframes pulse{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.status.busy::before,.activity.live summary .latest::before{animation:none}}
-footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-height:1.5}footer p{margin:0}#waiting{margin-top:3px}[hidden]{display:none!important}
-@media(max-width:1099px){.workspace{grid-template-columns:minmax(200px,26%) minmax(0,1fr) minmax(320px,40%)}}
-@media(max-width:899px){.tabs{display:flex;gap:4px;padding:6px 12px;border-bottom:1px solid var(--line)}.tabs button{flex:1;min-height:44px;font-size:14px}.tabs button[aria-selected=true]{background:#efe5d8;border-color:var(--amber);font-weight:600}
+footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;color:var(--muted);font-size:12px;line-height:1.5}footer p{margin:0}[hidden]{display:none!important}
+#back-question{display:none}
+@media(max-width:1099px){.workspace{grid-template-columns:minmax(360px,52%) minmax(0,1fr)}}
+@media(max-width:899px){#back-question{display:inline-block}.tabs{display:flex;gap:4px;padding:6px 12px;border-bottom:1px solid var(--line)}.tabs button{flex:1;min-height:44px;font-size:14px}.tabs button[aria-selected=true]{background:#efe5d8;border-color:var(--amber);font-weight:600}
 .workspace{display:flex}.pane{display:none;flex:1;border-right:0}.workspace.show-files #files-pane,.workspace.show-diff #diff-pane,.workspace.show-question #question-pane{display:flex}
 #question-pane{overflow-y:auto}.conversation{flex:none;overflow:visible;padding-right:0}.evidence{max-height:none;overflow:visible}}
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
@@ -89,7 +93,7 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 <p id="filter-total" class="pane-note" aria-live="polite"></p>
 <ul id="file-list" class="filelist" aria-label="Files"></ul><p id="files-note" class="pane-note"></p></aside>
 <section id="diff-pane" class="pane" aria-label="Diff">
-<div class="diffhead"><div><h2 id="diff-title">No file selected</h2><p id="diff-meta">Choose a file from the list, or a code reference beside the question.</p></div>
+<div class="diffhead"><div><h2 id="diff-title">No file selected</h2><p id="diff-meta">Browse the change by opening a file above. Show hint marks the code behind the question.</p></div>
 <div class="diffactions"><button id="context-more" type="button" hidden>More context</button><button id="context-all" type="button" hidden>Full file</button><button id="back-question" type="button">Back to question</button></div></div>
 <p id="diff-legend" class="legend" hidden>+ added · − removed · ▸ lines the reviewer read for the current question</p>
 <p id="diff-note" class="pane-note" role="status" hidden></p><div id="diff-body" class="diffbody"></div></section>
@@ -98,18 +102,18 @@ footer{flex-shrink:0;padding:0 0 14px;color:var(--muted);font-size:12px;line-hei
 <div id="conversation" class="conversation" aria-label="Understanding check conversation">
 <ol id="messages" aria-label="Conversation"></ol>
 <p id="feedback" class="feedback" hidden></p><section id="question" hidden><p id="prompt" class="question"></p><ul id="choices" hidden></ul></section>
-<p id="message" class="message" hidden></p><div id="status" class="status" role="status" aria-live="polite">Connecting to your local checkpoint…</div><div id="recovery" class="recovery" hidden></div>
+<p id="message" class="message" role="status" hidden></p><div id="status" class="status" role="status" aria-live="polite">Connecting to your local checkpoint…</div><div id="recovery" class="recovery" hidden></div>
 </div>
 <section id="evidence" class="evidence" aria-labelledby="evidence-title" hidden><h2 id="evidence-title">Code behind this question</h2><ul id="evidence-list"></ul><p id="evidence-note" class="pane-note"></p></section>
 <div id="composer" class="composer"><p id="error" class="error" role="alert" hidden></p>
 <form id="form"><label id="label" for="response">Your answer</label><textarea id="response" rows="2" maxlength="8000" autocomplete="off" spellcheck="true" placeholder="Your prediction and a short reason…"></textarea>
-<div class="actions"><button type="button" class="quiet" data-action="learn">Explain this</button><button type="button" class="quiet" id="dispute">Dispute question</button><button id="submit" class="primary" type="submit">Send</button></div>
-<p class="hint">Enter to send · Shift+Enter for a new line. Open-book—inspect the code whenever useful.</p></form></div>
-<footer><p>Your answers go directly to Sphinx. The coding agent receives status only.</p><p id="waiting">Closing this tab leaves the check waiting. Use Pause check to stop.</p></footer>
+<div class="actions"><button type="button" class="quiet" id="hint">Show hint</button><button type="button" class="quiet" data-action="learn">Explain this</button><button type="button" class="quiet" id="dispute">Dispute question</button><button id="submit" class="primary" type="submit">Send</button></div>
+<p class="hint">Enter to send · Shift+Enter for a new line. Answer from your understanding first; Show hint reveals the code behind the question.</p></form></div>
+<footer><p id="privacy">Answers go straight to Sphinx; your coding agent only sees whether you passed.</p><p id="waiting">Closing this tab leaves the check waiting. Use Pause check to stop.</p></footer>
 </main></div></div>
 <script nonce="${nonce}">
 const token=${JSON.stringify(token)},base='/'+token,$=id=>document.getElementById(id);
-let disputing=false,current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
+let hinted=false,disputing=false,current,submitting=false,finished=false,connected=false,lastQuestion,lastGraded,lastMessages='';const openGroups=new Set();
 const text=(id,value)=>{$(id).textContent=value||'';$(id).hidden=!value;};
 const compact=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n);
 const usageText=(u,t)=>{if(!t)return '';const total=(t.input||0)+(t.output||0);if(!total&&t.cost==null)return '';
@@ -122,6 +126,7 @@ function controls(){
  for(const button of document.querySelectorAll('#composer button'))button.disabled=!canAnswer;
  $('pause').disabled=!connected||submitting||finished;
  for(const id of ['skip','skipconfirm','skipcancel'])$(id).disabled=!connected||finished;
+ $('hint').disabled=!canAnswer||hinted;$('hint').textContent=hinted?'Hint shown':'Show hint';
  for(const button of $('recovery').querySelectorAll('button'))button.disabled=!connected||submitting||finished;
  $('response').disabled=current.phase!=='question'||current.operationClosed||submitting;
 }
@@ -166,7 +171,7 @@ function render(state){
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;
- text('status',label+(retry?' · Needs another answer':''));scope(state,branch,label);$('status').className='status phase-'+state.phase+(state.phase==='working'?' busy':'')+(retry?' retry':'');text('message',state.message);text('error',state.error);
+ text('status',label+(retry?' · Needs another answer':''));$('message').className='message'+(state.phase==='passed'?' passed':'');scope(state,branch,label);$('status').className='status phase-'+state.phase+(state.phase==='working'?' busy':'')+(retry?' retry':'');if(state.phase==='question'&&!retry)$('status').hidden=true;text('message',state.message);text('error',state.error); if(state.phase==='passed'&&String(state.message||'').includes('\\n')){const [lead,...rest]=state.message.split('\\n');text('message',lead);text('status',rest.join(' '));$('status').className='status passed-note';}
  history(messages);
  // Live activity already shows progress; avoid stacking generic spinners under it.
  if(state.phase==='working'&&(messages.at(-1)?.kind==='activity'||messages.at(-1)?.streaming)){$('status').hidden=true;$('message').hidden=true;}
@@ -180,7 +185,7 @@ function render(state){
   for(const choice of state.question.choices||[]){const li=document.createElement('li');li.textContent=choice;$('choices').append(li);}
   $('choices').hidden=!(state.question.choices||[]).length;
   const key=state.id+':'+state.question.id;
-  if(lastQuestion!==key){$('response').value='';lastQuestion=key;resize();if(disputing)setDispute(false);}
+  if(lastQuestion!==key){$('response').value='';lastQuestion=key;resize();if(disputing)setDispute(false);hinted=false;if(filter==='relevant')filter='all';lastEvidence='';lastFiles='';}
  }
  const graded=[...messages].reverse().find(item=>item.role==='human'&&item.status==='graded');
  if(graded&&lastGraded!==graded.id){lastGraded=graded.id;$('response').value='';resize();if(disputing)setDispute(false);}
@@ -226,6 +231,8 @@ $('response').onkeydown=event=>{
 };
 for(const button of document.querySelectorAll('[data-action]'))button.onclick=()=>send(button.dataset.action);
 $('pause').onclick=()=>send('pause');
+// The hint reveals which code the reviewer read: think first, then look.
+$('hint').onclick=()=>{hinted=true;lastEvidence='';lastFiles='';evidenceList();files();controls();announce('Hint shown: the code behind this question is listed above your answer.');};
 $('skip').onclick=()=>{$('skipbar').hidden=false;$('skipreason').focus();};
 $('skipcancel').onclick=()=>{$('skipbar').hidden=true;};
 $('skipconfirm').onclick=()=>send('skip');
@@ -288,7 +295,7 @@ function filesNote(){
  if(change.header.excludedFiles)notes.push(plural(change.header.excludedFiles,'changed file')+' excluded by privacy or ignore rules are not listed or counted.');
  return notes.join(' ');
 }
-function refs(){return current?.evidence&&current.question&&current.evidence.questionId===current.question.id?current.evidence.refs:null;}
+function refs(){return hinted&&current?.evidence&&current.question&&current.evidence.questionId===current.question.id?current.evidence.refs:null;}
 function relevantPaths(){return new Set((refs()||[]).filter(ref=>ref.inChange).map(ref=>ref.viewPath));}
 function statsOf(list){return list.reduce((t,f)=>{t.files++;if(f.binary)t.binaryFiles++;else if(f.additions==null)t.uncountedFiles++;else{t.additions+=f.additions;t.deletions+=f.deletions;}return t;},{files:0,additions:0,deletions:0,binaryFiles:0,uncountedFiles:0});}
 const STATUS={added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed'};
@@ -297,6 +304,7 @@ function files(){
  const subset=filter==='relevant'?all.filter(f=>relevant.has(f.path)):all;
  const shown=query?subset.filter(f=>(f.path+' '+(f.oldPath||'')).toLowerCase().includes(query.toLowerCase())):subset;
  const signature=JSON.stringify([changeFor,filter,query,selected,[...relevant],all.length]);
+ $('filter-relevant').hidden=!hinted;document.querySelector?.('.filters')?.toggleAttribute?.('hidden',!hinted);
  $('filter-all').setAttribute('aria-pressed',String(filter==='all'));$('filter-relevant').setAttribute('aria-pressed',String(filter==='relevant'));
  const cited=statsOf(all.filter(f=>relevant.has(f.path)));
  $('count-all').textContent=change?plural(change.totals.files,'file'):'';
@@ -339,7 +347,7 @@ function setTab(name){
 }
 for(const id of ['question','files','diff'])$('tab-'+id).onclick=()=>{setTab(id);announce(id==='question'?'Question view. Your answer is kept.':id==='files'?'Changed files view.':'Diff view.');};
 $('back-question').onclick=()=>{setTab('question');$('response').focus({preventScroll:true});announce('Back to the question. Your answer is kept.');};
-function clearDiff(){$('diff-title').textContent='No file selected';$('diff-meta').textContent='Choose a file from the list, or a code reference beside the question.';$('diff-body').replaceChildren();$('diff-note').hidden=true;$('diff-legend').hidden=true;$('context-more').hidden=true;$('context-all').hidden=true;}
+function clearDiff(){$('diff-title').textContent='No file selected';$('diff-meta').textContent=hinted?'Open a file above, or a code reference beside the question.':'Browse the change by opening a file above. Show hint marks the code behind the question.';$('diff-body').replaceChildren();$('diff-note').hidden=true;$('diff-legend').hidden=true;$('context-more').hidden=true;$('context-all').hidden=true;}
 const NOTES={binary:'Binary file. Its contents are not shown and no line counts are reported.',symlink:'Symbolic link changed. The link target is not shown.',submodule:'Submodule pointer changed. Its contents are outside this repository diff.',unsupported:'This file type is not shown.','rename-only':'Renamed without content changes.','mode-only':'Only the file mode changed; no lines changed.',empty:'Empty file. There are no lines to show.','too-large':'This diff is too large to display here. The totals above still count it.','non-utf8':'Not valid UTF-8 text, so the contents are not shown.'};
 async function openFile(path,{show=false,range,quiet=false}={}){
  if(!current||!change)return;
@@ -395,7 +403,7 @@ $('context-more').onclick=()=>{if(!diff)return;const now=contextFor.get(diff.pat
 $('context-all').onclick=()=>{if(!diff)return;contextFor.set(diff.path,'all');openFile(diff.path);};
 function rangeText(r){return (r.side==='old'?'old ':'')+'line'+(r.end>r.start?'s '+r.start+'–'+r.end:' '+r.start);}
 function evidenceList(){
- const active=current&&['question','working'].includes(current.phase)&&current.question;
+ const active=current&&['question','working'].includes(current.phase)&&current.question&&hinted;
  $('evidence').hidden=!active;
  if(!active){if(lastEvidence!=='inactive'){lastEvidence='inactive';if(diff&&diff.path===selected)drawDiff(undefined,true);}return;}
  const list=refs(),signature=JSON.stringify([current.id,current.question.id,list,Boolean(change),current.change?.status]);

@@ -329,5 +329,6 @@ test('the page serves the frozen change and verified question evidence without d
     body: JSON.stringify({ id: first.id, revision: first.revision, action: 'answer', questionId: q.id, response: 'It returns false for a repeated id.' }) });
   assert.equal(answered.status, 202);
   assert.equal((await done).status, 'passed');
+  assert.match(interview.state.message, /You passed\. You can close this tab/);
   assert.match(interview.state.message, /not a review of every changed line/);
 });

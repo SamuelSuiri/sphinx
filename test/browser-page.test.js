@@ -225,6 +225,7 @@ const fileButtons = p => p.nodes['file-list'].children.map(li => li.children[0])
 test('the change header and file list show exact scope and render repository paths literally', async () => {
   const { p, requests } = changePage();
   p.update(withChange); await flush();
+  p.nodes.hint.onclick(); await flush();
   assert.equal(requests.filter(url => url.includes('/change?')).length, 1);
   assert.equal(p.nodes['scope-op'].textContent, 'Push to origin / main');
   assert.equal(p.nodes['scope-range'].textContent, 'bbbbbbbbbb → cccccccccc');
@@ -247,6 +248,7 @@ test('the change header and file list show exact scope and render repository pat
 test('browsing files, filters, context, and views preserves the draft answer and current question', async () => {
   const { p, requests } = changePage();
   p.update(withChange); await flush();
+  p.nodes.hint.onclick(); await flush();
   p.nodes.response.value = 'My unfinished answer.';
   for (const button of fileButtons(p).slice(0, 3)) { button.onclick(); await flush(); }
   assert.equal(p.nodes['diff-title'].textContent, 'gone.txt');
@@ -271,6 +273,7 @@ test('browsing files, filters, context, and views preserves the draft answer and
 test('evidence links open the cited hunk with non-color markers and label unchanged dependencies', async () => {
   const { p, requests } = changePage();
   p.update(withChange); await flush();
+  p.nodes.hint.onclick(); await flush();
   const [linked, dependency] = p.nodes['evidence-list'].children;
   assert.equal(dependency.className, 'static');
   assert.match(dependency.children[1].textContent, /Unchanged file, not part of this change\. lines 3–8/);
@@ -292,10 +295,34 @@ test('evidence links open the cited hunk with non-color markers and label unchan
 test('unavailable change data or evidence keeps the question answerable with an honest fallback', async () => {
   const p = page();
   p.update({ ...question, change: { status: 'unavailable', reason: 'The checkpoint’s Git objects are unavailable.' }, evidence: { questionId: 'q1', refs: [] } });
+  p.nodes.hint.onclick();
   assert.match(p.nodes['scope-stats'].textContent, /^Unavailable: The checkpoint/);
   assert.match(p.nodes['files-note'].textContent, /The question can still be answered/);
   assert.equal(p.nodes['evidence-note'].textContent, 'No specific code location is available for this question.');
   assert.ok(p.buttons.every(button => !button.disabled));
   p.update({ ...question, sequence: 2, phase: 'passed', change: { status: 'unavailable' } });
   assert.equal(p.nodes.evidence.hidden, true);
+});
+
+test('before Show hint, nothing points at the code behind the question; the hint reveals it once per question', async () => {
+  const { p, requests } = changePage();
+  p.update(withChange); await flush();
+  assert.equal(p.nodes.evidence.hidden, true, 'No code references before the hint');
+  assert.equal(p.nodes['filter-relevant'].hidden, true, 'No relevant-files filter before the hint');
+  assert.ok(fileButtons(p).every(button => !/cited by this question/.test(button.getAttribute('aria-label'))));
+  assert.ok(requests.every(url => !url.includes('/diff?')), 'The cited file is not opened automatically');
+  assert.equal(p.nodes.hint.textContent, 'Show hint');
+  p.nodes.hint.onclick(); await flush();
+  assert.equal(p.nodes.evidence.hidden, false);
+  assert.equal(p.nodes.hint.disabled, true);
+  assert.equal(p.nodes.hint.textContent, 'Hint shown');
+  p.update({ ...withChange, sequence: 3, question: { ...withChange.question, id: 'q2' } }); await flush();
+  assert.equal(p.nodes.evidence.hidden, true, 'A new question starts without the hint');
+});
+
+test('passing shows a clear end state that says the tab can be closed', () => {
+  const p = page(); p.update(question);
+  p.update({ ...question, sequence: 2, phase: 'passed', message: 'You passed. You can close this tab; Git is finishing the push on its own.' });
+  assert.equal(p.nodes.message.className, 'message passed');
+  assert.match(p.nodes.message.textContent, /close this tab/);
 });
