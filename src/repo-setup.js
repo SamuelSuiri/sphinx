@@ -211,6 +211,11 @@ export function validateProposal(proposal, { env = process.env } = {}) {
   if (config !== null) {
     try { validateRepositoryConfig(config, { env, source: 'proposal config' }); }
     catch (error) { errors.push(`config: ${error.message}`); }
+    // Agents set Sphinx up; only the human can switch its checks off (sphinx init, interactively).
+    if (config && typeof config === 'object') {
+      if (config.enabled === false) errors.push('config.enabled cannot be false here; turning Sphinx off is the user\'s decision (they can run sphinx init themselves)');
+      for (const key of ['branches', 'events']) if (Array.isArray(config[key]) && !config[key].length) errors.push(`config.${key} cannot be empty here; that would check nothing`);
+    }
   }
   const ignore = proposal.ignore ?? [];
   if (!Array.isArray(ignore)) errors.push('ignore must be an array of path patterns');

@@ -206,3 +206,10 @@ test('SessionStart nudges agents toward setup only when the repository has no .s
   assert.equal((await agentHook({ agent: 'claude', input: { hook_event_name: 'SessionStart', cwd: f.repo }, env: {} })).output.hookSpecificOutput.additionalContext.includes(SETUP_NUDGE), false);
   assert.equal((await cursorAgentHook({ input: { hook_event_name: 'sessionStart', cwd: f.repo }, env: {} })).additional_context, TERMINAL_GUIDANCE);
 });
+
+test('an agent proposal cannot switch checks off', async () => {
+  const { validateProposal } = await import('../src/repo-setup.js');
+  for (const config of [{ version: 1, enabled: false }, { version: 1, branches: [] }, { version: 1, events: [] }]) {
+    assert.throws(() => validateProposal({ version: 1, config, ignore: [], context: null }), /cannot be false|cannot be empty/);
+  }
+});
