@@ -5,7 +5,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig, policyHash } from './config.js';
-import { revalidateSnapshot } from './git.js';
+import { revalidateSnapshot, repositoryName } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { prepareInteractiveCheck, isRateLimit, isCliFailure, switchChoices, PLAN_NAMES } from './check-recovery.js';
 import { claimCheckpointDialog, finishCheckpointDialog, waitForCheckpointTerminal } from './terminal-launch.js';
@@ -68,6 +68,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   let transcript = [], turns = 0, score = null;
   // The installed version and whether npm has a newer one. Display only.
   let update = null;
+  // The repository's name, which in a worktree differs from its folder.
+  let repoName = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -97,7 +99,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -240,6 +242,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     if (closed || active) return { status: 'unavailable', id: request?.id };
     if (!request || !ID.test(request.id) || typeof request.repoRoot !== 'string') throw new Error('Invalid browser checkpoint request.');
     const controller = new AbortController(); active = controller; skip = undefined; waitingGit = request.delivery === 'hook';
+    repoName = await repositoryName(request.repoRoot).catch(() => null);
     transcript = [];
     const cancel = () => controller.abort(requestSignal?.reason || cancelled());
     requestSignal?.addEventListener('abort', cancel, { once: true });
@@ -307,18 +310,23 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
           await validate(session.snapshot, config);
           // Type the grader's feedback into the conversation as it streams.
           // Only the first streamed feedback is shown; the saved result replaces it.
-          let draft, frozen = false, lastPublish = 0;
+          let draft, step, frozen = false, lastPublish = 0;
           const onText = raw => {
             if (frozen) return;
             const field = partialField(raw, 'feedback');
             if (!field?.text) return;
-            if (!draft) { say({ role: 'sphinx', kind: 'feedback', streaming: true, text: field.text }); draft = transcript.at(-1).id; }
-            else transcript = transcript.map(item => item.id === draft ? { ...item, text: field.text } : item);
-            if (field.complete) frozen = true;
+            if (!draft) { say({ role: 'sphinx', kind: 'feedback', streaming: !field.complete, text: field.text }); draft = transcript.at(-1).id; }
+            else transcript = transcript.map(item => item.id === draft ? { ...item, text: field.text, ...(field.complete ? { streaming: false } : {}) } : item);
+            if (field.complete) {
+              frozen = true;
+              // The model is still writing the rest of its reply; say what, so the page never looks stalled.
+              const next = action.action === 'learn' || ['incorrect', 'ambiguous'].includes(partialField(raw, 'verdict')?.text) ? 'Writing a new scenario to try…' : 'Finishing up…';
+              say({ role: 'sphinx', kind: 'activity', text: next }); step = transcript.at(-1).id;
+            }
             const now = Date.now();
             if (field.complete || now - lastPublish > 60) { lastPublish = now; publish(state); }
           };
-          const dropDraft = () => { if (draft) transcript = transcript.filter(item => item.id !== draft); };
+          const dropDraft = () => { transcript = transcript.filter(item => item.id !== draft && item.id !== step); };
           visible = await withTextStream(onText, () => store.answer(request.id, action.action === 'learn' ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : action.response.trim(), config, {
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
           })).finally(dropDraft);

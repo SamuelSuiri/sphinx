@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import path from 'node:path';
 import { policyHash } from './config.js';
 import { loadIgnorePolicy } from './ignore.js';
 import { loadProjectContext } from './repo-context.js';
@@ -53,6 +54,13 @@ function triggered(config, event, branch, remote) {
   return config.enabled !== false && config.events.includes(event)
     && config.branches.some(pattern => matches(pattern, branch))
     && (!remote || config.remotes.some(pattern => matches(pattern, remote)));
+}
+
+/** The repository's own name: the same in every worktree, unlike the checkout folder. */
+export async function repositoryName(cwd = process.cwd()) {
+  const { root, commonDir } = await repository(cwd);
+  const name = path.basename(commonDir) === '.git' ? path.basename(path.dirname(commonDir)) : path.basename(commonDir).replace(/\.git$/, '');
+  return name || path.basename(root);
 }
 
 export async function repository(cwd = process.cwd()) {

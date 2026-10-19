@@ -16,7 +16,7 @@ header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;disp
 .scope{border-bottom:1px solid var(--line);padding:7px 24px;font-size:13px;line-height:1.45;color:var(--muted)}
 .facts dt{display:none}.facts dd{font-weight:400!important}.facts div:has(#scope-range){display:none}.facts div+div::before{content:"·";margin-right:8px;color:#b7ab9c}.facts #meta{color:var(--ink);font-weight:600!important}.scope-note{display:none!important}
 .facts{display:flex;flex-wrap:wrap;gap:2px 20px;margin:0;align-items:baseline}.facts div{display:flex;gap:6px;min-width:0}.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:600;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
-.facts .mono{font:600 12.5px var(--mono)}.scope-note{margin:2px 0 0;color:var(--muted);font-size:12px}#usage{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
+.plus{color:var(--add-ink)}.minus{color:var(--del-ink)}.facts .mono{font:600 12.5px var(--mono)}.scope-note{margin:2px 0 0;color:var(--muted);font-size:12px}#usage{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
 .tabs{display:none}.scope-short{display:none}
 .workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(400px,46%) minmax(0,1fr);grid-template-rows:minmax(0,auto) minmax(0,1fr);grid-template-areas:"q files" "q diff"}
 #question-pane{grid-area:q;border-right:1px solid var(--line)!important}#files-pane{grid-area:files;max-height:30vh;overflow:hidden;border-right:0;border-bottom:1px solid var(--line)}#diff-pane{grid-area:diff;border-right:0}
@@ -204,7 +204,7 @@ function history(messages){
 function render(state){
  if(current&&state.sequence<current.sequence)return;
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
- const repo=state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
+ const repo=state.repoName||state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',repo||state.change?.header?.repository||'');$('meta').title=state.repoRoot||'';
  text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));scoreView(state.score);updateView(state.update);const messages=state.messages||[];
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
@@ -292,6 +292,13 @@ function totalsText(t){
  if(t.uncountedFiles)parts.push(num(t.uncountedFiles)+' without line counts');
  return parts.join(' · ');
 }
+// Additions in green and deletions in red, as git diff --stat shows them.
+function totalsView(target,t){
+ if(!t){target.replaceChildren();return;}
+ const span=(cls,value)=>{const node=document.createElement('span');if(cls)node.className=cls;node.textContent=value;return node;};
+ const rest=totalsText(t).split(' · ').slice(2);
+ target.replaceChildren(span('',plural(t.files,'file')+' · '),span('plus','+'+num(t.additions)),span('',' '),span('minus','−'+num(t.deletions)),span('',' lines'+rest.map(part=>' · '+part).join('')));
+}
 function scope(state,branch,label){
  const c=state.change,h=c?.header;
  $('scope-progress').textContent=label;
@@ -301,7 +308,7 @@ function scope(state,branch,label){
   $('scope-op').textContent=h.event==='pre-commit'?'Commit to '+dest+' (staged changes)':'Push to '+(h.remote&&h.remote!=='.'?h.remote+' / ':'')+dest;
   $('scope-range').textContent=h.staged?(h.base?short(h.base):'empty repository')+' → staged index':(h.base?short(h.base):'new branch (no destination history)')+' → '+short(h.head);
   $('scope-range').title='Checkpoint '+h.checkpoint+(h.base?'\\nBase '+h.base:'')+(h.head?'\\nHead '+h.head:'');
-  $('scope-stats').textContent=totalsText(c.totals);
+  totalsView($('scope-stats'),c.totals);
   $('scope-excluded-row').hidden=!h.excludedFiles;$('scope-excluded').textContent=h.excludedFiles?plural(h.excludedFiles,'file')+' not shown or counted':'';
   $('scope-note').textContent='Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.'+(h.excludedFiles?' '+plural(h.excludedFiles,'more changed file')+' excluded by privacy or ignore rules; names, contents and line counts are not shown or counted.':'');
  }else{

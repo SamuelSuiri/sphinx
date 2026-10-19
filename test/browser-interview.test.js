@@ -375,3 +375,24 @@ test('a newer release is offered in the header and installs only after the check
   const again = await fetch(`${f.interview.url}/action?update=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': token }, body: '{}' });
   assert.equal(again.status, 409); assert.equal(started.length, 1);
 });
+
+test('after a wrong answer streams its feedback, the page shows what Sphinx is doing next', async t => {
+  const transfer = { ...q, id: 'transfer', prompt: 'A different retry scenario: what happens now?' };
+  let release;
+  const f = await fixture(t, { grade: async request => {
+    const raw = '{"questionValid":true,"verdict":"incorrect","feedback":"The insert runs again on retry."';
+    textStream()?.(raw);
+    await Promise.race([new Promise(resolve => { release = resolve; }), delay(3000)]);
+    return { verdict: 'incorrect', feedback: 'The insert runs again on retry.', followUp: transfer };
+  } });
+  f.present(); const state = await f.waitFor('question');
+  await f.post('answer', { questionId: state.question.id, response: 'It is skipped.' });
+  for (let i = 0; i < 200 && !release; i++) await delay(10);
+  for (let i = 0; i < 200 && f.interview.state.messages.at(-1)?.kind !== 'activity'; i++) await delay(10);
+  const messages = f.interview.state.messages;
+  assert.equal(messages.at(-1).text, 'Writing a new scenario to try…');
+  assert.equal(messages.at(-2).kind, 'feedback'); assert.equal(messages.at(-2).streaming, false, 'no frozen cursor');
+  release?.();
+  const next = await f.waitFor('question');
+  assert.ok(!next.messages.some(item => item.text === 'Writing a new scenario to try…'), 'the step goes away with the result');
+});

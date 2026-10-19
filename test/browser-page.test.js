@@ -229,7 +229,9 @@ test('the change header and file list show exact scope and render repository pat
   assert.equal(requests.filter(url => url.includes('/change?')).length, 1);
   assert.equal(p.nodes['scope-op'].textContent, 'Push to origin / main');
   assert.equal(p.nodes['scope-range'].textContent, 'bbbbbbbbbb → cccccccccc');
-  assert.equal(p.nodes['scope-stats'].textContent, '4 files · +5 −3 lines · 1 binary file (no line counts)');
+  const stats = p.nodes['scope-stats'].children;
+  assert.equal(stats.map(node => node.textContent).join(''), '4 files · +5 −3 lines · 1 binary file (no line counts)');
+  assert.deepEqual(stats.filter(node => node.className).map(node => [node.className, node.textContent]), [['plus', '+5'], ['minus', '−3']], 'colored like git diff --stat');
   assert.equal(p.nodes['scope-progress'].textContent, 'Question 1 of 1');
   assert.match(p.nodes['scope-note'].textContent, /not necessarily an entire pull request.*1 more changed file excluded/);
   const buttons = fileButtons(p);
