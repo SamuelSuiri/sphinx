@@ -169,9 +169,11 @@ export function validateQuestion(question, allowedPaths) {
 }
 
 export function validateNewQuestion(question, allowedPaths) {
+  // Check choices first: the legacy validator's "2–6 alternatives" hint is wrong
+  // for new questions and would send a reviewer toward another rejection.
+  if (Array.isArray(question?.choices) && question.choices.length) fail('New questions must use choices:[] and ask for a bounded prediction with a short causal reason.');
   const checked = validateQuestion(question, allowedPaths);
   if (!checked.acceptance) fail('New questions need acceptance.prediction and acceptance.causalReason before they can be shown.');
-  if (checked.choices.length) fail('New questions must use choices:[] and ask for a bounded prediction with a short causal reason.');
   return checked;
 }
 

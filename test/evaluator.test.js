@@ -907,3 +907,15 @@ test('stated preferences steer questions and let a larger change in a skipped ar
   assert.match(JSON.stringify(steered.messages), /Question preferences/);
   assert.match(JSON.stringify(steered.messages), /entire change falls in areas the person's preferences say to skip/);
 });
+
+test('a new question with any choices is told to use none; legacy questions keep their 2–6 rule', () => {
+  const base = { id: 'q1', concept: 'c', prompt: 'What happens on retry? Why?', expectedAnswer: 'a', rationale: 'r', evidence: [{ path: 'src/orders.js', reason: 'x' }], acceptance: { prediction: 'p', causalReason: 'c' } };
+  const paths = new Set(['src/orders.js']);
+  for (const count of [1, 2, 7]) {
+    const choices = Array.from({ length: count }, (_, i) => `choice ${i}`);
+    assert.throws(() => validateNewQuestion({ ...base, choices }, paths), /New questions must use choices:\[\]/, `${count} choices`);
+  }
+  assert.equal(validateNewQuestion({ ...base, choices: [] }, paths).id, 'q1');
+  assert.throws(() => validateQuestion({ ...base, choices: ['only'] }, paths), /empty or contain 2–6 alternatives/);
+  assert.deepEqual(validateQuestion({ ...base, choices: ['Yes', 'No'] }, paths).choices, ['Yes', 'No']);
+});
