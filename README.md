@@ -146,7 +146,7 @@ Your answers go straight from the page to Sphinx. Your coding agent sees only th
 
 ## Limits and cost
 
-Question count depends on the size of the change and the depth you choose: small changes get up to one question (none for documentation or trivial edits), and large ones up to three at the default depth. Understanding distance sets how close to the code questions get: `mixed` (default) asks some of each, `high` asks what your change does and affects, and `low` asks about its specific logic and edge cases. Set it in setup, with `sphinx config --distance low`, per repository in `.sphinxconfig`, or from the distance chip in the questionnaire, which saves it to this repository's `.sphinxconfig` for your next check. After commits, Sphinx prepares questions in the background, so they are often ready by the time you push. Calls, tokens, and (when reported) cost appear in the questionnaire.
+Question count depends on the size of the change and the depth you choose: small changes get up to one question (none for documentation or trivial edits), and large ones up to three at the default depth. Understanding distance sets how close to the code questions get: `high` asks about high-level design (what your change does, how it fits into the system, and what it affects), `low` asks about low-level implementation details (its specific logic, conditions, and edge cases), and `mixed`, the default, is a bit of both. Set it in setup, with `sphinx config --distance low`, per repository in `.sphinxconfig`, or from the distance chip in the questionnaire, which saves it to this repository's `.sphinxconfig` for your next check. After commits, Sphinx prepares questions in the background, so they are often ready by the time you push. Calls, tokens, and (when reported) cost appear in the questionnaire.
 
 ```sh
 sphinx config --max-model-calls 30        # optional cap per check (1–100)
@@ -240,7 +240,7 @@ If a review is rate limited or a CLI fails mid-check, the questionnaire offers t
 | `branches` | Branches that trigger a check. Pushes match the destination, commits match the current branch. `["*"]` checks every branch, which is useful for pull requests |
 | `remotes` | Remote names that trigger push checks; `*` (default) means any |
 | `level` | How many questions: `relaxed`, `standard` (default), or `thorough` |
-| `distance` | `mixed` (default): some questions about what the change does, some about its specific logic. `high`: what the change does and affects. `low`: its specific logic, conditions, and edge cases. The questionnaire's distance chip changes it for the repository from the next check |
+| `distance` | `high`: high-level design, meaning what the change does, how it fits into the system, and what it affects. `low`: low-level implementation details, meaning its specific logic, conditions, and edge cases. `mixed` (default): a bit of both. The questionnaire's distance chip changes it for the repository from the next check |
 | `exclude` | Extra paths to keep from the reviewer, on top of `.sphinxignore` |
 | `backgroundPreparation` | `false` stops preparing questions in the background after commits |
 | `github` | GitHub commit status and pull request comment; see below |

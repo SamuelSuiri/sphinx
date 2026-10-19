@@ -95,7 +95,7 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     { value: 'standard', label: 'Standard', description: `Caps: ${questionCapsText('standard')}. Behavior, failures, and system interactions.` },
     { value: 'thorough', label: 'Thorough', description: `Caps: ${questionCapsText('thorough')}. Also consider rollout, rollback, and compatibility.` },
   ] });
-  if (values.distance === undefined) values.distance = await prompts.choose({ title: 'How close to the code should questions get?', current: config.distance ?? 'mixed', choices: ['mixed', 'high', 'low'].map(value => ({ value, label: DISTANCES[value].label, description: DISTANCES[value].description })) });
+  if (values.distance === undefined) values.distance = await prompts.choose({ title: 'How close to the code should questions get?', current: config.distance ?? 'mixed', choices: ['high', 'mixed', 'low'].map(value => ({ value, label: DISTANCES[value].label, description: DISTANCES[value].description })) });
   return values;
 }
 

@@ -30,9 +30,9 @@ export const DEFAULT_CONFIG = {
 
 /** Understanding distance: how close to the code questions get. One wording everywhere. */
 export const DISTANCES = Object.freeze({
-  high: { label: 'High level', description: 'What the change does and what it affects.' },
-  mixed: { label: 'Mixed', description: 'Some questions about what the change does, some about its specific logic.' },
-  low: { label: 'Low level', description: 'The specific logic, conditions, and edge cases.' },
+  high: { label: 'High level', description: 'High-level design: what the change does, how it fits into the system, and what it affects.' },
+  mixed: { label: 'Mixed', description: 'A bit of both: some high-level design questions, some low-level implementation details.' },
+  low: { label: 'Low level', description: 'Low-level implementation details: the specific logic, conditions, and edge cases.' },
 });
 
 export function getPaths(env = process.env) {

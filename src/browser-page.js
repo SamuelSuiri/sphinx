@@ -214,7 +214,7 @@ document.onkeydown=event=>{if(event.key!=='Escape')return;if(menuOpen){closeMenu
 document.onclick=event=>{if(event.target?.isConnected===false)return;if(menuOpen&&!$('model-menu').contains?.(event.target)&&!$('model').contains?.(event.target))closeMenu();if(distanceOpen&&!$('distance-menu').contains?.(event.target)&&!$('distance').contains?.(event.target))closeDistance();};
 // The question distance: shown as a chip, explained in its tooltip, and changeable
 // for this repository. It applies from the next check, since this one's questions exist.
-const DISTANCE_TEXT={high:['High level','What the change does and what it affects.'],mixed:['Mixed','Some questions about what the change does, some about its specific logic.'],low:['Low level','The specific logic, conditions, and edge cases.']};
+const DISTANCE_TEXT={high:['High level','High-level design: what the change does, how it fits into the system, and what it affects.'],mixed:['Mixed','A bit of both: some high-level design questions, some low-level implementation details.'],low:['Low level','Low-level implementation details: the specific logic, conditions, and edge cases.']};
 let distanceOpen=false;
 function distanceView(state){
  const d=state.distance,chip=$('distance');
@@ -227,7 +227,7 @@ function distanceView(state){
 function closeDistance(){if(!distanceOpen)return;distanceOpen=false;$('distance-menu').hidden=true;$('distance').setAttribute('aria-expanded','false');}
 function buildDistance(state){
  const d=state.distance,chosen=d.next||d.current,parts=[node('h3','','Question distance'),node('p','menu-note','For this repository, from your next check. This check keeps '+DISTANCE_TEXT[d.current][0].toLowerCase()+' questions.')];
- for(const value of ['mixed','high','low']){
+ for(const value of ['high','mixed','low']){
   const button=node('button','option'),text=node('span','name');button.type='button';button.setAttribute('role','menuitemradio');button.setAttribute('aria-checked',String(value===chosen));
   text.append(node('span','',DISTANCE_TEXT[value][0]+(value==='mixed'?' (default)':'')),node('span','desc',DISTANCE_TEXT[value][1]));
   button.append(node('span','dot',value===chosen?'●':''),text);
