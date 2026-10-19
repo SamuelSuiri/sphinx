@@ -85,3 +85,23 @@ test('interface is a personal setting outside the policy hash', () => {
   assert.throws(() => validateRepositoryConfig({ interface: 'terminal' }), /cannot set interface/);
   assert.equal(policyHash(DEFAULT_CONFIG), policyHash({ ...DEFAULT_CONFIG, interface: 'terminal' }));
 });
+
+test('a failed grade keeps the question open instead of ending the check; cancelling still ends it', async () => {
+  // The first grade fails the way issue #14 reported.
+  const failing = harness({ answers: [], results: [] });
+  let calls = 0;
+  const done = { status: 'passed', question: null, progress: { completed: 1, total: 1 }, verdict: 'correct', feedback: '' };
+  const store = { start: async () => ({ status: 'active', question: failing.q1, progress: { completed: 0, total: 1 } }), read: async () => ({}), public: s => s,
+    answer: async () => { calls++; if (calls === 1) throw new Error('The explanation came back without a new scenario. Ask for it again.'); return done; } };
+  let output = '';
+  const { Writable } = await import('node:stream');
+  const stream = new Writable({ write(chunk, _e, next) { output += chunk; next(); } });
+  const answers = ['/learn', 'It charges twice'];
+  const code = await runTerminalCheck({ store, session: { id: 'x', questions: [failing.q1], route: {}, snapshot: { repoRoot: '/r', target: { ref: 'refs/heads/main' } } }, config: DEFAULT_CONFIG, ask: async () => answers.shift(), terminal: createTerminal({ stream, env: { NO_COLOR: '1' }, width: 80 }), stream, env: { SPHINX_HOME: '/nonexistent' }, validate: async () => {}, choose: async () => 'pause' });
+  assert.equal(code, 0, 'the check carried on and passed');
+  assert.match(output, /That didn't go through: The explanation came back without a new scenario\./);
+  assert.match(output, /Your progress is kept/);
+  const cancelled = Object.assign(new Error('cancelled'), { code: 'SPHINX_CANCELLED' });
+  const stopping = { ...store, answer: async () => { throw cancelled; } };
+  await assert.rejects(runTerminalCheck({ store: stopping, session: { id: 'x', questions: [failing.q1], route: {}, snapshot: { repoRoot: '/r', target: { ref: 'refs/heads/main' } } }, config: DEFAULT_CONFIG, ask: async () => 'An answer', terminal: createTerminal({ stream, env: { NO_COLOR: '1' }, width: 80 }), stream, env: { SPHINX_HOME: '/nonexistent' }, validate: async () => {}, choose: async () => 'pause' }), /cancelled/);
+});

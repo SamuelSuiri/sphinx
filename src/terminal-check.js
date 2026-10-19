@@ -148,7 +148,17 @@ export async function runTerminalCheck({ store, session, config, ask, terminal: 
     if (answer === '/dispute') { terminal.warning('Add a reason: /dispute <what is ambiguous or unsupported>'); continue; }
     if (answer.startsWith('/') && !dispute && !learn) { terminal.warning('Use /hint, /learn, /dispute <reason>, /quit, or type your answer.'); continue; }
     const previous = state;
-    state = await withSpinner(learn ? 'Preparing an explanation and a new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? LEARN : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: previous.question.id, signal }));
+    try {
+      state = await withSpinner(learn ? 'Preparing an explanation and a new scenario' : dispute ? 'Reviewing the question' : 'Checking your reasoning', () => store.answer(session.id, learn ? LEARN : dispute ? answer.slice(9) : answer, config, { dispute, learn, expectedQuestionId: previous.question.id, signal }));
+    } catch (error) {
+      // Like the browser: a failed grade leaves the same question open. Only cancelling ends the check.
+      if (signal?.aborted || ['SPHINX_CANCELLED', 'EVALUATOR_CANCELLED'].includes(error?.code) || error?.name === 'AbortError') throw error;
+      terminal.line('');
+      terminal.warning(`That didn't go through: ${plain(error.message)}`);
+      terminal.note('Your progress is kept. Try again, or /quit to stop here.');
+      state = previous;
+      continue;
+    }
     signal?.throwIfAborted();
     printVerdict(terminal, state, { learn, dispute });
   }

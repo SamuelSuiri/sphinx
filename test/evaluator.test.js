@@ -919,3 +919,13 @@ test('a new question with any choices is told to use none; legacy questions keep
   assert.throws(() => validateQuestion({ ...base, choices: ['only'] }, paths), /empty or contain 2–6 alternatives/);
   assert.deepEqual(validateQuestion({ ...base, choices: ['Yes', 'No'] }, paths).choices, ['Yes', 'No']);
 });
+
+test('/learn requires a new scenario: the schema demands it, and a reply without one is rejected', async t => {
+  const missing = { verdict: 'ambiguous', feedback: 'Here is how it works.', evidence: [{ path: 'src/orders.js', reason: 'The insert is unconditional.' }], followUp: null };
+  const { evaluator, calls } = await fixture(t, missing);
+  await assert.rejects(evaluator.gradeAnswer({ snapshot, question, answer: 'I do not know. Explain this concept.', config: { ...config, provider: 'claude' }, learn: true }), /without a new scenario/);
+  assert.match(calls[0].input, /^The human asked for an explanation instead of answering/);
+  const schema = JSON.parse(calls[0].args[calls[0].args.indexOf('--json-schema') + 1]);
+  assert.deepEqual(schema.properties.verdict.enum, ['incorrect'], 'the output schema allows only incorrect');
+  assert.equal(schema.properties.followUp.anyOf, undefined, 'and a new question is not optional');
+});
