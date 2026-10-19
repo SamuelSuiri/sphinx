@@ -414,6 +414,9 @@ test('picking a model during the questions grades with it from then on, and can 
   const state = f.interview.state;
   await f.post('answer', { questionId: state.question.id, response: 'Yes, because the insert is unconditional.' });
   assert.equal((await done).status, 'passed');
+  // Git re-checks the policy after the questionnaire returns; saving must wait for close().
+  assert.doesNotMatch(await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8').catch(() => ''), /sonnet/);
+  await f.interview.close();
   const saved = JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8'));
   assert.deepEqual(saved.models.large, { provider: 'claude', model: 'sonnet' });
 });
@@ -449,5 +452,8 @@ test('the page shows the question distance and saves a repository change only wh
   await assert.rejects(readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8'), { code: 'ENOENT' }, 'not written mid-check: it would invalidate this check');
   await f.post('answer', { questionId: state.question.id, response: 'Yes, because the insert is unconditional.' });
   assert.equal((await done).status, 'passed');
+  // Git re-checks the policy after the questionnaire returns; writing must wait for close().
+  await assert.rejects(readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8'), { code: 'ENOENT' });
+  await f.interview.close();
   assert.equal(JSON.parse(await readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8')).distance, 'low');
 });

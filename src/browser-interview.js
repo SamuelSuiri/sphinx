@@ -84,6 +84,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // This check's understanding distance, and a change for the repository's next checks.
   // Distance is part of the check's policy, so it is written only when this check ends.
   let distance = null;
+  const afterClose = [];
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -434,18 +435,20 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     } finally {
       clearTimeout(timer); requestSignal?.removeEventListener('abort', cancel); resolver?.reject(cancelled()); resolver = undefined;
       if (reservation?.status === 'claimed') await release({ id: request.id, token: reservation.token, status: finalStatus, env: operationEnv });
-      // "Also use for future checks" waits until now: changing saved routes mid-check would invalidate it.
+      // Settings chosen for future checks are part of a check's policy, and the
+      // Git hook re-checks that policy after this returns. Write them on close().
       if (pendingDefault) {
         const { provider, model } = pendingDefault; pendingDefault = null;
-        await loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)).catch(() => {});
+        afterClose.push(() => loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)));
       }
-      if (distance?.next) await setRepositoryDistance(request.repoRoot, distance.next, { env: operationEnv }).catch(() => {});
+      if (distance?.next) { const { next } = distance, root = request.repoRoot; afterClose.push(() => setRepositoryDistance(root, next, { env: operationEnv })); }
       switchModel = null; models = null; distance = null;
       active = undefined;
     }
   }
   async function close() {
     closed = true; active?.abort(cancelled()); resolver?.reject(cancelled()); resolver = undefined;
+    for (const write of afterClose.splice(0)) await write().catch(() => {});
     if (server) {
       // A passed checkpoint may be followed by another destination. Only this
       // explicit end-of-operation update tells the page to stop reconnecting.

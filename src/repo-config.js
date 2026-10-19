@@ -101,6 +101,13 @@ export async function setRepositoryDistance(repoRoot, distance, { env = process.
   const next = { ...current, version: current.version ?? 1, distance };
   validateRepositoryConfig(next, { env });
   const file = path.join(repoRoot, '.sphinxconfig');
-  await writeFile(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o644 });
+  // Edit only the distance line of an existing .sphinxconfig, so its layout survives.
+  const text = info.exists && !info.legacy ? await readFile(file, 'utf8') : null;
+  const edited = text === null ? null : Object.hasOwn(current, 'distance')
+    ? text.replace(/("distance"\s*:\s*)"[^"]*"/, `$1${JSON.stringify(distance)}`)
+    : text.replace(/\s*\}\s*$/, match => `,\n  "distance": ${JSON.stringify(distance)}${match.startsWith('\n') ? match : `\n${match.trimStart()}`}`);
+  let output = `${JSON.stringify(next, null, 2)}\n`;
+  try { if (edited !== null && JSON.stringify(JSON.parse(edited)) === JSON.stringify(next)) output = edited; } catch { /* Fall back to rewriting the file. */ }
+  await writeFile(file, output, { mode: 0o644 });
   return file;
 }

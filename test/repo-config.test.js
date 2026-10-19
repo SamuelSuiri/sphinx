@@ -155,5 +155,9 @@ test('the questionnaire can set a repository distance, keeping its other setting
   await writeFile(join(dir, '.sphinxconfig'), JSON.stringify({ version: 1, branches: ['main'], exclude: ['dist/**'], distance: 'low' }));
   await setRepositoryDistance(dir, 'high');
   assert.deepEqual(JSON.parse(await readFile(join(dir, '.sphinxconfig'), 'utf8')), { version: 1, branches: ['main'], exclude: ['dist/**'], distance: 'high' });
+  // Only the distance line changes in a hand-formatted file.
+  await writeFile(join(dir, '.sphinxconfig'), '{\n  "version": 1,\n  "branches": ["main"]\n}\n');
+  await setRepositoryDistance(dir, 'low');
+  assert.equal(await readFile(join(dir, '.sphinxconfig'), 'utf8'), '{\n  "version": 1,\n  "branches": ["main"],\n  "distance": "low"\n}\n');
   await assert.rejects(setRepositoryDistance(dir, 'sideways'), /distance must be/);
 });
