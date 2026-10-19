@@ -102,6 +102,8 @@ export async function prepareInteractiveCheck({ start, inspect, authorizeMore, v
         ui.command(`sphinx check --id ${state.id}`);
         return null;
       }
+      // The questionnaire's model picker already moved the check to another model; try again on it.
+      if (action === 'switched') continue;
       if (!choices.some(choice => choice.value === action)) throw new Error('Invalid review recovery choice. No additional model request was made.');
       if (action.startsWith('switch-')) {
         const provider = action.slice('switch-'.length);

@@ -419,15 +419,18 @@ export function createSessionStore({ env = process.env, generate = generateAsses
    * are. Unanswered investigation is dropped because its conversation belongs
    * to the previous transport; existing questions and progress are kept.
    */
-  async function switchRoute(id, config, provider, { signal } = {}) {
-    if (!['claude', 'codex'].includes(provider)) throw new Error('Only Claude Code or Codex can take over a check on your plan.');
+  // Moves an unfinished check to another reviewer: a plan's preset model when
+  // only a provider is given (rate-limit recovery), or the exact model picked.
+  async function switchRoute(id, config, provider, { signal, model: picked } = {}) {
+    if (!['claude', 'codex', 'openrouter', 'openai'].includes(provider)) throw new Error('Unknown reviewer provider.');
+    if (picked === undefined && !['claude', 'codex'].includes(provider)) throw new Error('Only Claude Code or Codex can take over a check on your plan.');
     return withLock(id, env, async () => {
       signal?.throwIfAborted();
       const session = await read(id);
       if (session.policy !== policyHash(config)) throw new Error('Sphinx settings changed. Start a fresh check.');
       if (!['pending', 'active'].includes(session.status)) throw new Error('Only an unfinished check can switch models.');
       const preset = REVIEWER_PRESETS.find(item => item.id === `${provider}-economy`);
-      const model = preset?.models[session.route.tier]?.model ?? null;
+      const model = picked ?? preset?.models[session.route.tier]?.model ?? null;
       const at = now();
       session.routeChanges = [...(session.routeChanges || []), { at, calls: session.calls, from: { provider: session.route.provider, model: session.route.model }, to: { provider, model } }];
       session.route = { ...session.route, provider, model };

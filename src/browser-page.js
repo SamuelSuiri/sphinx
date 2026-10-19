@@ -16,6 +16,16 @@ header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;disp
 .scope{border-bottom:1px solid var(--line);padding:7px 24px;font-size:13px;line-height:1.45;color:var(--muted)}
 .facts dt{display:none}.facts dd{font-weight:400!important}.facts div:has(#scope-range){display:none}.facts div+div::before{content:"·";margin-right:8px;color:#b7ab9c}.facts #meta{color:var(--ink);font-weight:600!important}.scope-note{display:none!important}
 .facts{display:flex;flex-wrap:wrap;gap:2px 20px;margin:0;align-items:baseline}.facts div{display:flex;gap:6px;min-width:0}.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:600;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.model-cell{position:relative}.model-chip{font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:999px;padding:1px 9px 1px 10px;margin-right:6px;cursor:pointer;white-space:nowrap}.model-chip:hover:not(:disabled){border-color:var(--amber)}.model-chip:disabled{color:var(--muted);cursor:default}.model-chip .caret{color:var(--muted);margin-left:5px;font-size:10px}
+.model-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:20;width:300px;max-height:min(70vh,460px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px rgba(41,37,36,.14);padding:6px 0;font-size:13.5px;color:var(--ink);display:block!important}.model-menu[hidden]{display:none!important}.model-menu div::before{content:none!important}
+.model-menu h3{margin:0;padding:8px 14px 2px;font-size:13px;font-weight:600}.model-menu .menu-note{margin:0;padding:0 14px 6px;color:var(--muted);font-size:12px;line-height:1.4}
+.model-menu .group{padding:8px 14px 2px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.model-menu .option{display:flex;align-items:baseline;gap:8px;width:100%;padding:6px 14px;border:0;border-radius:0;background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer}.model-menu .option:hover:not(:disabled),.model-menu .option:focus-visible{background:var(--paper);outline:none}
+.model-menu .option .dot{width:14px;flex:none;color:var(--amber)}.model-menu .option .name{flex:1;overflow-wrap:anywhere}.model-menu .option .tag{color:var(--muted);font-size:12px}.model-menu .option:disabled{color:var(--muted);cursor:not-allowed}
+.model-menu .custom{display:flex;gap:6px;padding:4px 14px 6px 36px}.model-menu .custom input{flex:1;min-width:0;font:12.5px var(--mono);padding:4px 7px;border:1px solid var(--line);border-radius:6px}.model-menu .custom button{font-size:12.5px;padding:3px 10px}
+.model-menu .menu-foot{border-top:1px solid var(--line);margin-top:6px;padding:8px 14px 4px;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;cursor:pointer}
+.model-menu .confirm{display:block!important;margin:2px 10px 8px;padding:8px 10px;border-radius:8px;background:var(--paper);font-size:12.5px}.model-menu .confirm p{margin:0}.model-menu .confirm div{display:flex;gap:6px;margin-top:8px}.model-menu .menu-error{margin:4px 14px;color:var(--retry);font-size:12.5px}
+@media(max-width:600px){.model-menu{position:fixed;left:12px;right:12px;top:auto;bottom:12px;width:auto}}
 .plus{color:var(--add-ink)}.minus{color:var(--del-ink)}.facts .mono{font:600 12.5px var(--mono)}.scope-note{margin:2px 0 0;color:var(--muted);font-size:12px}#usage{color:var(--muted);font-weight:400;font-variant-numeric:tabular-nums}
 .tabs{display:none}.scope-short{display:none}
 .workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(400px,46%) minmax(0,1fr);grid-template-rows:minmax(0,auto) minmax(0,1fr);grid-template-areas:"q files" "q diff"}
@@ -93,7 +103,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
 </style></head><body><div class="shell">
 <header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><small id="version">v${VERSION}</small><button id="update" class="update" type="button" hidden></button><span>Understanding check</span></div><div id="score" class="score" hidden><span class="score-head"><span class="score-label">Your understanding</span><strong id="score-value" class="score-value"></strong></span><span id="score-dots" class="score-dots" role="img"></span><span id="score-meta" class="score-meta"></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
-<section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div><dd id="usage"></dd></div></dl>
+<section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div class="model-cell"><dd><button id="model" class="model-chip" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="model-menu" hidden></button><span id="usage"></span></dd><section id="model-menu" class="model-menu" role="dialog" aria-label="Reviewer model for this check" hidden></section></div></dl>
 <p id="scope-note" class="scope-note">Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.</p><p class="scope-note scope-short">Checkpoint range only — not necessarily a whole pull request.</p></section>
 <nav class="tabs" role="tablist" aria-label="Questionnaire views"><button id="tab-question" role="tab" type="button" aria-controls="question-pane" aria-selected="true">Question</button><button id="tab-files" role="tab" type="button" aria-controls="files-pane" aria-selected="false">Files</button><button id="tab-diff" role="tab" type="button" aria-controls="diff-pane" aria-selected="false">Diff</button></nav>
 <div id="announce" class="sr" aria-live="polite"></div>
@@ -149,6 +159,59 @@ function scoreView(sc){
  const meta=[];if(sc.streak>1)meta.push(sc.streak+' in a row');if(sc.skipRate!=null)meta.push('skipped '+sc.skipRate+'%');
  $('score-meta').textContent=meta.join(' · ');lastScored=sc.answered;
 }
+// The reviewer model picker: a chip in the info line opening a small menu.
+// Mid-review it asks once first, because switching restarts the review.
+let menuOpen=false,pendingPick=null,menuError='';
+const MODEL_NAMES={claude:'Claude Code',codex:'Codex',openrouter:'OpenRouter',openai:'Endpoint'};
+const node=(tag,cls,value)=>{const item=document.createElement(tag);if(cls)item.className=cls;if(value!==undefined)item.textContent=value;return item;};
+function modelView(state){
+ const groups=state.models?.groups||[],chip=$('model'),route=routeText(state.route),usage=usageText(state.usage,state.tokens);
+ const offered=groups.length>0&&!finished&&!!route;
+ chip.hidden=!offered;
+ if(offered){chip.replaceChildren(node('span','',route),node('span','caret','▾'));chip.disabled=!!state.models.busy;
+  chip.title=state.models.busy?'You can switch models once this answer is checked.':'Change the reviewer model for this check';}
+ text('usage',offered?usage:[route,usage].filter(Boolean).join(' · '));
+ if(!offered||state.models.busy)closeMenu();else if(menuOpen)buildMenu(state);
+}
+function closeMenu(){if(!menuOpen)return;menuOpen=false;pendingPick=null;menuError='';$('model-menu').hidden=true;$('model').setAttribute('aria-expanded','false');}
+function buildMenu(state){
+ const route=state.route||{},reviewing=!!state.models?.reviewing,keep=document.getElementById('model-save')?.checked===true;
+ const parts=[node('h3','','Model for this check'),node('p','menu-note',reviewing?'Switching restarts the review on the new model. Usage so far stays counted.':'Answers are checked with the new model from now on.')];
+ // The restart question goes at the top, where the eye already is.
+ if(pendingPick){const box=node('div','confirm'),actions=node('div'),go=node('button','primary','Restart'),no=node('button','quiet','Cancel');go.type=no.type='button';
+  go.onclick=()=>commit(pendingPick);no.onclick=()=>{pendingPick=null;buildMenu(current);};box.append(node('p','','Restart the review with '+pendingPick.label+'?'));actions.append(go,no);box.append(actions);parts.push(box);}
+ for(const group of state.models.groups){
+  parts.push(node('div','group',group.label+' · '+group.billing));
+  for(const option of group.models){
+   const selected=route.provider===group.provider&&route.model===option.model,button=node('button','option');button.type='button';
+   button.setAttribute('role','menuitemradio');button.setAttribute('aria-checked',String(selected));button.disabled=!!option.disabled;if(option.disabled)button.title=option.disabled;
+   button.append(node('span','dot',selected?'●':''),node('span','name',option.label),node('span','tag',option.disabled?'off':option.note||''));
+   button.onclick=()=>pick(state,{provider:group.provider,model:option.model,label:(MODEL_NAMES[group.provider]||group.label)+' '+option.label});
+   parts.push(button);
+  }
+  if(group.custom){
+   const row=node('div','custom'),input=node('input'),use=node('button','quiet','Use');input.placeholder='Other model ID…';input.setAttribute('aria-label',group.label+' model ID');input.spellcheck=false;use.type='button';
+   use.onclick=()=>{const model=input.value.trim();if(model)pick(state,{provider:group.provider,model,label:(MODEL_NAMES[group.provider]||group.label)+' '+model});};
+   input.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();use.onclick();}};
+   row.append(input,use);parts.push(row);
+  }
+ }
+ if(menuError)parts.push(node('p','menu-error',menuError));
+ const foot=node('label','menu-foot'),save=node('input');save.type='checkbox';save.id='model-save';save.checked=keep;foot.append(save,node('span','','Also use for future checks'));parts.push(foot);
+ $('model-menu').replaceChildren(...parts);
+ if(pendingPick)$('model-menu').scrollTop=0;
+}
+function pick(state,choice){menuError='';if(state.models?.reviewing){pendingPick=choice;buildMenu(state);return;}commit(choice);}
+async function commit(choice){
+ const save=document.getElementById('model-save')?.checked===true;pendingPick=null;
+ try{const res=await fetch(base+'/action?model=1',{method:'POST',headers:{'Content-Type':'application/json','X-Sphinx-Token':token},body:JSON.stringify({provider:choice.provider,model:choice.model,saveDefault:save})});
+  const data=await res.json().catch(()=>({}));if(!res.ok){menuError=data.error||'Could not switch models.';buildMenu(current);return;}closeMenu();}
+ catch{menuError='Could not reach Sphinx. Try again.';buildMenu(current);}
+}
+$('model').onclick=()=>{if(menuOpen){closeMenu();return;}menuOpen=true;menuError='';$('model-menu').hidden=false;$('model').setAttribute('aria-expanded','true');buildMenu(current);$('model-menu').querySelector?.('[aria-checked="true"]')?.focus?.();};
+document.onkeydown=event=>{if(event.key==='Escape'&&menuOpen){closeMenu();$('model').focus();}};
+// A click inside the menu can rebuild it, detaching the clicked button; that is not a click outside.
+document.onclick=event=>{if(menuOpen&&event.target?.isConnected!==false&&!$('model-menu').contains?.(event.target)&&!$('model').contains?.(event.target))closeMenu();};
 // A newer release is offered quietly; installing waits until this check ends.
 function updateView(u){const b=$('update');if(!u?.available){b.hidden=true;return;}b.hidden=false;
  if(u.status==='scheduled'){b.textContent='Updating to v'+u.latest+' after this check';b.disabled=true;b.title='';}
@@ -206,7 +269,7 @@ function render(state){
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
  const repo=state.repoName||state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',repo||state.change?.header?.repository||'');$('meta').title=state.repoRoot||'';
- text('usage',[routeText(state.route),usageText(state.usage,state.tokens)].filter(Boolean).join(' · '));scoreView(state.score);updateView(state.update);const messages=state.messages||[];
+ modelView(state);scoreView(state.score);updateView(state.update);const messages=state.messages||[];
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;

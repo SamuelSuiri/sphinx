@@ -4,7 +4,7 @@ import { planProviders } from './evaluator.js';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { loadConfig, policyHash } from './config.js';
+import { loadConfig, policyHash, saveConfig } from './config.js';
 import { revalidateSnapshot, repositoryName } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { prepareInteractiveCheck, isRateLimit, isCliFailure, switchChoices, PLAN_NAMES } from './check-recovery.js';
@@ -14,6 +14,7 @@ import { recordOverride } from './overrides.js';
 import { withTextStream, partialField } from './stream.js';
 import { loadChangeView } from './change-view.js';
 import { updateStatus, updatePlan, scheduleUpdate } from './update.js';
+import { modelChoices, validChoice } from './model-choices.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -35,6 +36,12 @@ export async function openQuestionnaireBrowser(url, { env = process.env, platfor
     child.once('exit', code => finish(code === 0));
     timer = setTimeout(() => { child.kill(); finish(false); }, 5000);
   });
+}
+
+async function readBody(req, limit) {
+  let bytes = 0; const chunks = [];
+  for await (const chunk of req) { bytes += chunk.length; if (bytes > limit) throw new Error('Request too large.'); chunks.push(chunk); }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function publicFields(state) {
@@ -70,6 +77,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   let update = null;
   // The repository's name, which in a worktree differs from its folder.
   let repoName = null;
+  // The reviewer picker: offered choices, plus what the running check is doing,
+  // because a switch means something different in each phase.
+  let models = null, reviewAttempt = null, grading = false, switchModel = null, pendingDefault = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -99,7 +109,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), ...(models ? { models: { groups: models.groups, reviewing: !!reviewAttempt, busy: grading } } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -146,6 +156,12 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     }
     if (req.method !== 'POST' || segments[2] !== 'action') return send(res, 405, { error: 'Unsupported method.' });
     if (req.headers.origin !== origin || !equal(req.headers['x-sphinx-token'], token) || req.headers['content-type']?.split(';')[0] !== 'application/json') return send(res, 403, { error: 'Forbidden request.' });
+    if (new URL(req.url, origin).searchParams.get('model') === '1') {
+      let picked; try { picked = JSON.parse(await readBody(req, 4096)); } catch { return send(res, 400, { error: 'Invalid model choice.' }); }
+      if (!switchModel || !models) return send(res, 409, { error: 'Wait for the check to start.' });
+      try { return send(res, 200, await switchModel({ provider: picked?.provider, model: typeof picked?.model === 'string' ? picked.model.trim() : '', saveDefault: picked?.saveDefault === true })); }
+      catch (error) { return send(res, error.status || 409, { error: error.message }); }
+    }
     if (new URL(req.url, origin).searchParams.get('update') === '1') {
       // Independent of the check: the install runs only after this process exits.
       if (!update?.available || update.status === 'scheduled') return send(res, 409, { error: 'No update to install.' });
@@ -281,19 +297,56 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       const notes = [];
       const recoveryUI = { warning: text => notes.push(text), note: text => notes.push(text), command: () => {} };
       const plans = await findPlans(operationEnv).catch(() => []);
+      const refreshModels = async route => { models = { groups: await modelChoices({ config, env: operationEnv, plans, current: route }).catch(() => []) }; };
+      await refreshModels(visible.route);
+      const applySwitch = async ({ provider, model, saveDefault }) => {
+        visible = await store.switchRoute(request.id, config, provider, { model, signal: localSignal });
+        if (saveDefault) pendingDefault = { provider, model };
+        await refreshModels(visible.route);
+        say({ role: 'sphinx', kind: 'notice', text: `Switched this check to ${[visible.route.provider === 'openai' ? 'your endpoint' : PLAN_NAMES[provider]?.[0] ?? 'OpenRouter', model].join(' ')}.${saveDefault ? ' It becomes your default when this check ends.' : ''}` });
+        return visible;
+      };
+      let pendingSwitch = null;
+      // What a picked model does depends on the phase: grade with it from now on,
+      // restart a running review on it, or retry a failed review with it.
+      switchModel = async picked => {
+        const error = message => Object.assign(new Error(message), { status: 409 });
+        const problem = validChoice(models.groups, picked.provider, picked.model, config);
+        if (problem) throw Object.assign(new Error(problem), { status: 400 });
+        const route = store.public(await store.read(request.id)).route;
+        if (route.provider === picked.provider && route.model === picked.model) { if (picked.saveDefault) pendingDefault = picked; return { ok: true }; }
+        if (grading) throw error('Switch after this answer is checked.');
+        if (reviewAttempt) { pendingSwitch = picked; reviewAttempt.abort(cancelled()); return { ok: true, restarting: true }; }
+        if (resolver?.allowed.includes('answer')) { await applySwitch(picked); publish({ ...state, ...publicFields(visible), route: visible.route }); return { ok: true }; }
+        if (state.phase === 'recovery' && resolver) { await applySwitch(picked); resolver.resolve({ action: 'switched' }); return { ok: true }; }
+        throw error('Switch once the current step finishes.');
+      };
       visible = await prepareInteractiveCheck({ config, signal: localSignal, waitingGit: request.delivery === 'hook', ui: recoveryUI,
         planProviders: plans, switchRoute: provider => store.switchRoute(request.id, config, provider, { signal: localSignal }),
         inspect: async () => store.public(await store.read(request.id)),
         validate: () => validate(session.snapshot, config),
         authorizeMore: () => store.retryReview(request.id, config, { signal: localSignal }),
         start: async () => {
-          notes.length = 0;
-          publish({ ...publicFields(store.public(await store.read(request.id))), repoRoot: request.repoRoot, phase: 'working', message: 'Reviewing the change…' });
-          return store.start(request.id, config, { signal: localSignal, onProgress: text => {
-            say({ role: 'sphinx', kind: 'activity', text }); publish(state);
-            // Refresh tokens and cost from the per-call save without blocking review.
-            store.read(request.id).then(saved => { if (active === controller && state.id === request.id) { const fresh = store.public(saved); publish({ ...state, usage: fresh.usage, tokens: fresh.tokens }); } }, () => {});
-          } });
+          for (;;) {
+            notes.length = 0;
+            const attempt = new AbortController(), stop = () => attempt.abort(localSignal.reason);
+            localSignal.addEventListener('abort', stop, { once: true });
+            reviewAttempt = attempt;
+            try {
+              publish({ ...publicFields(store.public(await store.read(request.id))), repoRoot: request.repoRoot, phase: 'working', message: 'Reviewing the change…' });
+              return await store.start(request.id, config, { signal: attempt.signal, onProgress: text => {
+                say({ role: 'sphinx', kind: 'activity', text }); publish(state);
+                // Refresh tokens and cost from the per-call save without blocking review.
+                store.read(request.id).then(saved => { if (active === controller && state.id === request.id) { const fresh = store.public(saved); publish({ ...state, usage: fresh.usage, tokens: fresh.tokens }); } }, () => {});
+              } });
+            } catch (error) {
+              // A model picked mid-review stops this run; anything else is a real failure.
+              if (!pendingSwitch || localSignal.aborted) throw error;
+            } finally { reviewAttempt = null; localSignal.removeEventListener('abort', stop); }
+            const picked = pendingSwitch; pendingSwitch = null;
+            await applySwitch(picked);
+            say({ role: 'sphinx', kind: 'activity', text: 'Restarting the review on the new model' });
+          }
         },
         choose: async prompt => {
           const current = store.public(await store.read(request.id));
@@ -327,9 +380,10 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
             if (field.complete || now - lastPublish > 60) { lastPublish = now; publish(state); }
           };
           const dropDraft = () => { transcript = transcript.filter(item => item.id !== draft && item.id !== step); };
+          grading = true; publish(state, { display: true });
           visible = await withTextStream(onText, () => store.answer(request.id, action.action === 'learn' ? 'I do not know. Explain this concept and give me a different scenario to apply it to.' : action.response.trim(), config, {
             learn: action.action === 'learn', dispute: action.action === 'dispute', expectedQuestionId: action.questionId, signal: localSignal,
-          })).finally(dropDraft);
+          })).finally(() => { dropDraft(); grading = false; });
           settle('graded');
           await refreshScore(request.repoRoot, operationEnv).catch(() => {});
           if (visible.feedback) say({ role: 'sphinx', kind: 'feedback', text: visible.feedback });
@@ -365,6 +419,12 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     } finally {
       clearTimeout(timer); requestSignal?.removeEventListener('abort', cancel); resolver?.reject(cancelled()); resolver = undefined;
       if (reservation?.status === 'claimed') await release({ id: request.id, token: reservation.token, status: finalStatus, env: operationEnv });
+      // "Also use for future checks" waits until now: changing saved routes mid-check would invalidate it.
+      if (pendingDefault) {
+        const { provider, model } = pendingDefault; pendingDefault = null;
+        await loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)).catch(() => {});
+      }
+      switchModel = null; models = null;
       active = undefined;
     }
   }

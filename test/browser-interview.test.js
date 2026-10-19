@@ -396,3 +396,41 @@ test('after a wrong answer streams its feedback, the page shows what Sphinx is d
   const next = await f.waitFor('question');
   assert.ok(!next.messages.some(item => item.text === 'Writing a new scenario to try…'), 'the step goes away with the result');
 });
+
+const pickModel = (f, body) => fetch(`${f.interview.url}/action?model=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify(body) });
+
+test('picking a model during the questions grades with it from then on, and can become the default after the check', async t => {
+  const f = await fixture(t, { plans: ['claude'] });
+  const done = f.present(); await f.waitFor('question');
+  assert.deepEqual(f.interview.state.models.groups.map(group => group.provider), ['claude']);
+  assert.equal((await pickModel(f, { provider: 'claude', model: 'opus' })).status, 400, 'only listed models');
+  const res = await pickModel(f, { provider: 'claude', model: 'sonnet', saveDefault: true });
+  assert.equal(res.status, 200);
+  assert.deepEqual([f.interview.state.route.provider, f.interview.state.route.model], ['claude', 'sonnet']);
+  assert.match(f.interview.state.messages.at(-1).text, /Switched this check to Claude Code sonnet\. It becomes your default when this check ends\./);
+  const { readFile } = await import('node:fs/promises');
+  const before = await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8').catch(() => '');
+  assert.doesNotMatch(before, /sonnet/, 'not saved mid-check, which would invalidate it');
+  const state = f.interview.state;
+  await f.post('answer', { questionId: state.question.id, response: 'Yes, because the insert is unconditional.' });
+  assert.equal((await done).status, 'passed');
+  const saved = JSON.parse(await readFile(path.join(f.env.SPHINX_HOME, 'config.json'), 'utf8'));
+  assert.deepEqual(saved.models.large, { provider: 'claude', model: 'sonnet' });
+});
+
+test('picking a model mid-review stops that run and restarts the review on the new model', async t => {
+  const f = await fixture(t, { plans: ['claude'], generate: async (n, options) => {
+    await options.beforeCall();
+    if (n === 1) await new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    return { questions: [q] };
+  } });
+  f.present();
+  for (let i = 0; i < 300 && !f.interview.state.models?.reviewing; i++) await delay(10);
+  assert.equal(f.interview.state.models.reviewing, true);
+  const res = await pickModel(f, { provider: 'claude', model: 'haiku' });
+  assert.deepEqual(await res.json(), { ok: true, restarting: true });
+  const state = await f.waitFor('question');
+  assert.equal(f.generated(), 2);
+  assert.deepEqual([state.route.provider, state.route.model], ['claude', 'haiku']);
+  assert.ok(state.messages.some(item => /Restarting the review on the new model/.test(item.text)));
+});
