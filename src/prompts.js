@@ -1,6 +1,7 @@
 import { parseRoute, questionLimit } from './routing.js';
 import { reviewerTurnLimit } from './reviewer-limits.js';
 import { REVIEWER_PRESETS, presetOptions } from './model-presets.js';
+import { DISTANCES } from './config.js';
 
 export const routeText = route => `${route.provider}${route.model ? `:${route.model}` : ''}`;
 export const splitList = value => String(value).split(',').map(item => item.trim()).filter(Boolean);
@@ -94,10 +95,7 @@ export async function askPolicy(config, initial, prompts, { scope = 'repository'
     { value: 'standard', label: 'Standard', description: `Caps: ${questionCapsText('standard')}. Behavior, failures, and system interactions.` },
     { value: 'thorough', label: 'Thorough', description: `Caps: ${questionCapsText('thorough')}. Also consider rollout, rollback, and compatibility.` },
   ] });
-  if (values.distance === undefined) values.distance = await prompts.choose({ title: 'How close to the code should questions get?', current: config.distance ?? 'high', choices: [
-    { value: 'high', label: 'High level', description: 'What the change does and what it affects.' },
-    { value: 'low', label: 'Low level', description: 'The specific logic, conditions, and edge cases.' },
-  ] });
+  if (values.distance === undefined) values.distance = await prompts.choose({ title: 'How close to the code should questions get?', current: config.distance ?? 'mixed', choices: ['mixed', 'high', 'low'].map(value => ({ value, label: DISTANCES[value].label, description: DISTANCES[value].description })) });
   return values;
 }
 
@@ -184,5 +182,5 @@ export function policyText(config) {
   if (config.events.includes('pre-push')) parts.push(`before pushes to ${branches} on ${remotes}`);
   if (config.events.includes('pre-commit')) parts.push(`before commits on ${branches}`);
   const text = parts.join(' and ');
-  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth, ${config.distance === 'low' ? 'low' : 'high'} level.`;
+  return `${text[0].toUpperCase()}${text.slice(1)}, at ${config.level} depth, ${DISTANCES[config.distance]?.label.toLowerCase() ?? 'mixed'} questions.`;
 }

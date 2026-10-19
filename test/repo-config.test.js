@@ -143,3 +143,17 @@ test('repeated initialization creates no new files and keeps stable policy bytes
   assert.deepEqual(second.config, first.config);
   assert.equal(await readFile(first.configPath, 'utf8'), content);
 });
+
+test('the questionnaire can set a repository distance, keeping its other settings', async t => {
+  const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { setRepositoryDistance } = await import('../src/repo-config.js');
+  const dir = await mkdtemp(join(tmpdir(), 'sphinx-set-distance-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  await setRepositoryDistance(dir, 'low');
+  assert.deepEqual(JSON.parse(await readFile(join(dir, '.sphinxconfig'), 'utf8')), { version: 1, distance: 'low' });
+  await writeFile(join(dir, '.sphinxconfig'), JSON.stringify({ version: 1, branches: ['main'], exclude: ['dist/**'], distance: 'low' }));
+  await setRepositoryDistance(dir, 'high');
+  assert.deepEqual(JSON.parse(await readFile(join(dir, '.sphinxconfig'), 'utf8')), { version: 1, branches: ['main'], exclude: ['dist/**'], distance: 'high' });
+  await assert.rejects(setRepositoryDistance(dir, 'sideways'), /distance must be/);
+});

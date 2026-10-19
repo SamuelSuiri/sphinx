@@ -186,9 +186,11 @@ const PREFERENCES_TEXT = 'Question preferences: projectContext.preferences holds
 
 const DISTANCE = {
   high: 'Understanding distance: high. Ask about the change from the outside: its behavior in realistic situations, how it interacts with the rest of the system, failure and retry consequences, and what users or callers observe. Do not ask about individual conditions, variable names, or the order of statements.',
+  mixed: 'Understanding distance: mixed. Combine both kinds of question across this assessment: at least one about the change from the outside (its behavior in realistic situations, how it interacts with the rest of the system, failure and retry consequences, what users or callers observe) and at least one about the implementation itself (which branch runs for a given input, how a specific condition, data structure, or ordering behaves, edge cases in that logic). With a single question, ask whichever kind best tests understanding of this change. Always ask for a prediction and its reason, never for code to be recalled verbatim.',
   low: 'Understanding distance: low. Ask about the implementation itself: which branch runs for a given input, how a specific condition, data structure, or ordering inside the changed code behaves, and edge cases in that logic. Still ask for a prediction and its reason, never for code to be recalled verbatim.',
 };
-const distanceText = config => DISTANCE[config?.distance === 'low' ? 'low' : 'high'];
+// Checks prepared before a setting existed keep the old default, high.
+const distanceText = config => DISTANCE[config?.distance] ?? DISTANCE.high;
 
 function validateAssessmentQuestions(response, paths, budget, { legacy = false, allowNone = false } = {}) {
   object(response, ['questions'], 'Assessment', ['noQuestionReason']);

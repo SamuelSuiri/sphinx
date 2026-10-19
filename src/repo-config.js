@@ -90,3 +90,17 @@ export async function initializeRepository({ repoRoot, config, overrides = {}, c
   } else preserved.push(contextPath);
   return { configPath, ignorePath, contextPath, created, preserved, contextExcluded, config: local };
 }
+
+/**
+ * Set this repository's understanding distance in .sphinxconfig, keeping every
+ * other setting. A legacy .sphinx.json policy is carried into the new file.
+ */
+export async function setRepositoryDistance(repoRoot, distance, { env = process.env } = {}) {
+  const info = await repositoryConfigInfo(repoRoot);
+  const current = info.exists ? await readJson(info.path) : { version: 1 };
+  const next = { ...current, version: current.version ?? 1, distance };
+  validateRepositoryConfig(next, { env });
+  const file = path.join(repoRoot, '.sphinxconfig');
+  await writeFile(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o644 });
+  return file;
+}

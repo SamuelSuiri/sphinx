@@ -4,7 +4,7 @@ import { planProviders } from './evaluator.js';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { loadConfig, policyHash, saveConfig } from './config.js';
+import { DISTANCES, loadConfig, policyHash, readJson, repositoryConfigInfo, saveConfig } from './config.js';
 import { revalidateSnapshot, repositoryName } from './git.js';
 import { createSessionStore } from './sessions.js';
 import { prepareInteractiveCheck, isRateLimit, isCliFailure, switchChoices, PLAN_NAMES } from './check-recovery.js';
@@ -15,6 +15,7 @@ import { withTextStream, partialField } from './stream.js';
 import { loadChangeView } from './change-view.js';
 import { updateStatus, updatePlan, scheduleUpdate } from './update.js';
 import { modelChoices, validChoice } from './model-choices.js';
+import { setRepositoryDistance } from './repo-config.js';
 
 const ID = /^[a-f0-9]{64}$/u;
 const cancelled = () => Object.assign(new Error('Check paused. Progress is saved.'), { code: 'SPHINX_CANCELLED' });
@@ -80,6 +81,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // The reviewer picker: offered choices, plus what the running check is doing,
   // because a switch means something different in each phase.
   let models = null, reviewAttempt = null, grading = false, switchModel = null, pendingDefault = null;
+  // This check's understanding distance, and a change for the repository's next checks.
+  // Distance is part of the check's policy, so it is written only when this check ends.
+  let distance = null;
   // The repository's understanding score, refreshed after every graded answer.
   const refreshScore = async (repoRoot, operationEnv) => { score = scoreSummary(await readStats(repoRoot, operationEnv)); };
   // Read-only display of the checkpoint's frozen comparison. It is loaded
@@ -109,7 +113,7 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
   // Display-only updates (change view, evidence) keep the revision, so they
   // never turn an answer already in flight into a stale submission.
   const publish = (next, { display = false } = {}) => {
-    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), ...(models ? { models: { groups: models.groups, reviewing: !!reviewAttempt, busy: grading } } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
+    state = { ...next, messages: transcript, ...(score ? { score } : {}), ...(update ? { update } : {}), ...(repoName ? { repoName } : {}), ...(models ? { models: { groups: models.groups, reviewing: !!reviewAttempt, busy: grading } } : {}), ...(distance ? { distance: { current: distance.current, next: distance.next, scope: distance.scope } } : {}), change: viewState(), evidence: evidence && evidence.checkpoint === next.id ? { questionId: evidence.questionId, refs: evidence.refs } : undefined, waitingGit, operationClosed: closed, revision: display ? next.revision : randomUUID(), sequence: ++sequence };
     const event = `data: ${JSON.stringify(state)}\n\n`;
     for (const stream of streams) writeEvent(stream, event);
   };
@@ -156,6 +160,14 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
     }
     if (req.method !== 'POST' || segments[2] !== 'action') return send(res, 405, { error: 'Unsupported method.' });
     if (req.headers.origin !== origin || !equal(req.headers['x-sphinx-token'], token) || req.headers['content-type']?.split(';')[0] !== 'application/json') return send(res, 403, { error: 'Forbidden request.' });
+    if (new URL(req.url, origin).searchParams.get('distance') === '1') {
+      let picked; try { picked = JSON.parse(await readBody(req, 1024))?.distance; } catch { return send(res, 400, { error: 'Invalid distance.' }); }
+      if (!distance) return send(res, 409, { error: 'Wait for the check to start.' });
+      if (!Object.hasOwn(DISTANCES, picked)) return send(res, 400, { error: 'Choose high, mixed, or low.' });
+      distance.next = picked === distance.current ? null : picked;
+      publish(state, { display: true });
+      return send(res, 200, { distance: { current: distance.current, next: distance.next } });
+    }
     if (new URL(req.url, origin).searchParams.get('model') === '1') {
       let picked; try { picked = JSON.parse(await readBody(req, 4096)); } catch { return send(res, 400, { error: 'Invalid model choice.' }); }
       if (!switchModel || !models) return send(res, 409, { error: 'Wait for the check to start.' });
@@ -297,6 +309,9 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
       const notes = [];
       const recoveryUI = { warning: text => notes.push(text), note: text => notes.push(text), command: () => {} };
       const plans = await findPlans(operationEnv).catch(() => []);
+      // Whether this repository chose its distance, or it comes from your machine-wide setting.
+      const repoSets = await repositoryConfigInfo(request.repoRoot).then(info => info.exists && readJson(info.path)).then(local => Object.hasOwn(local || {}, 'distance')).catch(() => false);
+      distance = { current: session.config?.distance ?? config.distance, next: null, scope: repoSets ? 'repository' : 'machine' };
       const refreshModels = async route => { models = { groups: await modelChoices({ config, env: operationEnv, plans, current: route }).catch(() => []) }; };
       await refreshModels(visible.route);
       const applySwitch = async ({ provider, model, saveDefault }) => {
@@ -424,7 +439,8 @@ export function createBrowserInterview({ env = process.env, signal, timeoutMs = 
         const { provider, model } = pendingDefault; pendingDefault = null;
         await loadConfig(undefined, operationEnv).then(saved => saveConfig({ ...saved, models: { small: { provider, model }, medium: { provider, model }, large: { provider, model } } }, operationEnv)).catch(() => {});
       }
-      switchModel = null; models = null;
+      if (distance?.next) await setRepositoryDistance(request.repoRoot, distance.next, { env: operationEnv }).catch(() => {});
+      switchModel = null; models = null; distance = null;
       active = undefined;
     }
   }

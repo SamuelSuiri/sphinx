@@ -429,8 +429,25 @@ test('picking a model mid-review stops that run and restarts the review on the n
   assert.equal(f.interview.state.models.reviewing, true);
   const res = await pickModel(f, { provider: 'claude', model: 'haiku' });
   assert.deepEqual(await res.json(), { ok: true, restarting: true });
+  // The restarted review can take a while when the whole suite is running.
+  for (let i = 0; i < 1500 && f.interview.state.phase !== 'question'; i++) await delay(10);
   const state = await f.waitFor('question');
   assert.equal(f.generated(), 2);
   assert.deepEqual([state.route.provider, state.route.model], ['claude', 'haiku']);
   assert.ok(state.messages.some(item => /Restarting the review on the new model/.test(item.text)));
+});
+
+test('the page shows the question distance and saves a repository change only when the check ends', async t => {
+  const f = await fixture(t);
+  const done = f.present(); const state = await f.waitFor('question');
+  assert.deepEqual(state.distance, { current: 'mixed', next: null, scope: 'machine' });
+  const pick = distance => fetch(`${f.interview.url}/action?distance=1`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: new URL(f.interview.url).origin, 'X-Sphinx-Token': new URL(f.interview.url).pathname.slice(1) }, body: JSON.stringify({ distance }) });
+  assert.equal((await pick('sideways')).status, 400);
+  assert.equal((await pick('low')).status, 200);
+  assert.equal(f.interview.state.distance.next, 'low');
+  const { readFile } = await import('node:fs/promises');
+  await assert.rejects(readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8'), { code: 'ENOENT' }, 'not written mid-check: it would invalidate this check');
+  await f.post('answer', { questionId: state.question.id, response: 'Yes, because the insert is unconditional.' });
+  assert.equal((await done).status, 'passed');
+  assert.equal(JSON.parse(await readFile(path.join(f.snapshot.repoRoot, '.sphinxconfig'), 'utf8')).distance, 'low');
 });

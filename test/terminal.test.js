@@ -191,7 +191,7 @@ test('explicit model flags alter only their requested routes and reject invalid 
 test('guided setup defers branch, remote, and depth questions unless the human customizes', async () => {
   const output = capture(), answers = ['2', '', 'release/*', 'origin', 'thorough', 'low'];
   const values = await askInstall(DEFAULT_CONFIG, { agents: 'none', preset: 'claude-economy' }, createPrompts({ ui: output.ui, ask: async () => answers.shift() }), { hasExistingConfig: false });
-  assert.match(output.text().replace(/\s+/g, ' '), /Before pushes to main, master on any remote, at standard depth, high level\./);
+  assert.match(output.text().replace(/\s+/g, ' '), /Before pushes to main, master on any remote, at standard depth, mixed questions\./);
   assert.match(output.text(), /When should Sphinx run\?/);
   assert.deepEqual(applyInstallOptions(DEFAULT_CONFIG, values).branches, ['release/*']);
   assert.equal(values.level, 'thorough');

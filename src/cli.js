@@ -8,7 +8,7 @@ import { parseArgs, promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
+import { DISTANCES, getPaths, loadConfig, saveConfig, saveOpenRouterKey, openRouterKey, saveOpenAIEndpoint, openAIEndpoint, validateConfig, repositoryConfigInfo, policyHash } from './config.js';
 import { initializeRepository } from './repo-config.js';
 import { applyRepositorySetup, suggestRepositorySetup } from './repo-setup.js';
 import * as git from './git.js';
@@ -164,7 +164,7 @@ function policyRows(config) {
     ['Push checkpoints', enabled && config.events.includes('pre-push') ? `Destination branches: ${config.branches.join(', ') || 'none'}. Remotes: ${config.remotes.join(', ') || 'none'}.` : 'Off. Local pushes are not checked by this policy.'],
     ['Commit checkpoints', enabled && config.events.includes('pre-commit') ? `Staged changes on local branches: ${config.branches.join(', ') || 'none'}.` : 'Off. Local commits are not checked by this policy.'],
     ['Depth', `${config.level} · question caps: ${questionCapsText(config.level)}`],
-    ['Distance', config.distance === 'low' ? 'low · implementation details: specific logic, conditions, and edge cases' : 'high · behavior and consequences of the change as a whole'],
+    ['Distance', `${config.distance} · ${(DISTANCES[config.distance] ?? DISTANCES.mixed).description}`],
     ['Preparation', config.backgroundPreparation ? 'Background review after commits and branch updates' : 'On demand when the understanding check starts'],
     ['Behavior', !enabled ? 'Disabled for this repository' : 'The Git operation only goes through after you answer the understanding questions correctly'],
   ];

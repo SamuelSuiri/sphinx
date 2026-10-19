@@ -20,7 +20,7 @@ const policy = [
   ['--branches <patterns>', 'Comma-separated branches. Pushes match destination names, e.g. main,release/*. Commits match the current local branch.'],
   ['--events <events>', 'pre-push, pre-commit, or both separated by a comma. Default: pre-push.'],
   ['--level <level>', `Question caps: relaxed (${questionCapsText('relaxed')}); standard (${questionCapsText('standard')}, default); thorough (${questionCapsText('thorough')}). Fewer when sufficient. Model routes are separate.`],
-  ['--distance <high|low>', 'How close to the code questions get. high (default): what the change does and what it affects. low: the specific logic, conditions, and edge cases. A repository can set its own in .sphinxconfig.'],
+  ['--distance <mixed|high|low>', 'How close to the code questions get. mixed (default): some questions about what the change does, some about its specific logic. high: what the change does and what it affects. low: the specific logic, conditions, and edge cases. A repository can set its own in .sphinxconfig.'],
   ['--remotes <patterns>', 'Comma-separated remote names, e.g. origin. Default: * (any remote). Applies to pushes.'],
 ];
 

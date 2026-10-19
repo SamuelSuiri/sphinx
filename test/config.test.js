@@ -231,10 +231,10 @@ test('advisory mode was removed and fails with a pointer to yolo', () => {
   assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), mode: 'advisory' }), /advisory" was removed.*sphinx yolo/);
 });
 
-test('understanding distance defaults to high, accepts low, and a repository can override it', async t => {
-  assert.equal(DEFAULT_CONFIG.distance, 'high');
-  assert.equal(validateConfig({ ...structuredClone(DEFAULT_CONFIG), distance: 'low' }).distance, 'low');
-  assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), distance: 'medium' }), /distance must be high, low/);
+test('understanding distance defaults to mixed, accepts high and low, and a repository can override it', async t => {
+  assert.equal(DEFAULT_CONFIG.distance, 'mixed');
+  for (const value of ['high', 'low']) assert.equal(validateConfig({ ...structuredClone(DEFAULT_CONFIG), distance: value }).distance, value);
+  assert.throws(() => validateConfig({ ...structuredClone(DEFAULT_CONFIG), distance: 'medium' }), /distance must be high, mixed, low/);
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');

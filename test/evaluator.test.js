@@ -929,3 +929,11 @@ test('/learn requires a new scenario: the schema demands it, and a reply without
   assert.deepEqual(schema.properties.verdict.enum, ['incorrect'], 'the output schema allows only incorrect');
   assert.equal(schema.properties.followUp.anyOf, undefined, 'and a new question is not optional');
 });
+
+test('mixed distance asks for both kinds of question; old checks without a setting keep high', async t => {
+  for (const [distance, pattern] of [['mixed', /Understanding distance: mixed\. Combine both kinds/], ['high', /Understanding distance: high\./], [undefined, /Understanding distance: high\./]]) {
+    const { evaluator, calls } = await fixture(t, { verdict: 'incorrect', feedback: 'No.', evidence: question.evidence, followUp: { ...question, id: 'next', prompt: 'A different retry: what now? Why?' } });
+    await evaluator.gradeAnswer({ snapshot, question, answer: 'It runs again.', config: { ...config, distance } }).catch(() => {});
+    assert.match(calls[0].input, pattern, String(distance));
+  }
+});

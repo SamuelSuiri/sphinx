@@ -21,7 +21,7 @@ header{min-height:52px;border-bottom:1px solid var(--line);padding:8px 24px;disp
 .model-menu h3{margin:0;padding:8px 14px 2px;font-size:13px;font-weight:600}.model-menu .menu-note{margin:0;padding:0 14px 6px;color:var(--muted);font-size:12px;line-height:1.4}
 .model-menu .group{padding:8px 14px 2px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .model-menu .option{display:flex;align-items:baseline;gap:8px;width:100%;padding:6px 14px;border:0;border-radius:0;background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer}.model-menu .option:hover:not(:disabled),.model-menu .option:focus-visible{background:var(--paper);outline:none}
-.model-menu .option .dot{width:14px;flex:none;color:var(--amber)}.model-menu .option .name{flex:1;overflow-wrap:anywhere}.model-menu .option .tag{color:var(--muted);font-size:12px}.model-menu .option:disabled{color:var(--muted);cursor:not-allowed}
+.model-menu .option .dot{width:14px;flex:none;color:var(--amber)}.model-menu .option .name{flex:1;overflow-wrap:anywhere}.model-menu .option .desc{display:block;color:var(--muted);font-size:12px;line-height:1.35;margin-top:1px}.model-chip .next{color:var(--amber)}.model-menu p.menu-foot{margin:6px 0 0;cursor:default}.model-menu .option .tag{color:var(--muted);font-size:12px}.model-menu .option:disabled{color:var(--muted);cursor:not-allowed}
 .model-menu .custom{display:flex;gap:6px;padding:4px 14px 6px 36px}.model-menu .custom input{flex:1;min-width:0;font:12.5px var(--mono);padding:4px 7px;border:1px solid var(--line);border-radius:6px}.model-menu .custom button{font-size:12.5px;padding:3px 10px}
 .model-menu .menu-foot{border-top:1px solid var(--line);margin-top:6px;padding:8px 14px 4px;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12.5px;cursor:pointer}
 .model-menu .confirm{display:block!important;margin:2px 10px 8px;padding:8px 10px;border-radius:8px;background:var(--paper);font-size:12.5px}.model-menu .confirm p{margin:0}.model-menu .confirm div{display:flex;gap:6px;margin-top:8px}.model-menu .menu-error{margin:4px 14px;color:var(--retry);font-size:12.5px}
@@ -103,7 +103,7 @@ footer{flex-shrink:0;display:flex;flex-wrap:wrap;gap:2px 8px;padding:0 0 14px;co
 @media(max-width:600px){header{padding:8px 12px}.brand{gap:8px}.brand span{display:none}.scope{padding:6px 12px 7px;font-size:12.5px}.facts{gap:0 12px}.facts .mono{font-size:12px}#scope-note{display:none}.scope-short{display:block}.hint,footer{font-size:11.5px}main{padding:0 14px}.conversation{padding-top:16px}.turn.human{margin-left:16px}.actions{gap:4px}button{padding:7px 10px}.hint{max-width:34em}.diffhead{padding:8px 12px}.legend{padding:6px 12px}}
 </style></head><body><div class="shell">
 <header><div class="brand"><strong>${sphinxMark({ size: 26, id: 'brand-mark' })}sphinx</strong><small id="version">v${VERSION}</small><button id="update" class="update" type="button" hidden></button><span>Understanding check</span></div><div id="score" class="score" hidden><span class="score-head"><span class="score-label">Your understanding</span><strong id="score-value" class="score-value"></strong></span><span id="score-dots" class="score-dots" role="img"></span><span id="score-meta" class="score-meta"></span></div><div class="tools"><button id="skip" class="quiet" type="button">Skip this time</button><button id="pause" class="quiet" type="button">Pause check</button></div></header>
-<section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div class="model-cell"><dd><button id="model" class="model-chip" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="model-menu" hidden></button><span id="usage"></span></dd><section id="model-menu" class="model-menu" role="dialog" aria-label="Reviewer model for this check" hidden></section></div></dl>
+<section class="scope" aria-label="Change under review"><dl class="facts"><div><dt>Repository</dt><dd id="meta"></dd></div><div><dt id="scope-op-label">Operation</dt><dd id="scope-op">Loading…</dd></div><div><dt>Comparison</dt><dd id="scope-range" class="mono">Loading…</dd></div><div><dt>Changed</dt><dd id="scope-stats">Loading…</dd></div><div id="scope-excluded-row" hidden><dt>Excluded</dt><dd id="scope-excluded"></dd></div><div><dt>Progress</dt><dd id="scope-progress">Connecting…</dd></div><div class="model-cell"><dd><button id="distance" class="model-chip" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="distance-menu" hidden></button><button id="model" class="model-chip" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="model-menu" hidden></button><span id="usage"></span></dd><section id="distance-menu" class="model-menu" role="dialog" aria-label="Question distance for this repository" hidden></section><section id="model-menu" class="model-menu" role="dialog" aria-label="Reviewer model for this check" hidden></section></div></dl>
 <p id="scope-note" class="scope-note">Checkpoint changes: the exact range Sphinx froze for this check, not necessarily an entire pull request.</p><p class="scope-note scope-short">Checkpoint range only — not necessarily a whole pull request.</p></section>
 <nav class="tabs" role="tablist" aria-label="Questionnaire views"><button id="tab-question" role="tab" type="button" aria-controls="question-pane" aria-selected="true">Question</button><button id="tab-files" role="tab" type="button" aria-controls="files-pane" aria-selected="false">Files</button><button id="tab-diff" role="tab" type="button" aria-controls="diff-pane" aria-selected="false">Diff</button></nav>
 <div id="announce" class="sr" aria-live="polite"></div>
@@ -208,10 +208,39 @@ async function commit(choice){
   const data=await res.json().catch(()=>({}));if(!res.ok){menuError=data.error||'Could not switch models.';buildMenu(current);return;}closeMenu();}
  catch{menuError='Could not reach Sphinx. Try again.';buildMenu(current);}
 }
-$('model').onclick=()=>{if(menuOpen){closeMenu();return;}menuOpen=true;menuError='';$('model-menu').hidden=false;$('model').setAttribute('aria-expanded','true');buildMenu(current);$('model-menu').querySelector?.('[aria-checked="true"]')?.focus?.();};
-document.onkeydown=event=>{if(event.key==='Escape'&&menuOpen){closeMenu();$('model').focus();}};
+$('model').onclick=()=>{if(menuOpen){closeMenu();return;}closeDistance();menuOpen=true;menuError='';$('model-menu').hidden=false;$('model-menu').style.left=$('model').offsetLeft+'px';$('model').setAttribute('aria-expanded','true');buildMenu(current);$('model-menu').querySelector?.('[aria-checked="true"]')?.focus?.();};
+document.onkeydown=event=>{if(event.key!=='Escape')return;if(menuOpen){closeMenu();$('model').focus();}if(distanceOpen){closeDistance();$('distance').focus();}};
 // A click inside the menu can rebuild it, detaching the clicked button; that is not a click outside.
-document.onclick=event=>{if(menuOpen&&event.target?.isConnected!==false&&!$('model-menu').contains?.(event.target)&&!$('model').contains?.(event.target))closeMenu();};
+document.onclick=event=>{if(event.target?.isConnected===false)return;if(menuOpen&&!$('model-menu').contains?.(event.target)&&!$('model').contains?.(event.target))closeMenu();if(distanceOpen&&!$('distance-menu').contains?.(event.target)&&!$('distance').contains?.(event.target))closeDistance();};
+// The question distance: shown as a chip, explained in its tooltip, and changeable
+// for this repository. It applies from the next check, since this one's questions exist.
+const DISTANCE_TEXT={high:['High level','What the change does and what it affects.'],mixed:['Mixed','Some questions about what the change does, some about its specific logic.'],low:['Low level','The specific logic, conditions, and edge cases.']};
+let distanceOpen=false;
+function distanceView(state){
+ const d=state.distance,chip=$('distance');
+ chip.hidden=!d||finished;if(chip.hidden){closeDistance();return;}
+ const label=DISTANCE_TEXT[d.current]?.[0]||d.current;
+ chip.replaceChildren(node('span','',label+' questions'),...(d.next?[node('span','next',' → '+DISTANCE_TEXT[d.next][0]+' next')]:[]),node('span','caret','▾'));
+ chip.title='Question distance: '+label+'. '+DISTANCE_TEXT[d.current]?.[1]+'\\n\\nHigh level: '+DISTANCE_TEXT.high[1]+'\\nMixed: '+DISTANCE_TEXT.mixed[1]+'\\nLow level: '+DISTANCE_TEXT.low[1]+'\\n\\nClick to change it for this repository.';
+ if(distanceOpen)buildDistance(state);
+}
+function closeDistance(){if(!distanceOpen)return;distanceOpen=false;$('distance-menu').hidden=true;$('distance').setAttribute('aria-expanded','false');}
+function buildDistance(state){
+ const d=state.distance,chosen=d.next||d.current,parts=[node('h3','','Question distance'),node('p','menu-note','For this repository, from your next check. This check keeps '+DISTANCE_TEXT[d.current][0].toLowerCase()+' questions.')];
+ for(const value of ['mixed','high','low']){
+  const button=node('button','option'),text=node('span','name');button.type='button';button.setAttribute('role','menuitemradio');button.setAttribute('aria-checked',String(value===chosen));
+  text.append(node('span','',DISTANCE_TEXT[value][0]+(value==='mixed'?' (default)':'')),node('span','desc',DISTANCE_TEXT[value][1]));
+  button.append(node('span','dot',value===chosen?'●':''),text);
+  button.onclick=()=>chooseDistance(value);parts.push(button);
+ }
+ parts.push(node('p','menu-foot',d.next?'Saved to .sphinxconfig when this check ends.':d.scope==='repository'?'Set in this repository’s .sphinxconfig.':'From your machine-wide settings. Changing it here saves it to .sphinxconfig.'));
+ $('distance-menu').replaceChildren(...parts);
+}
+async function chooseDistance(value){
+ try{const res=await fetch(base+'/action?distance=1',{method:'POST',headers:{'Content-Type':'application/json','X-Sphinx-Token':token},body:JSON.stringify({distance:value})});if(res.ok)closeDistance();}catch{}
+}
+$('distance').onclick=()=>{if(distanceOpen){closeDistance();return;}closeMenu();distanceOpen=true;$('distance-menu').hidden=false;$('distance-menu').style.left=$('distance').offsetLeft+'px';$('distance').setAttribute('aria-expanded','true');buildDistance(current);};
+
 // A newer release is offered quietly; installing waits until this check ends.
 function updateView(u){const b=$('update');if(!u?.available){b.hidden=true;return;}b.hidden=false;
  if(u.status==='scheduled'){b.textContent='Updating to v'+u.latest+' after this check';b.disabled=true;b.title='';}
@@ -269,7 +298,7 @@ function render(state){
  const previous=current;current=state;finished=state.operationClosed||['passed','paused','error','skipped'].includes(state.phase);
  const repo=state.repoName||state.repoRoot?.split(/[\\\\/]/).filter(Boolean).at(-1),branch=state.target?.replace(/^refs\\/heads\\//,'');
  text('meta',repo||state.change?.header?.repository||'');$('meta').title=state.repoRoot||'';
- modelView(state);scoreView(state.score);updateView(state.update);const messages=state.messages||[];
+ modelView(state);distanceView(state);scoreView(state.score);updateView(state.update);const messages=state.messages||[];
  text('waiting',finished?'':state.waitingGit?'Git continues after you pass. Closing this tab leaves it waiting; Pause check stops it.':'Closing this tab leaves the check waiting. Use Pause check to stop.');
  const label=state.phase==='question'?'Question '+(state.progress.completed+1)+' of '+state.progress.total:state.phase==='working'?'Reviewing…':state.phase==='recovery'?'Review needs your decision':state.phase==='passed'?'Passed':state.phase==='paused'?'Paused':state.phase==='skipped'?'Skipped':state.phase==='error'?'Check stopped':'Waiting…';
  const retry=state.phase==='question'&&[...messages].reverse().find(item=>item.kind==='question')?.followUp;

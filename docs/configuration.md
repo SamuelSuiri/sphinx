@@ -168,7 +168,7 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
   "events": ["pre-push"],
   "branches": ["main", "release/*"],
   "level": "standard",
-  "distance": "high",
+  "distance": "mixed",
   "exclude": ["vendor/**"]
 }
 ```
@@ -180,7 +180,7 @@ Call caps bound requests and byte limits bound evidence. Neither is a dollar or 
 | `branches` | Push policies match the **destination** branch; commit policies match the current local branch |
 | `remotes` | Remote name patterns for pushes; default `*` |
 | `level` | `relaxed`, `standard`, or `thorough` |
-| `distance` | `high` (default): questions about what the change does and affects; `low`: questions about its specific logic, conditions, and edge cases |
+| `distance` | `mixed` (default): some questions about what the change does and affects, some about its specific logic; `high`: only the former; `low`: only the latter. The questionnaire's distance chip saves a change here when the current check ends |
 | `exclude` | Extra ignore patterns, added to machine-wide ones |
 | `backgroundPreparation` | `false` opts this repository out |
 | `github` | GitHub stamps; see [below](#github-commit-status-and-pull-requests) |
