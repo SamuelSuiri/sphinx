@@ -11,14 +11,17 @@ const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const ZERO = /^0+$/;
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-async function git(cwd, args, { allowFailure = false, maxBuffer = 4 * 1024 * 1024, timeout = 30000 } = {}) {
+async function git(cwd, args, { allowFailure = false, maxBuffer = 4 * 1024 * 1024, timeout = 30000, input } = {}) {
   try {
-    const { stdout } = await exec('git', [
+    const running = exec('git', [
       '--no-pager', '--literal-pathspecs', '-c', 'core.fsmonitor=false', ...args,
     ], {
       cwd, encoding: 'utf8', maxBuffer, timeout,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0' },
     });
+    running.child.stdin.on('error', () => {});
+    running.child.stdin.end(input);
+    const { stdout } = await running;
     return stdout;
   } catch (error) {
     if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
@@ -199,17 +202,24 @@ export async function revalidateSnapshot(snapshot, config, { env = process.env }
 async function branchPoint(root, remote, head, config) {
   if (!remote || remote === '.' || !/^[\w.-]+$/.test(remote)) return null;
   const prefix = `refs/remotes/${remote}/`;
-  const refs = (await git(root, ['for-each-ref', '--format=%(refname)', prefix], { allowFailure: true }) || '')
-    .split('\n').filter(ref => ref && ref !== `${prefix}HEAD`);
+  const checked = (await git(root, ['for-each-ref', '--format=%(refname)', prefix], { allowFailure: true }) || '')
+    .split('\n').filter(ref => ref && ref !== `${prefix}HEAD` && triggered(config, 'pre-push', ref.slice(prefix.length), remote));
+  if (!checked.length) return null;
+  // One walk, however many branches the remote has: the commits only on this
+  // branch, and the already-pushed commits they start from (marked "-").
+  const walk = await git(root, ['rev-list', '--boundary', head, '--stdin'], { input: `${checked.map(ref => `^${ref}`).join('\n')}\n`, allowFailure: true });
+  if (walk === null) return null;
+  if (!walk.trim()) return head; // Already on a checked branch: nothing new to check.
+  const starts = walk.split('\n').filter(line => line.startsWith('-')).map(line => line.slice(1)).filter(oid => OID.test(oid));
+  if (starts.length <= 1) return starts[0] ?? null; // No shared history: check the whole tree.
+  // A branch that merged others starts from several places; any one of them only
+  // adds already-checked commits to the range, so take the nearest.
   let nearest = null;
-  for (const ref of refs) {
-    if (!triggered(config, 'pre-push', ref.slice(prefix.length), remote)) continue;
-    const base = (await git(root, ['merge-base', head, ref], { allowFailure: true }))?.trim();
-    if (!base || !OID.test(base)) continue;
+  for (const base of starts) {
     const distance = Number((await git(root, ['rev-list', '--count', `${base}..${head}`])).trim());
     if (!nearest || distance < nearest.distance) nearest = { base, distance };
   }
-  return nearest?.base ?? null; // Equal to head: nothing new to check.
+  return nearest.base;
 }
 
 export async function pushSnapshots({ cwd = process.cwd(), remote, remoteUrl, input, config, env = process.env }) {

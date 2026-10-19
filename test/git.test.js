@@ -405,3 +405,28 @@ test('a new branch is checked from where it left the remote default branch', asy
   assert.equal(release.base, null);
   assert.deepEqual(release.files, ['base.js', 'feature.js']);
 });
+
+test('a branch that merged other pushed work starts from one of them, and many remote branches stay fast', async t => {
+  const cwd = await fixture(t);
+  const main = await commit(cwd, { 'base.js': 'export const base = 1;\n' });
+  await command(cwd, 'update-ref', 'refs/remotes/origin/main', main);
+  await command(cwd, 'checkout', '-b', 'other');
+  const other = await commit(cwd, { 'other.js': 'export const other = 1;\n' });
+  await command(cwd, 'update-ref', 'refs/remotes/origin/other', other);
+  await command(cwd, 'checkout', '-b', 'parent', main);
+  const parent = await commit(cwd, { 'parent.js': 'export const parent = 1;\n' });
+  await command(cwd, 'update-ref', 'refs/remotes/origin/parent', parent);
+  await command(cwd, 'checkout', '-b', 'child');
+  await command(cwd, 'merge', '-q', '--no-edit', 'other');
+  const head = await commit(cwd, { 'child.js': 'export const child = 1;\n' });
+  // Hundreds of unrelated remote branches cost one walk, not two git calls each.
+  const history = (await command(cwd, 'rev-list', main)).split('\n');
+  const refs = Array.from({ length: 400 }, (_, i) => `create refs/remotes/origin/team/feature-${i} ${history[i % history.length]}\n`).join('');
+  await new Promise((resolve, reject) => { const child = execFile('git', ['update-ref', '--stdin'], { cwd }, error => error ? reject(error) : resolve()); child.stdin.end(refs); });
+  const started = Date.now();
+  const [snapshot] = await pushSnapshots({ cwd, remote: 'origin', remoteUrl: 'https://example.invalid/sphinx.git', input: `refs/heads/child ${head} refs/heads/child ${zero}\n`, config: { ...defaults, branches: ['*'] } });
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+  assert.ok([parent, other].includes(snapshot.base));
+  assert.ok(snapshot.files.includes('child.js'));
+  assert.ok(!snapshot.files.includes('base.js'), 'already-checked history is not re-assessed');
+});
